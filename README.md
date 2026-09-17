@@ -11,6 +11,12 @@ installed on. Point it at a local model and nothing leaves at all.
 
 ---
 
+## Demo
+
+![Agent Jo screenshot](docs/demo.png)
+
+---
+
 ## What it actually does
 
 **Works unattended.** Scheduled runs with circuit breakers, a watchdog that
