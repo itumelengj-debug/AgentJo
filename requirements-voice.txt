@@ -1,0 +1,4 @@
+# Optional: enables speaking to Atlas (local speech-to-text).
+# Text-to-speech needs NOTHING here on Windows/macOS — it uses the OS voice.
+# Install with:  pip install -r requirements-voice.txt
+faster-whisper>=1.0     # local, offline speech recognition (model downloads on first use)

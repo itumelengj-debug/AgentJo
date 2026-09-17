@@ -1,0 +1,2 @@
+# Web UI dependency (the CLI does not need this).
+gradio>=4.44

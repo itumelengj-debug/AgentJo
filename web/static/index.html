@@ -1,0 +1,1851 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <!-- viewport-fit=cover so the app can paint under the notch and home bar;
+       the CSS then insets content with env(safe-area-inset-*) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <meta name="theme-color" content="#0B0D0C" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#F3F3F3" media="(prefers-color-scheme: light)" />
+  <!-- iOS ignores the manifest for these, so it needs its own tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Agent Jo" />
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png" />
+  <link rel="icon" href="/static/icons/icon-192.png" />
+  <title>Agent Jo</title>
+  <link rel="icon" href="/avatar" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    /* resolve the theme before first paint, or the page flashes the wrong
+       one for a frame while the stylesheet and JS catch up */
+    (function () {
+      try {
+        var c = localStorage.getItem("agentjo-theme") || "system";
+        var r = c;
+        if (c === "system") {
+          r = (window.matchMedia &&
+               window.matchMedia("(prefers-color-scheme: dark)").matches)
+              ? "fluent" : "fluent-light";
+        }
+        if (r !== "instruments") document.documentElement.setAttribute("data-theme", r);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="dropOverlay" hidden aria-hidden="true">
+      <div class="drop-inner">
+        <div class="drop-ico">⇣</div>
+        <div class="drop-title">Drop to attach</div>
+        <div class="drop-sub">Files will be added to your next message</div>
+      </div>
+    </div>
+    <!-- ============ Sidebar ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><img src="/avatar" alt="" id="brandAvatar" /></div>
+        <div class="brand-text">
+          <div class="brand-name">Agent&nbsp;Jo</div>
+          <div class="brand-sub">agentic workspace</div>
+        </div>
+      </div>
+
+      <button class="new-chat" id="newChatBtn">
+        <span class="plus">+</span> New conversation
+      </button>
+
+      <div class="conv-scroll">
+        <div class="proj-bar">
+          <select id="projectFilter" class="proj-filter">
+            <option value="none">Ungrouped</option>
+            <option value="all">Everything</option>
+          </select>
+          <button class="proj-new" id="newProjectBtn" title="New project">+</button>
+        </div>
+        <div class="conv-search">
+          <input type="search" id="convSearch" class="conv-search-input"
+                 placeholder="Search conversations…"
+                 aria-label="Search conversations" />
+        </div>
+        <div class="conv-label" id="convLabel">Conversations</div>
+        <div class="conv-list" id="convList"></div>
+      </div>
+
+      <button class="palette-hint" id="paletteHint" type="button"
+                title="Search every panel and action">
+          <span>Search everything</span><kbd>Ctrl K</kbd>
+        </button>
+        <div class="sidebar-foot">
+        <div class="foot-group" data-group="core">
+          <button class="foot-group-toggle" type="button"><span class="fg-chev">▾</span>Core</button>
+          <div class="foot-group-items">
+            <button class="foot-btn" id="phoneBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="1.6" width="8" height="12.8" rx="1.6"/><path d="M7 12.4h2"/></svg></span> Phone
+          </button>
+            <button class="foot-btn" id="presenterBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.8" y="2.6" width="12.4" height="8.4" rx="1.3"/><path d="M8 11v2.6M5.4 13.6h5.2"/></svg></span> Presenter
+          </button>
+            <button class="foot-btn" id="tourBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6.1 6.1a2 2 0 0 1 3.9.6c0 1.3-2 2-2 2"/><path d="M8 11.6h.01"/></svg></span> Guide
+          </button>
+            <button class="foot-btn" id="skillsBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg></span> Skills
+          </button>
+            <button class="foot-btn" id="mlBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 13.5h12"/><path d="M3.6 13.5V9.2M7 13.5V4.6M10.4 13.5V7.1M13.8 13.5V2.4"/></svg></span> Models
+          </button>
+          <button class="foot-btn" id="codemapBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3.5" cy="3.5" r="1.7"/><circle cx="12.5" cy="3.5" r="1.7"/><circle cx="8" cy="12.5" r="1.7"/><path d="M4.9 4.9 7.1 10.9M11.1 4.9 8.9 10.9M5.2 3.5h5.6"/></svg></span> Code map
+          </button>
+          <button class="foot-btn" id="capsBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/></svg></span> Capabilities
+          </button>
+          <button class="foot-btn" id="enginesBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/><path d="M6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14"/></svg></span> Manage engines
+        </button>
+          <button class="foot-btn" id="documentsBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.8H4.4A1.4 1.4 0 0 0 3 3.2v9.6a1.4 1.4 0 0 0 1.4 1.4h7.2a1.4 1.4 0 0 0 1.4-1.4V5.8z"/><path d="M9 1.8v4h4"/><path d="M5.6 8.4h4.8M5.6 11h3.2"/></svg></span> Documents
+        </button>
+          <button class="foot-btn" id="memoryBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="8" cy="4" rx="5" ry="2.2"/><path d="M3 4v8c0 1.2 2.2 2.2 5 2.2s5-1 5-2.2V4"/><path d="M3 8c0 1.2 2.2 2.2 5 2.2s5-1 5-2.2"/></svg></span> Memory
+        </button>
+          </div>
+        </div>
+        <div class="foot-group" data-group="auto">
+          <button class="foot-group-toggle" type="button"><span class="fg-chev">▾</span>Automation</button>
+          <div class="foot-group-items">
+            <button class="foot-btn" id="challengesBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M1.8 8h12.4M8 1.8c1.7 2 2.5 4 2.5 6.2s-.8 4.2-2.5 6.2c-1.7-2-2.5-4-2.5-6.2s.8-4.2 2.5-6.2z"/></svg></span> Challenges
+          </button>
+            <button class="foot-btn" id="jobsBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4.8" width="12" height="8.4" rx="1.4"/><path d="M5.8 4.8V3.6a1.2 1.2 0 0 1 1.2-1.2h2a1.2 1.2 0 0 1 1.2 1.2v1.2"/><path d="M2 8.6h12"/></svg></span> Jobs
+          </button>
+          <button class="foot-btn" id="schedBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.6"/></svg></span> Scheduler
+        </button>
+          <button class="foot-btn" id="autonomyBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M6.6 5.6l4 2.4-4 2.4z"/></svg></span> Autonomy
+        </button>
+          <button class="foot-btn" id="outreachBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.8" y="3.4" width="12.4" height="9.2" rx="1.4"/><path d="M2.4 4.4L8 8.8l5.6-4.4"/></svg></span> Outreach
+        </button>
+          </div>
+        </div>
+        <div class="foot-group" data-group="extend">
+          <button class="foot-group-toggle" type="button"><span class="fg-chev">▾</span>Extend</button>
+          <div class="foot-group-items">
+            <button class="foot-btn" id="crewBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.6" cy="5.6" r="2.2"/><path d="M1.8 13.2c0-2.1 1.7-3.4 3.8-3.4s3.8 1.3 3.8 3.4"/><path d="M10.8 4.2a2.2 2.2 0 0 1 0 4.2M11.6 9.9c1.6.3 2.6 1.5 2.6 3.3"/></svg></span> Crew
+          </button>
+            <button class="foot-btn" id="trendsBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 11.6l3.6-3.8 2.6 2.4 5-5.4"/><path d="M9.6 4.8h3.4v3.4"/></svg></span> Trends
+          </button>
+          <button class="foot-btn" id="mcpBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.6l5.4 3.1v6.6L8 14.4 2.6 11.3V4.7z"/><path d="M8 5.2v5.6M5.4 6.7v2.6M10.6 6.7v2.6"/></svg></span> MCP servers
+        </button>
+          <button class="foot-btn" id="selfBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2"/><path d="M8 10.8V5.6M5.8 7.6L8 5.4l2.2 2.2"/></svg></span> Self-improve
+        </button>
+          </div>
+        </div>
+        <div class="foot-group" data-group="safety">
+          <button class="foot-group-toggle" type="button"><span class="fg-chev">▾</span>Safety</button>
+          <div class="foot-group-items">
+            <button class="foot-btn" id="healthBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.6 8h3l1.6-3.6L9 11.6 10.6 8h3.8"/></svg></span> Health
+          </button>
+            <button class="foot-btn" id="backupBtn">
+            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l5.2 2v4.1c0 3-2.1 5.6-5.2 6.3-3.1-.7-5.2-3.3-5.2-6.3V3.8z"/><path d="M5.8 8.2l1.6 1.6 3-3.2"/></svg></span> Backup
+          </button>
+          <button class="foot-btn" id="undoBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.4 7.2h7.2a3.6 3.6 0 0 1 0 7.2H6"/><path d="M4.8 4.4L2.2 7.2l2.6 2.8"/></svg></span> Undo
+        </button>
+          <button class="foot-btn" id="auditBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="2.6" width="10" height="11.4" rx="1.4"/><path d="M6 2.6V2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v.6"/><path d="M5.8 7.4l1.4 1.4 2.8-2.8M5.8 11.4h4.4"/></svg></span> Audit
+        </button>
+          <button class="foot-btn" id="issuesBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l6 10.4H2z"/><path d="M8 6.4v3M8 11.2h.01"/></svg></span> Issues
+        </button>
+          <button class="foot-btn" id="permsBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.4"/><path d="M5.4 7V5.2a2.6 2.6 0 0 1 5.2 0V7"/><path d="M8 10v1.6"/></svg></span> Permissions
+        </button>
+          </div>
+        </div>
+        <button class="foot-btn" id="settingsBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M12.9 9.8a1.1 1.1 0 0 0 .22 1.21l.04.04a1.33 1.33 0 1 1-1.88 1.88l-.04-.04a1.1 1.1 0 0 0-1.21-.22 1.1 1.1 0 0 0-.67 1v.11a1.33 1.33 0 1 1-2.66 0v-.06a1.1 1.1 0 0 0-.72-1 1.1 1.1 0 0 0-1.21.22l-.04.04a1.33 1.33 0 1 1-1.88-1.88l.04-.04a1.1 1.1 0 0 0 .22-1.21 1.1 1.1 0 0 0-1-.67h-.11a1.33 1.33 0 1 1 0-2.66h.06a1.1 1.1 0 0 0 1-.72 1.1 1.1 0 0 0-.22-1.21l-.04-.04a1.33 1.33 0 1 1 1.88-1.88l.04.04a1.1 1.1 0 0 0 1.21.22h.05a1.1 1.1 0 0 0 .67-1v-.11a1.33 1.33 0 1 1 2.66 0v.06a1.1 1.1 0 0 0 .67 1 1.1 1.1 0 0 0 1.21-.22l.04-.04a1.33 1.33 0 1 1 1.88 1.88l-.04.04a1.1 1.1 0 0 0-.22 1.21v.05a1.1 1.1 0 0 0 1 .67h.11a1.33 1.33 0 1 1 0 2.66h-.06a1.1 1.1 0 0 0-1 .67z"/></svg></span> Settings
+        </button>
+        <div class="foot-meta" id="backendMeta"></div>
+      </div>
+    </aside>
+
+    <!-- ============ Main ============ -->
+    <main class="main">
+      
+      <button class="nav-toggle" id="navToggle" aria-label="Menu"
+              aria-expanded="false">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none"
+             stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+             aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg>
+      </button>
+<header class="topbar">
+        <button class="icon-btn only-mobile" id="menuBtn" aria-label="Menu">≡</button>
+        <div class="topbar-title" id="convTitle">New conversation</div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="kpiToggle" title="Show/hide dashboard" aria-pressed="true">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 13h6V3H3v10zm0 8h6v-6H3v6zm8 0h10V11H11v10zm0-18v6h10V3H11z"/></svg>
+          </button>
+          <button class="speak-toggle" id="autoSpeakBtn" title="Read replies aloud" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 00-2.5-4v8a4.5 4.5 0 002.5-4zM14 3.2v2.1a7 7 0 010 13.4v2.1A9 9 0 0014 3.2z"/></svg>
+          </button>
+          <label class="access" title="Let Agent Jo run commands and edit files for this session">
+            <input type="checkbox" id="fullAccess" />
+            <span class="access-ico"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></span>
+            <span class="access-track"><span class="access-dot"></span></span>
+            <span class="access-label">Full access</span>
+          </label>
+          <label class="access" title="Let Agent Jo search and read the web">
+            <input type="checkbox" id="webToggle" />
+            <span class="access-ico"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.7" d="M12 3a9 9 0 100 18 9 9 0 000-18zm0 0c2.5 2.3 3.8 5.5 3.8 9s-1.3 6.7-3.8 9m0-18C9.5 5.3 8.2 8.5 8.2 12s1.3 6.7 3.8 9M3.5 9h17M3.5 15h17"/></svg></span>
+            <span class="access-track"><span class="access-dot"></span></span>
+            <span class="access-label">Web</span>
+          </label>
+          <label class="access" title="Cost-tiered teamwork: the free local model does bulk grunt work and sub-agents; your engine keeps the hard reasoning. Needs Ollama running.">
+            <input type="checkbox" id="teamworkToggle" />
+            <span class="access-ico"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 11a3 3 0 100-6 3 3 0 000 6zm8 0a3 3 0 100-6 3 3 0 000 6zM8 13c-2.7 0-6 1.3-6 4v2h9.5a5.5 5.5 0 01-.5-2c0-1.6.8-3 2-4-1.4-.7-3.3-1-5-1zm8 0c-.6 0-1.3.1-2 .2 1.2 1 2 2.3 2 3.8 0 .7-.2 1.4-.5 2H22v-2c0-2.7-3.3-4-6-4z"/></svg></span>
+            <span class="access-track"><span class="access-dot"></span></span>
+            <span class="access-label">Teamwork</span>
+          </label>
+          <label class="access" title="After answering, have a model on the other tier (local↔cloud) review and correct the reply. Costs an extra call.">
+            <input type="checkbox" id="secondOpinion" />
+            <span class="access-ico"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.7" d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg></span>
+            <span class="access-track"><span class="access-dot"></span></span>
+            <span class="access-label">Second opinion</span>
+          </label>
+          <button class="engine-pill" id="enginePill" aria-haspopup="listbox">
+            <span class="pulse" id="enginePulse"></span>
+            <span class="engine-pill-text">
+              <span class="engine-pill-name" id="engineName">Auto</span>
+              <span class="engine-pill-model" id="engineModel">smart routing + failover</span>
+            </span>
+            <span class="caret">▾</span>
+          </button>
+          <div class="engine-menu" id="engineMenu" role="listbox" hidden></div>
+        </div>
+      </header>
+
+      <div class="dash" id="dash">
+        <div class="dash-attention" id="dashAttention"></div>
+        <div class="dash-running" id="dashRunning"></div>
+        <button class="dash-customise" id="dashCustomise" type="button"
+                title="Choose which tiles appear">Customise tiles</button>
+        <div class="dash-tiles" id="dashTiles"></div>
+        <div class="dash-edit" id="dashEdit" hidden>
+          <div class="dash-edit-head">
+            <span>Choose tiles and their order</span>
+            <button class="btn ghost btn-mini" id="dashEditDone">Done</button>
+          </div>
+          <div id="dashEditList"></div>
+        </div>
+      </div>
+      <div class="kpi-strip" id="kpiStrip" hidden></div>
+
+      <section class="thread" id="thread">
+        <!-- Empty state -->
+        <div class="empty" id="emptyState">
+          <div class="empty-mark"><img src="/avatar" alt="" /></div>
+          <h1 class="empty-title" id="greeting">How can I help?</h1>
+          <p class="empty-sub">A private agent with memory, tools, and a choice of engines.</p>
+          <div class="suggest" id="suggest">
+            <button class="suggest-card" data-q="Summarise the key risks in rolling out an AI agent on a trading desk.">
+              <span class="suggest-k">Markets</span>
+              Risks of an AI agent on a trading desk
+            </button>
+            <button class="suggest-card" data-q="Write a Python function that retries an API call with exponential backoff and jitter.">
+              <span class="suggest-k">Code</span>
+              Retry-with-backoff helper in Python
+            </button>
+            <button class="suggest-card" data-q="Draft a concise weekly status update from these bullet points: shipped the engines tab, fixed Mistral streaming, started the web app.">
+              <span class="suggest-k">Write</span>
+              Turn bullet points into a status update
+            </button>
+            <button class="suggest-card" data-q="Explain the difference between calling a model via API and self-hosting its open weights, for licensing.">
+              <span class="suggest-k">Explain</span>
+              API access vs. self-hosting weights
+            </button>
+          </div>
+        </div>
+        <!-- Messages injected here -->
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <div class="turn-status" id="turnStatus" hidden>
+          <span class="spinner"></span>
+          <span class="turn-phase" id="turnPhase">Working…</span>
+          <span class="turn-elapsed" id="turnElapsed">0s</span>
+          <button type="button" class="turn-stop" id="turnStop" title="Stop this turn">Stop</button>
+          <div class="turn-bar"><div class="turn-bar-fill"></div></div>
+        </div>
+        <div class="attach-chips" id="attachChips" hidden></div>
+        <form class="composer" id="composer" autocomplete="off">
+          <button type="button" class="attach-btn mic-btn" id="micBtn" aria-label="Voice input" title="Click to dictate" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.92V21h2v-3.08A7 7 0 0019 11h-2z"/></svg>
+          </button>
+          <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach files" title="Attach images or files">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 11.5l-8.5 8.5a5 5 0 01-7-7l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.3-2.3l7.8-7.8"/></svg>
+          </button>
+          <input type="file" id="chatFile" multiple hidden
+            accept="image/*,.pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.py,.js,.ts,.tsx,.java,.c,.cpp,.h,.go,.rb,.rs,.sql,.html,.xml,.xlsx,.log" />
+          <textarea id="input" class="composer-input" rows="1"
+            placeholder="Message Agent Jo…  (Enter to send, Shift+Enter for a new line)"></textarea>
+          <button type="submit" class="send" id="sendBtn" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3.4 20.4l17.6-8.4L3.4 3.6 3.4 10l11 2-11 2z"/></svg>
+          </button>
+        </form>
+        <div class="composer-foot">
+          <span id="composerHint">Agent Jo can make mistakes - verify important outputs.</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ============ Engines modal ============ -->
+  <div class="modal-backdrop" id="engineModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="engineModalTitle">
+      <div class="modal-head">
+        <h2 id="engineModalTitle">Engines</h2>
+        <button class="icon-btn" id="closeEngineModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Add any OpenAI-compatible endpoint - OpenAI, Groq, Mistral, OpenRouter,
+        or a local Ollama / vLLM server. It appears in the engine picker right away.
+        API keys are <b>encrypted at rest</b> - they're never written to disk in
+        plain text.
+      </p>
+
+      <div class="issues-toolbar">
+        <button class="btn ghost btn-mini" id="modelLabBtn"
+                title="What runs on your card, and how to build your own from one">Open-weight models</button>
+      </div>
+
+      <div class="dash-edit" id="modelLab" hidden>
+        <div class="dash-edit-head">
+          <span>What will run on your card</span>
+          <button class="btn ghost btn-mini" id="modelLabClose">Close</button>
+        </div>
+        <div class="doc-note">
+          Weights plus context, against your VRAM minus what the display
+          already holds.
+          <label style="margin-left:8px">Your VRAM
+            <input type="number" id="modelVram" class="model-input"
+                   style="width:64px" value="24" min="2" max="200" step="1" /> GB
+          </label>
+          <button class="btn ghost btn-mini" id="modelFitBtn">What fits?</button>
+        </div>
+        <div id="modelFits" class="out-log" style="max-height:190px;margin-top:6px"></div>
+
+        <div class="dash-edit-head" style="margin-top:12px">
+          <span>Build your own engine from one</span>
+        </div>
+        <div class="doc-note">
+          Same weights, your standing instructions and settings, under a new
+          name. Seconds, no training, and it becomes an engine you can pin to
+          a feature.
+        </div>
+        <div class="issues-toolbar">
+          <input type="text" id="modelNewName" class="model-input"
+                 style="flex:1" placeholder="fx-analyst" />
+          <input type="text" id="modelBase" class="model-input"
+                 style="flex:1" placeholder="qwen3:14b" />
+          <input type="number" id="modelTemp" class="model-input"
+                 style="width:76px" placeholder="temp" step="0.1" min="0" max="2" />
+          <input type="number" id="modelCtx" class="model-input"
+                 style="width:92px" placeholder="context" step="1024" />
+        </div>
+        <textarea id="modelSystem" class="model-input" rows="3"
+                  style="width:100%" placeholder="Its standing instructions — e.g. You are an FX desk analyst. Be terse. Never guess a rate."></textarea>
+        <div class="issues-toolbar">
+          <button class="btn primary btn-mini" id="modelDeriveBtn">Create this engine</button>
+          <button class="btn ghost btn-mini" id="modelTrainBtn">What would fine-tuning take?</button>
+        </div>
+        <div id="modelOut" class="out-log" style="max-height:220px;margin-top:6px"></div>
+      </div>
+
+      <div class="engine-grid">
+        <label class="field">
+          <span>Name</span>
+          <input id="fName" placeholder="e.g. GPT-4o (work)" />
+        </label>
+        <label class="field">
+          <span>Model id</span>
+          <input id="fModel" placeholder="e.g. gpt-4o-mini" />
+        </label>
+        <label class="field field-wide">
+          <span>Base URL</span>
+          <input id="fUrl" placeholder="https://api.openai.com/v1" />
+        </label>
+        <label class="field field-wide">
+          <span>API key <em>(blank for keyless local endpoints)</em></span>
+          <input id="fKey" type="password" placeholder="sk-…" />
+        </label>
+        <label class="field">
+          <span>Input price <em>(USD / million tokens)</em></span>
+          <input id="fPriceIn" type="number" min="0" step="0.01" placeholder="0.00" />
+        </label>
+        <label class="field">
+          <span>Output price <em>(USD / million tokens)</em></span>
+          <input id="fPriceOut" type="number" min="0" step="0.01" placeholder="0.00" />
+        </label>
+      </div>
+      <div class="engine-checks">
+        <label class="chk"><input type="checkbox" id="fTools" checked /> Supports tools (function-calling)</label>
+        <label class="chk"><input type="checkbox" id="fStream" checked /> Supports streaming</label>
+      </div>
+      <p class="engine-price-hint">Prices are used only for the running cost estimate. Leave at 0 for free/local endpoints.</p>
+      <div class="modal-actions">
+        <button class="btn ghost" id="testEngineBtn">Test connection</button>
+        <button class="btn primary" id="saveEngineBtn">Save engine</button>
+        <span class="engine-status" id="engineStatus"></span>
+      </div>
+
+      <div class="engine-existing">
+        <div class="conv-label">Your engines</div>
+        <div class="doc-pathrow" style="margin:6px 0 10px">
+          <button class="btn ghost" id="enableLocalBtn">Make local models selectable</button>
+          <span class="issues-hint">Turns your installed Ollama models into removable engines that run directly — fixes a local pick falling back to Claude.</span>
+        </div>
+        <div id="customEngineList" class="custom-engine-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <!-- ============ Documents modal ============ -->
+  <div class="modal-backdrop" id="documentsModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="documentsTitle">
+      <div class="modal-head">
+        <h2 id="documentsTitle">Documents</h2>
+        <button class="icon-btn" id="closeDocumentsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Index files so Agent Jo can consult them while you chat (it calls a
+        <code>search_documents</code> tool when relevant). Text and code files
+        work anywhere; PDF and Word need the optional libraries. Everything is
+        stored and searched locally.
+      </p>
+
+      <div class="doc-dropzone" id="docDrop">
+        <input type="file" id="docFile" multiple hidden />
+        <div class="doc-drop-title">Drop files here or <span class="link">browse</span></div>
+        <div class="doc-drop-sub">.txt .md .pdf .docx .csv .json and code files</div>
+      </div>
+
+      <div class="doc-pathrow">
+        <input id="docPath" placeholder="…or index a file/folder by path on this machine" />
+        <button class="btn ghost btn-mini" id="docSurveyBtn"
+                  title="Count what's in there before spending time indexing it">What's in there?</button>
+          <button class="btn ghost" id="docPathBtn">Index path</button>
+          <button class="btn ghost btn-mini" id="docStopBtn" hidden
+                  title="Stop after the current pass — everything done so far is saved">Stop</button>
+      </div>
+
+      <div class="issues-toolbar">
+        <span class="issues-count">Watched folders <span class="issues-hint">(new &amp; changed files auto-ingest on a schedule)</span></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost btn-mini" id="wfScanBtn">Scan now</button>
+      </div>
+      <div class="doc-pathrow">
+        <input id="wfPath" placeholder="Folder to watch, e.g. C:\Users\itume\Documents\notes" />
+        <button class="btn ghost" id="wfAddBtn">Watch</button>
+      </div>
+      <div class="out-log" id="wfList"></div>
+      <div class="doc-note" id="wfStatus"></div>
+
+      <div class="doc-stats" id="docStats"></div>
+      <div class="doc-note" id="docNote" hidden></div>
+      <div class="doc-list" id="docList"></div>
+
+      <div class="doc-search">
+        <input id="docSearch" placeholder="Test retrieval - search your indexed documents" />
+        <button class="btn ghost" id="docSearchBtn">Search</button>
+      </div>
+      <div class="doc-results" id="docResults"></div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" id="docClearBtn">Remove all</button>
+        <span class="engine-status" id="docStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Memory modal ============ -->
+  <div class="modal-backdrop" id="memoryModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="memoryTitle">
+      <div class="modal-head">
+        <h2 id="memoryTitle">Memory</h2>
+        <button class="icon-btn" id="closeMemoryModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Facts Agent Jo remembers about you and skills you've taught it. These are
+        injected into context so it stays personalised. Shared with the desktop app.
+      </p>
+
+      <div class="mem-tabs">
+        <button class="mem-tab active" data-tab="memories" id="memTabMemories">Memories</button>
+        <button class="mem-tab" data-tab="skills" id="memTabSkills">Skills</button>
+      </div>
+
+      <!-- Memories pane -->
+      <div class="mem-pane" id="memPaneMemories">
+        <div class="doc-search">
+          <input id="memSearch" placeholder="Search memories" />
+          <button class="btn ghost" id="memSearchBtn">Search</button>
+          <button class="btn ghost" id="memClearSearch">All</button>
+        </div>
+        <div class="mem-addrow">
+          <input id="memContent" placeholder="Add a fact to remember…" />
+          <input id="memCategory" class="mem-cat-input" placeholder="category" />
+          <button class="btn primary" id="memAddBtn">Add</button>
+        </div>
+        <div class="doc-stats" id="memStats"></div>
+        <div class="mem-list" id="memList"></div>
+      </div>
+
+      <!-- Skills pane -->
+      <div class="mem-pane" id="memPaneSkills" hidden>
+        <div class="skill-form">
+          <div class="engine-grid">
+            <label class="field"><span>Name</span><input id="skName" placeholder="e.g. weekly-report" /></label>
+            <label class="field"><span>Short description</span><input id="skDesc" placeholder="what it does" /></label>
+          </div>
+          <label class="field field-wide">
+            <span>Instructions</span>
+            <textarea id="skInstr" rows="3" placeholder="Step-by-step instructions Agent Jo should follow…"></textarea>
+          </label>
+          <div class="modal-actions">
+            <button class="btn primary" id="skAddBtn">Save skill</button>
+            <span class="engine-status" id="memStatus"></span>
+          </div>
+        </div>
+        <div class="mem-list" id="skillList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Permissions modal ============ -->
+  <div class="modal-backdrop" id="permsModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="permsTitle">
+      <div class="modal-head">
+        <h2 id="permsTitle">Permissions</h2>
+        <button class="icon-btn" id="closePermsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Standing "always allow" rules. A <b>command</b> rule lets Agent Jo run any
+        command starting with that prefix without asking; a <b>write directory</b>
+        rule lets it write under that folder. These are what Full-access mode and
+        the approval prompts grant - revoke anything you don't want here.
+      </p>
+
+      <div class="mem-addrow">
+        <select id="permKind" class="perm-kind-select">
+          <option value="command">Command prefix</option>
+          <option value="write_dir">Write directory</option>
+        </select>
+        <input id="permPattern" placeholder="e.g. npm run   or   C:\Users\itume\projects" />
+        <button class="btn primary" id="permAddBtn">Allow</button>
+      </div>
+      <div class="doc-stats" id="permStats"></div>
+      <div class="mem-list" id="permList"></div>
+      <div class="modal-actions">
+        <span class="engine-status" id="permStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Tasks & Scheduler modal ============ -->
+  <div class="modal-backdrop" id="schedModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="schedTitle">
+      <div class="modal-head">
+        <h2 id="schedTitle">Tasks &amp; Scheduler</h2>
+        <button class="icon-btn" id="closeSchedModal" aria-label="Close">✕</button>
+      </div>
+
+      <div class="mem-tabs">
+        <button class="mem-tab active" id="schedTabSchedules">Schedules</button>
+        <button class="mem-tab" id="schedTabTasks">Tasks</button>
+      </div>
+
+      <!-- Schedules pane -->
+      <div class="mem-pane" id="schedPaneSchedules">
+        <p class="modal-intro">
+          Instructions Agent Jo runs on its own. Each run gets its own session and
+          lands in history. The app must be running for schedules to fire.
+        </p>
+        <div class="sched-form">
+          <div class="engine-grid">
+            <label class="field"><span>Name</span><input id="schName" placeholder="e.g. Morning FX brief" /></label>
+            <label class="field"><span>Frequency</span>
+              <select id="schKind" class="perm-kind-select sched-sel">
+                <option value="minutes">Every N minutes</option>
+                <option value="hourly">Hourly (on the hour)</option>
+                <option value="daily" selected>Daily</option>
+                <option value="weekdays">Weekdays</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </label>
+          </div>
+          <label class="field field-wide"><span>Instruction</span>
+            <textarea id="schPrompt" rows="2" placeholder="What should Agent Jo do each time it runs?"></textarea>
+          </label>
+          <div class="engine-grid">
+            <label class="field" id="schTimeWrap"><span>Time (HH:MM, 24h)</span><input id="schTime" value="07:00" /></label>
+            <label class="field" id="schMinWrap" hidden><span>Interval (minutes)</span><input id="schN" type="number" min="1" max="1440" value="60" /></label>
+            <label class="field" id="schDowWrap" hidden><span>Day of week</span>
+              <select id="schDow" class="perm-kind-select sched-sel">
+                <option value="0">Monday</option>
+                <option value="1">Tuesday</option>
+                <option value="2">Wednesday</option>
+                <option value="3">Thursday</option>
+                <option value="4">Friday</option>
+                <option value="5">Saturday</option>
+                <option value="6">Sunday</option>
+              </select>
+            </label>
+            <label class="field"><span>Engine</span>
+              <select id="schEngine" class="perm-kind-select sched-sel"></select>
+            </label>
+          </div>
+          <label class="sched-full">
+            <input type="checkbox" id="schFull" />
+            <span>Full access during the run (auto-approve commands &amp; file writes)</span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn primary" id="schCreateBtn">Create schedule</button>
+            <span class="engine-status" id="schStatus"></span>
+          </div>
+        </div>
+        <div class="mem-list" id="schedList"></div>
+      </div>
+
+      <!-- Tasks pane -->
+      <div class="mem-pane" id="schedPaneTasks" hidden>
+        <p class="modal-intro">
+          Multi-step plans Agent Jo creates while working through bigger jobs. These
+          are read-only - they update themselves as it makes progress.
+        </p>
+        <div class="ap-arm" id="arArmRow">
+          <div>
+            <div class="ap-state" id="arState">Auto-resume: off</div>
+            <div class="ap-hint">When armed, Agent Jo periodically picks up tasks that have stalled and nudges them forward on its own — bounded: only tasks idle a while, a capped number of no-progress attempts each, never tasks waiting on you, and sending still obeys the outreach allowlist.</div>
+          </div>
+          <button class="btn danger" id="arPauseBtn" title="Disarm auto-resume now">⏻ Pause</button>
+        </div>
+        <div class="engine-checks">
+          <label class="chk"><input type="checkbox" id="arEnabled" /> <b>Arm auto-resume</b></label>
+          <label class="chk"><input type="checkbox" id="arFull" /> Allow it to run commands/writes unattended (full access)</label>
+        </div>
+        <div class="ap-sched-row" style="border-top:none;padding-top:0">
+          <span class="ap-sched-label">Sweep</span>
+          <select id="arCadence">
+            <option value="hourly">Hourly</option>
+            <option value="daily">Daily</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="minutes">Every N min</option>
+          </select>
+          <span class="ap-sched-label">idle ≥</span><input id="arIdle" class="ap-sched-time" placeholder="30" title="minutes" />
+          <span class="ap-sched-label">tries</span><input id="arAttempts" class="ap-sched-time" placeholder="3" title="max no-progress attempts" />
+          <span class="ap-sched-label">per sweep</span><input id="arPerSweep" class="ap-sched-time" placeholder="3" />
+          <button class="btn primary" id="arSaveBtn">Save</button>
+          <button class="btn ghost" id="arPreviewBtn">Preview</button>
+          <button class="btn ghost" id="arRunBtn">Run sweep now</button>
+          <span class="engine-status" id="arStatus"></span>
+        </div>
+        <div class="sched-preview" id="arPreview" hidden></div>
+        <div class="mem-list" id="taskList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Settings modal ============ -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button class="icon-btn" id="closeSettingsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Runtime behaviour - changes apply immediately and persist. These are the
+        same settings as the desktop app (shared <code>settings.json</code>).
+      </p>
+      <div id="modelsSection" class="settings-body"></div>
+      <div id="settingsBody" class="settings-body"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="resetSettingsBtn">Reset to defaults</button>
+        <button class="btn primary" id="saveSettingsBtn">Save settings</button>
+        <span class="engine-status" id="settingsStatus"></span>
+      </div>
+
+      <div class="security-section">
+        <div class="sec-head">Security</div>
+        <p class="sec-intro">
+          Require a password to open this workspace. Off by default (fine on
+          localhost) - turn it on before exposing the app on a network.
+        </p>
+        <div id="securityBody"></div>
+        <div class="engine-status" id="securityStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Outreach modal ============ -->
+  <div class="modal-backdrop" id="outreachModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="outreachTitle">
+      <div class="modal-head">
+        <h2 id="outreachTitle">Outreach</h2>
+        <button class="icon-btn" id="closeOutreachModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Send email <b>from your own account</b> — single messages or a personalised
+        campaign. Credentials are <b>encrypted at rest</b>. Sending is rate-limited
+        and every send is logged. Only email people who expect to hear from you; on a
+        work device, check it's allowed first.
+      </p>
+
+      <div class="out-tabs">
+        <button class="out-tab sel" data-tab="setup">Setup</button>
+        <button class="out-tab" data-tab="send">Quick send</button>
+        <button class="out-tab" data-tab="campaign">Campaign</button>
+        <button class="out-tab" data-tab="auto">Auto-pilot</button>
+        <button class="out-tab" data-tab="watch">Watchers</button>
+        <button class="out-tab" data-tab="log">Activity</button>
+      </div>
+
+      <!-- setup -->
+      <section class="out-pane" data-pane="setup">
+        <div class="engine-grid">
+          <label class="field"><span>SMTP host</span><input id="emHost" placeholder="smtp.gmail.com" /></label>
+          <label class="field"><span>Port</span><input id="emPort" placeholder="587" /></label>
+          <label class="field"><span>Username</span><input id="emUser" placeholder="you@example.com" /></label>
+          <label class="field"><span>Password / app-password</span><input id="emPass" type="password" placeholder="••••••••" /></label>
+          <label class="field"><span>From address</span><input id="emFrom" placeholder="you@example.com" /></label>
+          <label class="field"><span>From name</span><input id="emName" placeholder="Your Name" /></label>
+          <label class="field field-wide"><span>Signature / footer <em>(optional, appended to every email)</em></span><input id="emFooter" placeholder="— Your Name, Company" /></label>
+        </div>
+        <div class="engine-checks">
+          <label class="chk"><input type="checkbox" id="emTls" checked /> Use TLS/STARTTLS</label>
+          <label class="chk"><input type="checkbox" id="emEnabled" /> Enable sending (off = drafts only)</label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn primary" id="emSaveBtn">Save</button>
+          <button class="btn ghost" id="emTestBtn">Send test to myself</button>
+          <span class="engine-status" id="emStatus"></span>
+        </div>
+      </section>
+
+      <!-- quick send -->
+      <section class="out-pane" data-pane="send" hidden>
+        <label class="field field-wide"><span>To</span><input id="qsTo" placeholder="person@example.com" /></label>
+        <label class="field field-wide"><span>Subject</span><input id="qsSubject" placeholder="Subject" /></label>
+        <label class="field field-wide"><span>Message</span><textarea id="qsBody" rows="7" placeholder="Write your email…"></textarea></label>
+        <div class="modal-actions">
+          <button class="btn ghost" id="qsPreviewBtn">Preview (dry run)</button>
+          <button class="btn primary" id="qsSendBtn">Send</button>
+          <span class="engine-status" id="qsStatus"></span>
+        </div>
+      </section>
+
+      <!-- campaign -->
+      <section class="out-pane" data-pane="campaign" hidden>
+        <p class="modal-intro" style="margin-top:0">
+          One recipient per line as <code>email, First Name, Company</code>. Use
+          <code>{first_name}</code>, <code>{company}</code>, <code>{email}</code> in
+          the subject and body to personalise.
+        </p>
+        <label class="field field-wide"><span>Recipients</span><textarea id="cpContacts" rows="5" placeholder="sam@acme.com, Sam, Acme&#10;jo@beta.io, Jo, Beta"></textarea></label>
+        <label class="field field-wide"><span>Subject template</span><input id="cpSubject" placeholder="Quick question, {first_name}" /></label>
+        <label class="field field-wide"><span>Body template</span><textarea id="cpBody" rows="6" placeholder="Hi {first_name},&#10;&#10;I noticed {company}…"></textarea></label>
+        <div class="modal-actions">
+          <button class="btn ghost" id="cpDraftBtn">Render drafts</button>
+          <label class="chk" style="margin:0 6px"><input type="checkbox" id="cpConfirm" /> I've reviewed — really send</label>
+          <button class="btn primary" id="cpSendBtn">Send campaign</button>
+          <span class="engine-status" id="cpStatus"></span>
+        </div>
+        <div class="out-drafts" id="cpDrafts"></div>
+      </section>
+
+      <!-- auto-pilot -->
+      <section class="out-pane" data-pane="auto" hidden>
+        <div class="ap-arm" id="apArmRow">
+          <div>
+            <div class="ap-state" id="apState">Auto-pilot: disarmed</div>
+            <div class="ap-hint">When armed, the agent sends this job end-to-end with no per-email approval — but only to addresses you've approved below, capped per run, and always logged.</div>
+          </div>
+          <button class="btn danger" id="apPauseBtn" title="Immediately disarm all autonomous sending">⏻ Pause all</button>
+        </div>
+        <div class="engine-checks">
+          <label class="chk"><input type="checkbox" id="apEnabled" /> <b>Arm auto-pilot</b> (allow unattended sending)</label>
+          <label class="chk"><input type="checkbox" id="apRequireAllow" checked /> Only send to approved recipients (recommended)</label>
+        </div>
+        <div class="engine-grid">
+          <label class="field"><span>Max emails per run</span><input id="apMaxPerRun" placeholder="25" /></label>
+        </div>
+        <label class="field field-wide"><span>Approved recipients <em>(comma/newline separated)</em></span><textarea id="apRecipients" rows="2" placeholder="sam@acme.com, jo@beta.io"></textarea></label>
+        <label class="field field-wide"><span>Approved domains <em>(everyone @ these domains)</em></span><input id="apDomains" placeholder="acme.com, beta.io" /></label>
+        <div class="modal-actions">
+          <button class="btn primary" id="apSaveBtn">Save policy</button>
+          <span class="engine-status" id="apStatus"></span>
+        </div>
+        <hr class="ap-sep" />
+        <p class="modal-intro" style="margin:0 0 10px">Run a job now — uses the same <code>{first_name}</code> / <code>{company}</code> placeholders. Recipients: <code>email, First Name, Company</code> per line.</p>
+        <label class="field field-wide"><span>Recipients</span><textarea id="apJobContacts" rows="3" placeholder="sam@acme.com, Sam, Acme"></textarea></label>
+        <label class="field field-wide"><span>Subject template</span><input id="apJobSubject" placeholder="Following up, {first_name}" /></label>
+        <label class="field field-wide"><span>Body template</span><textarea id="apJobBody" rows="4" placeholder="Hi {first_name}, …"></textarea></label>
+        <div class="modal-actions">
+          <button class="btn ghost" id="apDryRunBtn">Dry run (no send)</button>
+          <button class="btn primary" id="apRunBtn">Run autonomously now</button>
+          <span class="engine-status" id="apRunStatus"></span>
+        </div>
+        <div class="ap-sched-row">
+          <span class="ap-sched-label">Or run it on repeat:</span>
+          <select id="apSchedKind">
+            <option value="daily">Daily</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="hourly">Hourly</option>
+            <option value="weekly">Weekly</option>
+            <option value="minutes">Every N min</option>
+          </select>
+          <input id="apSchedTime" placeholder="07:00" class="ap-sched-time" />
+          <button class="btn primary" id="apScheduleBtn">Schedule it</button>
+          <span class="engine-status" id="apSchedStatus"></span>
+        </div>
+      </section>
+
+      <!-- watchers -->
+      <section class="out-pane" data-pane="watch" hidden>
+        <p class="modal-intro" style="margin-top:0">
+          Monitor a web page or a search query on a schedule. When it <b>changes</b>,
+          the agent gets the change and decides what to do — summarise it, draft
+          outreach, or (only if auto-pilot is armed and the recipient is approved) send.
+          Watchers themselves never send; they just hand the change to the agent.
+        </p>
+        <div class="engine-grid">
+          <label class="field"><span>Name</span><input id="wName" placeholder="Competitor pricing page" /></label>
+          <label class="field"><span>Type</span>
+            <select id="wType"><option value="url">Web page (URL)</option><option value="search">Search query</option></select>
+          </label>
+          <label class="field field-wide"><span>Source <em>(a URL, or search terms)</em></span><input id="wSource" placeholder="https://example.com/pricing" /></label>
+        </div>
+        <label class="field field-wide"><span>What should the agent do when it changes?</span><textarea id="wInstruction" rows="3" placeholder="Summarise what changed. If it affects my approved contacts, draft (or send, if armed) a short heads-up."></textarea></label>
+        <div class="engine-checks">
+          <label class="chk"><input type="radio" name="wMode" id="wModeDraft" value="draft" checked /> <b>Observe</b> — agent drafts, never sends (recommended to start)</label>
+          <label class="chk"><input type="radio" name="wMode" id="wModeSend" value="send" /> <b>Send</b> — agent may send (still only to approved recipients, if armed)</label>
+        </div>
+        <div class="ap-sched-row" style="border-top:none;padding-top:0">
+          <span class="ap-sched-label">Check</span>
+          <select id="wKind">
+            <option value="hourly">Hourly</option>
+            <option value="daily">Daily</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="minutes">Every N min</option>
+          </select>
+          <input id="wTime" placeholder="07:00" class="ap-sched-time" />
+          <label class="chk" style="margin:0 4px"><input type="checkbox" id="wFull" /> full access</label>
+          <button class="btn primary" id="wCreateBtn">Create watcher</button>
+          <span class="engine-status" id="wStatus"></span>
+        </div>
+        <p class="modal-intro" style="margin-top:12px">Manage, pause, or delete watchers in the <b>Scheduler</b> tab (they appear alongside your schedules with a 👁 prefix).</p>
+      </section>
+
+      <!-- log -->
+      <section class="out-pane" data-pane="log" hidden>
+        <div class="modal-actions"><button class="btn ghost" id="emLogBtn">Refresh activity</button></div>
+        <div class="out-log" id="emLog"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ Autonomy dashboard ============ -->
+  <div class="modal-backdrop" id="autonomyModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="autonomyTitle">
+      <div class="modal-head">
+        <h2 id="autonomyTitle">Autonomy</h2>
+        <button class="icon-btn" id="closeAutonomyModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Everything Agent Jo can do on its own, in one place. Each system is armed
+        separately and is off by default. The button below stops all of it at once.
+      </p>
+      <div class="auto-cards" id="autoCards"></div>
+      <div class="budget-box" id="budgetBox">
+        <div class="budget-head">
+          <span class="budget-title">Spend cap</span>
+          <span class="budget-figure" id="budgetFigure">No cap set</span>
+        </div>
+        <div class="budget-bar" id="budgetBarWrap" hidden><div class="budget-fill" id="budgetFill"></div></div>
+        <div class="budget-row">
+          <span class="budget-hint">$</span>
+          <input id="budgetInput" type="number" min="0" step="0.5" placeholder="0 = no cap" />
+          <button class="btn primary" id="budgetSaveBtn">Set cap</button>
+          <span class="budget-note">When reached, autonomous actions pause (chat is only warned).</span>
+        </div>
+      </div>
+      <div class="modal-actions" style="margin-top:6px">
+        <button class="btn danger" id="autoPauseAllBtn">⏻ Pause all autonomy</button>
+        <button class="btn ghost" id="autoRefreshBtn">Refresh</button>
+        <span class="engine-status" id="autoMasterStatus"></span>
+      </div>
+      <h3 class="auto-feed-h">Recent autonomous actions</h3>
+      <div class="out-log" id="autoFeed"></div>
+    </div>
+  </div>
+
+  <!-- ============ MCP servers ============ -->
+  <div class="modal-backdrop" id="mcpModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="mcpTitle">
+      <div class="modal-head">
+        <h2 id="mcpTitle">MCP servers</h2>
+        <button class="icon-btn" id="closeMcpModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Connect external tool servers via the Model Context Protocol — GitHub,
+        filesystems, databases and hundreds more. Their tools become available to
+        the agent (named <code>mcp_…</code>). Adding a server means the agent can
+        use everything it offers, so only add servers you trust.
+      </p>
+      <div class="issues-toolbar">
+        <button class="btn primary btn-mini" id="mcpDiscoverBtn">Find servers</button>
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="mcpStale" /> include unmaintained
+        </label>
+        <span style="flex:1"></span>
+        <span class="issues-count" id="mcpDiscoverCount"></span>
+      </div>
+      <div class="portal-list" id="mcpDiscoverList" hidden
+           style="max-height:280px;margin-bottom:10px"></div>
+
+      <div class="mcp-form">
+        <div class="mcp-row">
+          <input type="text" id="mcpName" placeholder="Name (e.g. github)" />
+          <select id="mcpTransport" class="model-select">
+            <option value="stdio">stdio (local command)</option>
+            <option value="http">http (remote URL)</option>
+          </select>
+        </div>
+        <input type="text" id="mcpCommand" placeholder="Command, e.g. npx -y @modelcontextprotocol/server-github" />
+        <input type="text" id="mcpUrl" placeholder="https://host/mcp" hidden />
+        <textarea id="mcpEnv" rows="2" placeholder="Environment (stdio) — one KEY=VALUE per line, e.g. GITHUB_TOKEN=ghp_..."></textarea>
+        <textarea id="mcpHeaders" rows="2" placeholder="Headers (http) — one 'Header: value' per line" hidden></textarea>
+        <div class="modal-actions">
+          <button class="btn primary" id="mcpAddBtn">Add &amp; connect</button>
+          <span class="engine-status" id="mcpStatus"></span>
+        </div>
+      </div>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="mcpCount"></span>
+      </div>
+      <div class="out-log" id="mcpList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Jobs ============ -->
+  <div class="modal-backdrop" id="jobsModal" hidden>
+    <div class="modal modal-portal" role="dialog" aria-modal="true" aria-labelledby="jobsTitle">
+      <div class="modal-head">
+        <h2 id="jobsTitle">Jobs</h2>
+        <button class="icon-btn" id="closeJobsModal" aria-label="Close">✕</button>
+      </div>
+
+      <div class="pipeline" id="jobsPipeline" hidden></div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab is-on" id="jobsTabFind" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 1.8a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM10.4 10.4 14.2 14.2"/></svg><span>Find</span></button>
+        <button class="tab" id="jobsTabTracked" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.4 5.6 12 14 3.2"/></svg><span>Tracked</span><span class="tab-badge" id="jobsBadgeTracked" hidden></span></button>
+        <button class="tab" id="jobsTabClaims" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8v7M8 12.2h.01M8 1.8 1.8 13.4h12.4z"/></svg><span>Held</span><span class="tab-badge" id="jobsBadgeClaims" hidden></span></button>
+        <button class="tab" id="jobsTabResults" role="tab">
+          <svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+               stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M2 13V7M6 13V3M10 13v-4M14 13V5"/></svg>
+          <span>Results</span></button>
+                <button class="tab" id="jobsTabAuto" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8v4.4M8 1.8 5.4 4.4M8 1.8l2.6 2.6M2.6 8.4v3.8h10.8V8.4"/></svg><span>Auto-apply</span></button>
+        <button class="tab" id="jobsTabWhere" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 8h12.4M8 1.8a11 11 0 0 1 0 12.4 11 11 0 0 1 0-12.4zM8 1.8a6.2 6.2 0 1 0 0 12.4 6.2 6.2 0 0 0 0-12.4z"/></svg><span>Sites</span></button>
+        <span style="flex:1"></span>
+        <span class="issues-count" id="jobsInfo"></span>
+      </div>
+
+      <!-- FIND -->
+      <section class="tabpane" id="jobsPaneFind">
+        <div class="search-bar">
+          <svg class="search-ico" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+               aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
+          <input type="text" id="jobsQuery" class="search-input"
+                 placeholder="data engineer, power bi — or paste a job page URL" />
+          <button class="btn primary btn-mini" id="jobsSearchBtn">Search</button>
+          <button class="btn ghost btn-mini" id="jobsUrlBrowserBtn" hidden
+                  title="Load the page in a real browser — for sites that block readers or build their list in JavaScript">Use browser</button>
+        </div>
+        <input type="hidden" id="jobsUrl" />
+        <button id="jobsUrlBtn" hidden></button>
+        <div class="skip-line" id="jobsSkipped"
+             title="Hover for the full breakdown"></div>
+        <div class="portal-split">
+          <div class="portal-list" id="jobsResults"></div>
+          <div class="portal-detail" id="jobsFindDetail"></div>
+        </div>
+      </section>
+
+      <!-- TRACKED -->
+      <section class="tabpane" id="jobsPaneTracked" hidden>
+        <div class="issues-toolbar">
+          <select id="jobsSort" class="model-select" title="Order">
+            <option value="fit">Best fit first</option>
+            <option value="new">Newest first</option>
+            <option value="company">By company</option>
+            <option value="stage">By stage</option>
+          </select>
+          <select id="jobsStageFilter" class="model-select">
+            <option value="">All stages</option>
+            <option value="found">Found</option>
+            <option value="drafted">Drafted</option>
+            <option value="applied">Applied</option>
+            <option value="responded">Responded</option>
+            <option value="interview">Interview</option>
+            <option value="offer">Offer</option>
+            <option value="closed">Closed</option>
+          </select>
+          <span style="flex:1"></span>
+          <span class="issues-count" id="jobsTrackedCount"></span>
+          <button class="btn ghost btn-mini" id="jobsPruneBtn"
+                  title="Remove entries that were never vacancies — scraped category links">Remove non-jobs</button>
+          <button class="btn ghost btn-mini" id="jobsClearBtn"
+                  title="Remove every role at the stage selected on the left">Clear stage</button>
+        </div>
+        <div class="list-controls compact">
+          <button class="chip" id="jobsChipEmail" type="button">Can email</button>
+          <button class="chip" id="jobsChipStrong" type="button">Fit 75+</button>
+          <button class="chip" id="jobsChipUnscored" type="button">Not scored</button>
+          <button class="chip" id="jobsChipOpen" type="button">Still open</button>
+          <button class="chip" id="jobsChipArchive" type="button">Archive</button>
+          <span style="flex:1"></span>
+          <button class="btn ghost btn-mini" id="jobsArchiveBtn"
+                  title="Move closed and expired roles out of the list — kept, not deleted">Archive closed</button>
+                    <button class="btn ghost btn-mini" id="jobsSweepBtn"
+                  title="Check the oldest adverts and close the ones that say they've shut">Check for expired</button>
+        </div>
+        <div class="bulk-bar" id="jobsBulk" hidden>
+          <span id="jobsBulkCount"></span>
+          <span style="flex:1"></span>
+          <button class="btn ghost btn-mini" id="jobsBulkScore">Score these</button>
+          <button class="btn ghost btn-mini" id="jobsBulkRemove">Not interested</button>
+          <button class="btn ghost btn-mini" id="jobsBulkClear">Clear</button>
+        </div>
+        <div class="portal-split">
+          <div class="portal-list" id="jobsList"></div>
+          <div class="portal-detail" id="jobsDetail"></div>
+        </div>
+      </section>
+
+      <!-- CLAIMS -->
+      <section class="tabpane" id="jobsPaneClaims" hidden>
+        <p class="modal-intro">
+          These drafts were held back because they say something your profile
+          can't back up. Nearly always the claim is true and simply isn't
+          written down — confirm it and the drafts clear immediately. If it
+          isn't true, dismiss it and it won't be used again.
+        </p>
+        <div class="portal-split">
+          <div class="portal-list" id="jobsClaimList"></div>
+          <div class="portal-detail" id="jobsClaimDetail"></div>
+        </div>
+      </section>
+
+      <!-- RESULTS -->
+      <section class="tabpane" id="jobsPaneResults" hidden>
+        <div class="auto-summary" id="jobsResultsHead"></div>
+        <div class="portal-split">
+          <div class="portal-list" id="jobsFindings"></div>
+          <div class="portal-detail" id="jobsBreakdown"></div>
+        </div>
+      </section>
+
+            <!-- AUTO-APPLY -->
+      <section class="tabpane" id="jobsPaneAuto" hidden>
+        <div class="issues-toolbar">
+          <label style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="jobsAutoOn" /> <strong>Auto-apply on</strong>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="jobsDryRun" /> Rehearsal (send nothing)
+          </label>
+          <span style="flex:1"></span>
+          <select id="jobsEngine" class="model-select" title="Which engine scores and drafts"></select>
+          <button class="btn ghost btn-mini" id="jobsAutopilotBtn"
+                  title="Find, de-duplicate, screen, score, draft and apply — once a day, on its own">Run this daily</button>
+          <button class="btn primary btn-mini" id="jobsAutoRunBtn">Run now</button>
+        </div>
+        <div class="doc-note">
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+            <label>Minimum fit <input type="number" id="jobsMinScore" class="model-input" style="width:64px" min="0" max="100" /></label>
+            <label>Daily cap <input type="number" id="jobsCap" class="model-input" style="width:56px" min="1" max="50" /></label>
+            <label style="display:flex;align-items:center;gap:5px">
+              <input type="checkbox" id="jobsCleanOnly" /> only send drafts with no unsourced claims
+            </label>
+            <label style="display:flex;align-items:center;gap:5px">
+              <input type="checkbox" id="jobsDaily" /> run daily
+            </label>
+          </div>
+        </div>
+        <div class="auto-summary" id="jobsAutoSummary"></div>
+        <div class="portal-split" style="margin-top:10px">
+          <div class="portal-list" id="jobsAutoPreview"></div>
+          <div class="portal-detail" id="jobsAutoSide"></div>
+        </div>
+        <div class="portal-list" id="jobsAutoLog" hidden></div>
+      </section>
+
+      <!-- SITES -->
+      <section class="tabpane" id="jobsPaneWhere" hidden>
+        <div class="portal-split">
+          <div class="portal-list">
+            <h4 style="margin:4px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)">Your sites</h4>
+            <div id="jobsSourceList"></div>
+            <div class="issues-toolbar" style="margin-top:10px">
+              <input type="text" id="jobsSrcName" class="model-input" style="flex:1;min-width:90px" placeholder="Name" />
+              <input type="text" id="jobsSrcUrl" class="model-input" style="flex:2;min-width:130px" placeholder="Any job page or feed URL" />
+              <select id="jobsSrcKind" class="model-select">
+                <option value="html">Any web page</option>
+                <option value="rss">RSS feed</option>
+                <option value="remotive">Remotive API</option>
+                <option value="remoteok">RemoteOK API</option>
+              </select>
+              <button class="btn ghost btn-mini" id="jobsSrcAdd">Add</button>
+              <button class="btn primary btn-mini" id="jobsFindBoardsBtn"
+                      title="Find boards that suit your CV and serve somewhere you can work — each one checked before it's added">Find sites for me</button>
+            </div>
+            <h4 style="margin:16px 0 8px;font-size:11px;color:var(--faint)">Job alerts by email</h4>
+            <div class="doc-note">
+              Boards that block readers will email you the same listings.
+              Save your search as an alert on each, then paste one here — or
+              drop the .eml files in the alerts folder.
+            </div>
+            <textarea id="jobsAlertPaste" class="model-input" rows="4"
+                      style="width:100%;margin-top:6px"
+                      placeholder="Paste a job-alert email here, links and all"></textarea>
+            <div class="issues-toolbar">
+              <button class="btn primary btn-mini" id="jobsAlertPasteBtn">Read this email</button>
+              <button class="btn ghost btn-mini" id="jobsAlertFolderBtn">Read the alerts folder</button>
+              <button class="btn ghost btn-mini" id="jobsAlertGuideBtn">How do I set these up?</button>
+            </div>
+            <div id="jobsAlertOut" class="out-log" style="margin-top:6px;max-height:150px"></div>
+
+                        <h4 style="margin:16px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)">Suggestions</h4>
+            <div id="jobsSuggested"></div>
+          </div>
+          <div class="portal-detail">
+            <div class="detail-block">
+              <h4>What to ignore</h4>
+              <input type="text" id="jobsExclude" class="model-input" style="width:100%" placeholder="agency, unpaid, internship" />
+            </div>
+            <div class="detail-block">
+              <h4>Locations you'd accept</h4>
+              <input type="text" id="jobsLocations" class="model-input" style="width:100%" placeholder="South Africa, EMEA" />
+            </div>
+            <div class="detail-block">
+              <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <input type="checkbox" id="jobsRemoteOnly" /> Remote only (your accepted locations still come through)
+              </label>
+              <label style="display:flex;align-items:center;gap:6px">
+                <input type="checkbox" id="jobsNeedEmail" /> Only roles it can email — hides portal-only adverts
+              </label>
+            </div>
+            <div class="detail-block">
+              <h4>How this is used</h4>
+              <pre>These apply to searches and to the unattended daily run. Words to ignore are checked before your search terms, so a banned word always wins.</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="doc-note" id="jobsStatus"></div>
+      <div class="doc-note" id="jobsProfileHint"></div>
+      <pre id="jobsDraft" hidden></pre>
+    </div>
+  </div>
+
+  <!-- ============ Models ============ -->
+  <div class="modal-backdrop" id="mlModal" hidden>
+    <div class="modal modal-portal" role="dialog" aria-modal="true" aria-labelledby="mlTitle">
+      <div class="modal-head">
+        <h2 id="mlTitle">Models</h2>
+        <button class="icon-btn" id="closeMlModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Build a predictive model from a spreadsheet, free text, or a folder of
+        images. It works out which, drops columns that leak the answer, and
+        reports against what guessing would score.
+      </p>
+
+      <div class="search-bar">
+        <input type="text" id="mlPath" class="search-input"
+               placeholder="C:\Users\itume\Documents\customers.csv — or a folder of image folders" />
+        <input type="text" id="mlTarget" class="model-input" style="width:170px"
+               placeholder="column to predict" />
+        <button class="btn ghost btn-mini" id="mlLookBtn">Look at it</button>
+        <button class="btn primary btn-mini" id="mlTrainBtn">Build a model</button>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab is-on" id="mlTabData" role="tab">Data</button>
+        <button class="tab" id="mlTabBuild" role="tab">Result</button>
+        <button class="tab" id="mlTabPredict" role="tab">Predict</button>
+        <button class="tab" id="mlTabEngineer" role="tab">Data engineer</button>
+        <button class="tab" id="mlTabFeatures" role="tab">Features</button>
+        <button class="tab" id="mlTabTest" role="tab">Your test set</button>
+        <button class="tab" id="mlTabSaved" role="tab">Saved</button>
+        <span style="flex:1"></span>
+        <span class="log-meta" id="mlHardware"></span>
+      </div>
+
+      <section class="tabpane" id="mlPaneData">
+        <div class="auto-summary" id="mlDataHead"></div>
+        <div class="portal-split">
+          <div class="portal-list" id="mlIssues"></div>
+          <div class="portal-detail" id="mlPlan"></div>
+        </div>
+      </section>
+
+      <section class="tabpane" id="mlPaneBuild" hidden>
+        <div class="auto-summary" id="mlVerdict"></div>
+        <div class="portal-split">
+          <div class="portal-list" id="mlSteps"></div>
+          <div class="portal-detail" id="mlDetail"></div>
+        </div>
+      </section>
+
+      <section class="tabpane" id="mlPanePredict" hidden>
+        <div class="doc-note">
+          Enter one row as JSON, or a file path with rows to score. Columns the
+          model was trained on must all be present — a missing one is refused
+          rather than guessed.
+        </div>
+        <div class="issues-toolbar">
+          <select id="mlPredictModel" class="model-select" style="min-width:170px"></select>
+          <button class="btn primary btn-mini" id="mlPredictBtn">Predict</button>
+        </div>
+        <textarea id="mlRow" class="model-input" rows="4" style="width:100%"
+                  placeholder='{"tenure_months": 4, "support_tickets": 8, "monthly_spend": 400, "region": "JHB"}'></textarea>
+        <div class="portal-list" id="mlPredictions" style="margin-top:10px"></div>
+      </section>
+
+      <section class="tabpane" id="mlPaneEngineer" hidden>
+        <div class="doc-note">
+          One column at a time. Every action says what it did, and writes to a
+          new file — the original is never changed.
+        </div>
+        <div class="issues-toolbar">
+          <button class="btn ghost btn-mini" id="mlColsBtn">Load columns</button>
+          <span class="log-meta" id="mlEngStatus"></span>
+        </div>
+        <div class="portal-split">
+          <div class="portal-list" id="mlColumns"></div>
+          <div class="portal-detail" id="mlColDetail"></div>
+        </div>
+      </section>
+
+      <section class="tabpane" id="mlPaneFeatures" hidden>
+        <div class="doc-note">
+          Each feature is built and then measured on held-out data. One that
+          doesn't move the score is noise — it says so, and you leave it out.
+        </div>
+        <div class="issues-toolbar">
+          <button class="btn ghost btn-mini" id="mlFeatBtn">Suggest features</button>
+          <span class="log-meta" id="mlFeatStatus"></span>
+        </div>
+        <div class="portal-split">
+          <div class="portal-list" id="mlFeatures"></div>
+          <div class="portal-detail" id="mlFeatDetail"></div>
+        </div>
+      </section>
+
+      <section class="tabpane" id="mlPaneTest" hidden>
+        <div class="doc-note">
+          Score a model on a file <b>you</b> held back. This is the only fully
+          fair test — a split carved from the training data was still seen by
+          whoever cleaned it. Your file needs the answer column in it.
+        </div>
+        <div class="search-bar">
+          <select id="mlTestModel" class="model-select" style="min-width:150px"></select>
+          <input type="text" id="mlTestPath" class="search-input"
+                 placeholder="C:\...\my_hidden_test.csv" />
+          <button class="btn primary btn-mini" id="mlTestBtn">Score it</button>
+        </div>
+        <div class="auto-summary" id="mlTestHead"></div>
+        <div class="portal-split">
+          <div class="portal-list" id="mlTestMetrics"></div>
+          <div class="portal-detail" id="mlTestDetail"></div>
+        </div>
+      </section>
+
+      <section class="tabpane" id="mlPaneSaved" hidden>
+        <div class="portal-list" id="mlSaved"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ Code map ============ -->
+  <div class="modal-backdrop" id="codemapModal" hidden>
+    <div class="modal modal-portal" role="dialog" aria-modal="true" aria-labelledby="cmTitle">
+      <div class="modal-head">
+        <h2 id="cmTitle">Code map</h2>
+        <button class="icon-btn" id="closeCodemapModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Point it at a project folder. It reads the imports and tells you what
+        everything leans on, what imports what in a circle, and what nothing
+        imports at all.
+      </p>
+      <div class="search-bar">
+        <input type="text" id="cmFolder" class="search-input"
+               placeholder="C:\Users\itume\local-agent" />
+        <button class="btn primary btn-mini" id="cmScanBtn">Map it</button>
+      </div>
+      <div class="auto-summary" id="cmSummary"></div>
+      <div class="tabs" role="tablist">
+        <button class="tab is-on" id="cmTabFindings" role="tab">Findings</button>
+        <button class="tab" id="cmTabDiagram" role="tab">Diagram</button>
+        <span style="flex:1"></span>
+        <select id="cmExport" class="model-select" title="Export the diagram">
+          <option value="">Export as…</option>
+          <option value="mermaid">Mermaid (GitHub renders it)</option>
+          <option value="dot">Graphviz .dot</option>
+          <option value="csv">CSV (Visio Data Visualizer)</option>
+        </select>
+      </div>
+      <section class="tabpane" id="cmPaneFindings">
+        <div class="portal-split">
+          <div class="portal-list" id="cmList"></div>
+          <div class="portal-detail" id="cmDetail"></div>
+        </div>
+      </section>
+      <section class="tabpane" id="cmPaneDiagram" hidden>
+        <div class="issues-toolbar">
+          <button class="btn ghost btn-mini" id="cmZoomOut" title="Zoom out">&minus;</button>
+          <button class="btn ghost btn-mini" id="cmZoomIn" title="Zoom in">+</button>
+          <button class="btn ghost btn-mini" id="cmZoomReset" title="Fit the whole map">Fit</button>
+          <span class="log-meta">scroll to zoom · drag to move · click a box to focus it</span>
+        </div>
+        <div class="doc-note" id="cmDiagramNote"></div>
+        <div class="diagram-wrap" id="cmDiagram"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ Command palette ============ -->
+  <div class="palette-backdrop" id="paletteBackdrop" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+      <input type="text" id="paletteInput" class="palette-input"
+             placeholder="Search panels, settings and actions…"
+             autocomplete="off" spellcheck="false" />
+      <div class="palette-list" id="paletteList"></div>
+      <div class="palette-foot">
+        <span>↑↓ to move</span><span>↵ to open</span><span>esc to close</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Toasts ============ -->
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <!-- ============ Phone ============ -->
+  <div class="modal-backdrop" id="phoneModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="phoneTitle">
+      <div class="modal-head">
+        <h2 id="phoneTitle">Use it on your phone</h2>
+        <button class="icon-btn" id="closePhoneModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Agent Jo installs to an iPhone or Android home screen straight from
+        the browser — its own icon, its own window, no app store. The agent
+        keeps running on this computer; the phone is a remote control for it.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="phoneUrl"></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost btn-mini" id="phoneCopy">Copy address</button>
+      </div>
+      <div class="out-log" id="phoneSteps"></div>
+      <div class="doc-note" id="phoneWarn"></div>
+    </div>
+  </div>
+
+  <!-- ============ Presenter mode ============ -->
+  <div id="presenter" hidden>
+    <div class="pres-bar">
+      <div class="pres-progress"><div class="pres-progress-fill" id="presFill"></div></div>
+      <div class="pres-body">
+        <div class="pres-left">
+          <div class="pres-act" id="presAct"></div>
+          <div class="pres-title" id="presTitle"></div>
+          <div class="pres-say" id="presSay"></div>
+          <div class="pres-note" id="presNote" hidden></div>
+        </div>
+        <div class="pres-controls">
+          <span class="pres-count" id="presCount"></span>
+          <button class="btn ghost btn-mini" id="presPrev" aria-label="Previous">←</button>
+          <button class="btn primary btn-mini" id="presNext" aria-label="Next">Next →</button>
+          <button class="btn ghost btn-mini" id="presPlay" title="Auto-advance">▶ Auto</button>
+          <button class="btn ghost btn-mini" id="presNotes" title="Speaker notes">Notes</button>
+          <button class="btn ghost btn-mini" id="presExit" aria-label="Exit">Exit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Guide (tour) ============ -->
+  <div class="modal-backdrop" id="tourModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+      <div class="modal-head">
+        <h2 id="tourTitle">Guide</h2>
+        <button class="icon-btn" id="closeTourModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        What every part of this app is for, and one thing to try with each.
+        Read it end to end, or jump to a chapter.
+      </p>
+      <div class="issues-toolbar" id="tourChapters"></div>
+      <div class="out-log" id="tourList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Challenges ============ -->
+  <div class="modal-backdrop" id="challengesModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="chTitle">
+      <div class="modal-head">
+        <h2 id="chTitle">South African challenges</h2>
+        <button class="icon-btn" id="closeChallengesModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Scans SA news and government feeds for real problems, then drafts
+        where a small data/AI team could genuinely help — including what would
+        make each idea fail. Every brief is a starting point, not a verified
+        opportunity: send one to BizDev to qualify it properly.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="chInfo"></span>
+        <span style="flex:1"></span>
+        <select id="chEngine" class="model-select"></select>
+        <button class="btn ghost btn-mini" id="chDeepBtn" title="Reconsider everything seen before that never became a brief">Deep scan</button>
+        <button class="btn primary btn-mini" id="chScanBtn">Scan now</button>
+      </div>
+      <div class="out-log" id="chList"></div>
+      <pre class="doc-note" id="chDetail" style="white-space:pre-wrap;max-height:240px;overflow:auto"></pre>
+      <div class="doc-note" id="chStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Skills ============ -->
+  <div class="modal-backdrop" id="skillsModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="skillsTitle">
+      <div class="modal-head">
+        <h2 id="skillsTitle">Skills</h2>
+        <button class="icon-btn" id="closeSkillsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Skills you've taught the agent or adopted from trends. They're offered
+        to it on every turn automatically — this is where you can see what
+        each one does, run one deliberately on something, and tell which ones
+        are actually earning their place.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="skillsInfo"></span>
+      </div>
+      <div class="out-log" id="skillsList"></div>
+      <div class="doc-note" id="skillsStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ First-run setup ============ -->
+  <div class="modal-backdrop" id="setupModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+      <div class="modal-head">
+        <h2 id="setupTitle">Choose how Agent Jo thinks</h2>
+        <button class="icon-btn" id="closeSetupModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Pick one to get started. You can change it later, and add more engines
+        under Engines.
+      </p>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">Anthropic (Claude)</div>
+          <div class="set-desc">
+            Best quality. Paid per use. Get a key at
+            <a href="https://platform.claude.com/" target="_blank" rel="noopener">platform.claude.com</a>.
+            It's stored sealed on this machine and never leaves it.
+          </div>
+        </div>
+      </div>
+      <div class="issues-toolbar">
+        <input type="password" id="setupKey" class="model-input" style="flex:1"
+               placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+        <button class="btn primary btn-mini" id="setupSaveBtn">Save key</button>
+      </div>
+      <div class="set-row" style="margin-top:10px">
+        <div class="set-info">
+          <div class="set-name">Ollama (local)</div>
+          <div class="set-desc" id="setupOllama">
+            Free and fully private — nothing leaves your computer. Install from
+            ollama.com, then run <code>ollama pull qwen3</code>.
+          </div>
+        </div>
+        <div class="set-control">
+          <button class="btn ghost btn-mini" id="setupRecheckBtn">Check again</button>
+        </div>
+      </div>
+      <div class="doc-note" id="setupStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Capabilities ============ -->
+  <div class="modal-backdrop" id="capsModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="capsTitle">
+      <div class="modal-head">
+        <h2 id="capsTitle">Capabilities</h2>
+        <button class="icon-btn" id="closeCapsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Everything this app can do, and — read from the audit trail and the
+        files each feature creates — what has actually run on this machine.
+        A capability you've never exercised isn't a capability yet; it's an
+        untested assumption. Each one carries a sixty-second test.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="capsInfo"></span>
+      </div>
+      <div class="out-log" id="capsList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Health ============ -->
+  <div class="modal-backdrop" id="healthModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="healthTitle">
+      <div class="modal-head">
+        <h2 id="healthTitle">Health</h2>
+        <button class="icon-btn" id="closeHealthModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        What is actually working right now, and the exact next action for
+        anything that isn't. If a component says it's fine here and still
+        misbehaves, that's worth reporting — a dashboard that lies is worse
+        than none.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="healthInfo"></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost btn-mini" id="healthCopyBtn">Copy report</button>
+        <button class="btn primary btn-mini" id="healthRefreshBtn">Re-check</button>
+      </div>
+      <div class="out-log" id="healthList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Backup ============ -->
+  <div class="modal-backdrop" id="backupModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="backupTitle">
+      <div class="modal-head">
+        <h2 id="backupTitle">Backup &amp; restore</h2>
+        <button class="icon-btn" id="closeBackupModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        One file holding everything Agent Jo has learned — memories, skills,
+        playbooks, the audit trail, crew briefs, pipelines, settings and the
+        document index. Databases are snapshotted through SQLite's online
+        backup, so it's safe to run while the app is working. Restore verifies
+        every checksum first and takes a rollback point before replacing
+        anything.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="backupInfo"></span>
+        <span style="flex:1"></span>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+          <input type="checkbox" id="backupNightly" /> Nightly
+        </label>
+        <button class="btn primary btn-mini" id="backupNowBtn">Back up now</button>
+      </div>
+      <div class="doc-note" style="margin:6px 0">
+        <label style="display:flex;align-items:center;gap:5px">
+          <input type="checkbox" id="backupBulk" /> include renders &amp; undo snapshots (much larger)
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;margin-top:3px">
+          <input type="checkbox" id="backupKey" /> include secret.key — needed to move to a <em>new machine</em>, but then the file unlocks your stored API keys. Store it safely.
+        </label>
+      </div>
+      <div class="out-log" id="backupList"></div>
+      <div class="doc-note" id="backupStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Crew ============ -->
+  <div class="modal-backdrop" id="crewModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="crewTitle">
+      <div class="modal-head">
+        <h2 id="crewTitle">Crew — specialist agents</h2>
+        <button class="icon-btn" id="closeCrewModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Each specialist has a standing brief, its own engine, its own
+        workspace folder, and its own memory that builds up across runs. Give
+        it work here or from chat; give it a schedule and it works on its own.
+        Autonomy is scoped: a specialist writes only inside its own workspace.
+      </p>
+      <div class="issues-toolbar">
+        <input type="text" id="crewTask" class="model-input" style="flex:1"
+               placeholder="Task for the crew — e.g. “draft an outreach email for 3 JHB manufacturers needing BI”" />
+        <select id="crewWho" class="model-select"></select>
+        <select id="crewEngine" class="model-select" title="Which engine the specialist runs on"></select>
+        <select id="crewChain" class="model-select">
+          <option value="">Single specialist</option>
+          <option value="opportunity">Chain: Intel → BizDev → Delivery</option>
+          <option value="pursue">Chain: BizDev → Delivery</option>
+          <option value="review">Chain: Delivery → Ops</option>
+        </select>
+        <button class="btn primary btn-mini" id="crewRunBtn">Run</button>
+      </div>
+      <div class="out-log" id="crewList"></div>
+      <pre class="doc-note" id="crewReport" style="white-space:pre-wrap;max-height:240px;overflow:auto"></pre>
+      <div class="doc-note" id="crewStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Trends ============ -->
+  <div class="modal-backdrop" id="trendsModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="trendsTitle">
+      <div class="modal-head">
+        <h2 id="trendsTitle">Trends — what's new in AI agents</h2>
+        <button class="icon-btn" id="closeTrendsModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        The scout scans trending GitHub repos, Hacker News, and new arXiv
+        papers, clusters them into trends, and drafts a learnable for each —
+        a skill you can adopt with one click, or a build request for the
+        self-improve pipeline. Nothing is adopted automatically: internet
+        content never changes the agent's behaviour without your click.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="trendsInfo"></span>
+        <span style="flex:1"></span>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+          Digest engine
+          <select id="trendEngine" class="model-select"></select>
+        </label>
+        <label class="check-row" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="trendWeekly" /> Weekly auto-scan
+        </label>
+        <button class="btn ghost btn-mini" id="trendResumeBtn" hidden>Resume</button>
+        <button class="btn primary btn-mini" id="trendScanBtn">Scan now</button>
+      </div>
+      <div class="out-log" id="trendList"></div>
+      <div class="doc-note" id="trendStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Self-improve ============ -->
+  <div class="modal-backdrop" id="selfModal" hidden>
+    <div class="modal modal-portal" role="dialog" aria-modal="true" aria-labelledby="selfTitle">
+      <div class="modal-head">
+        <h2 id="selfTitle">Self-improvement</h2>
+        <button class="icon-btn" id="closeSelfModal" aria-label="Close">✕</button>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab is-on" id="selfTabProposal" role="tab">Proposal</button>
+        <button class="tab" id="selfTabIdeas" role="tab">Worth fixing</button>
+        <button class="tab" id="selfTabHistory" role="tab">History</button>
+        <span style="flex:1"></span>
+        <span class="issues-count" id="selfStatusLine"></span>
+      </div>
+
+      <!-- PROPOSAL -->
+      <section class="tabpane" id="selfPaneProposal">
+        <div class="issues-toolbar">
+          <button class="btn primary btn-mini" id="selfApplyBtn">Apply</button>
+          <button class="btn ghost btn-mini" id="selfDiscardBtn">Discard</button>
+          <span style="flex:1"></span>
+          <span class="issues-count" id="selfTests"></span>
+        </div>
+        <div class="portal-split">
+          <div class="portal-list" id="selfFiles"></div>
+          <div class="portal-detail" id="selfDiffPane">
+            <pre id="selfDiff" style="white-space:pre-wrap;font-size:12px"></pre>
+          </div>
+        </div>
+        <div class="doc-note" id="selfNote"></div>
+      </section>
+
+      <!-- IDEAS -->
+      <section class="tabpane" id="selfPaneIdeas" hidden>
+        <p class="modal-intro">
+          Drawn from this app's own record — errors that keep repeating, health
+          checks that are failing, features that have never worked here. Not
+          invented: each one names the evidence behind it.
+        </p>
+        <div class="portal-split">
+          <div class="portal-list" id="selfIdeaList"></div>
+          <div class="portal-detail" id="selfIdeaDetail"></div>
+        </div>
+      </section>
+
+      <!-- HISTORY -->
+      <section class="tabpane" id="selfPaneHistory" hidden>
+        <p class="modal-intro">
+          Everything it has built and you approved. Each can be rolled back
+          using the snapshots taken as it landed.
+        </p>
+        <div class="portal-split">
+          <div class="portal-list" id="selfHistList"></div>
+          <div class="portal-detail" id="selfHistDetail"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ Time machine (undo) ============ -->
+  <div class="modal-backdrop" id="undoModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="undoTitle">
+      <div class="modal-head">
+        <h2 id="undoTitle">Undo — file time machine</h2>
+        <button class="icon-btn" id="closeUndoModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Before the agent overwrites a file, the previous version is saved here.
+        Diff shows what changed; Restore puts the old version back (a restore is
+        itself snapshotted, so you can undo an undo). Covers the agent's own
+        file writes — not run_command side effects or external MCP servers.
+      </p>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="undoCount"></span>
+      </div>
+      <div class="out-log" id="undoList"></div>
+      <pre class="doc-note" id="undoDiff" style="white-space:pre-wrap;max-height:220px;overflow:auto"></pre>
+      <div class="doc-note" id="undoStatus"></div>
+    </div>
+  </div>
+
+  <!-- ============ Audit trail ============ -->
+  <div class="modal-backdrop" id="auditModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
+      <div class="modal-head">
+        <h2 id="auditTitle">Audit trail</h2>
+        <button class="icon-btn" id="closeAuditModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        An append-only record of everything the agent did — every turn (which
+        engine answered), every tool call with its outcome, every autonomous
+        action, and configuration changes. Entries are hash-chained, so any
+        tampering with the file is detectable. Local only; toggle with the
+        AUDIT setting.
+      </p>
+      <div class="issues-toolbar">
+        <select id="auditFilter" class="model-select">
+          <option value="">All entries</option>
+          <option value="turn">Turns</option>
+          <option value="tool">Tool calls</option>
+          <option value="autonomy">Autonomous actions</option>
+          <option value="config">Config changes</option>
+        </select>
+        <span class="issues-count" id="auditCount"></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost btn-mini" id="auditVerifyBtn">Verify chain</button>
+        <button class="btn ghost btn-mini" id="auditTidyBtn"
+                title="Clear the trail, or drop only entries older than a chosen age">Tidy up…</button>
+        <button class="btn ghost btn-mini" id="auditCsvBtn">Copy CSV</button>
+        <button class="btn ghost btn-mini" id="auditTextBtn">Copy text</button>
+      </div>
+      <div class="out-log" id="auditList"></div>
+      <div class="doc-note" id="auditStatus"></div>
+          <div class="dash-edit" id="auditTidy" hidden>
+        <div class="dash-edit-head">
+          <span>Tidy the audit trail</span>
+          <button class="btn ghost btn-mini" id="auditTidyDone">Close</button>
+        </div>
+        <div class="doc-note">
+          Clearing is itself recorded — the new trail opens with an entry
+          saying how much went and where, so the gap can't pass unnoticed.
+        </div>
+        <div class="issues-toolbar" style="margin-top:8px">
+          <label>Keep the last
+            <input type="number" id="auditKeepDays" class="model-input"
+                   style="width:64px" min="0" max="3650" value="30" /> day(s)
+          </label>
+          <button class="btn primary btn-mini" id="auditClearOldBtn">Clear older</button>
+          <span style="flex:1"></span>
+          <button class="btn ghost btn-mini" id="auditClearAllBtn">Clear everything</button>
+        </div>
+        <div id="auditArchives" class="out-log" style="margin-top:8px;max-height:150px"></div>
+      </div>
+</div>
+  </div>
+
+  <!-- ============ Issues (problem reports) ============ -->
+  <div class="modal-backdrop" id="issuesModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="issuesTitle">
+      <div class="modal-head">
+        <h2 id="issuesTitle">Issues</h2>
+        <button class="icon-btn" id="closeIssuesModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        Something in Agent Jo misbehaved? Describe it and hit Capture — the report
+        bundles your note with the recent conversation, the engine in use, and any
+        internal errors, saved locally to <code>problems.jsonl</code>. Copy a report
+        (or all of them) and paste it to the developer. Reports can include
+        conversation excerpts, so review before sharing.
+      </p>
+      <textarea id="issueNote" rows="2" placeholder="What went wrong? e.g. 'Export button did nothing after I clicked it twice'"></textarea>
+      <div class="modal-actions" style="margin-top:8px">
+        <button class="btn primary" id="issueCaptureBtn">Capture report</button>
+        <span class="engine-status" id="issueStatus"></span>
+      </div>
+      <div class="issues-toolbar">
+        <span class="issues-count">Auto-captured errors <span class="issues-hint">(picked up on their own — UI clicks, failed requests, server faults)</span></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost btn-mini" id="errorsClearBtn">Clear errors</button>
+      </div>
+      <div class="out-log" id="autoErrList"></div>
+      <div class="issues-toolbar">
+        <span class="issues-count" id="issuesCount"></span>
+        <span style="flex:1"></span>
+        <button class="btn ghost" id="issuesCopyAllBtn">Copy all for the developer</button>
+        <button class="btn ghost" id="issuesClearBtn">Clear all</button>
+      </div>
+      <div class="out-log" id="issuesList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Login overlay ============ -->
+  <div class="auth-overlay" id="authOverlay" hidden>
+    <div class="auth-card">
+      <div class="auth-mark"><img src="/avatar" alt="" /></div>
+      <div class="auth-brand">Agent&nbsp;Jo</div>
+      <p class="auth-sub">This workspace is password-protected.</p>
+      <input type="password" id="authPassword" placeholder="Password" autocomplete="current-password" />
+      <button class="btn primary" id="authLoginBtn">Unlock</button>
+      <div class="auth-error" id="authError"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    // Registered late and failing quietly: without a service worker the app
+    // still works, it just can't be installed to a home screen.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/static/sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

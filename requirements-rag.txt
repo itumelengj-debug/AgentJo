@@ -1,0 +1,5 @@
+# Optional document-reading libraries for the RAG / Documents feature.
+# Plain-text and code files work WITHOUT these; install only if you want
+# to index PDF or Word documents.
+pypdf>=4.0        # PDF text extraction
+python-docx>=1.1  # .docx text extraction

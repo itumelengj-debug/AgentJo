@@ -1,0 +1,9 @@
+# Production web app (FastAPI backend + custom frontend).
+# Pulls in the agent engine's runtime deps and the document-reading libraries,
+# then adds the web server + multipart (for file uploads).
+#   pip install -r requirements-web.txt
+-r requirements.txt
+-r requirements-rag.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
