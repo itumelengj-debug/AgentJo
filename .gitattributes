@@ -1,0 +1,9 @@
+# Line endings: force LF everywhere so the signed manifest (which hashes exact
+# bytes) matches on every platform regardless of the user's core.autocrlf.
+* text=auto eol=lf
+
+# Signing artefacts are compared byte-for-byte: never let Git munge them.
+MANIFEST.sha256 -text
+MANIFEST.sig -text
+signing-key.pub -text
+signing-key.private -text
