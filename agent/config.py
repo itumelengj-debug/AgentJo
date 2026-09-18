@@ -86,7 +86,7 @@ def deepseek_flash_key():
 # Stamped when this build was packaged. Surfaced in problem reports so
 # "is the fix actually running?" is answerable at a glance — replacing
 # files without restarting the app has burned us more than once.
-BUILD_ID = "2026-09-17 09:22 UTC"
+BUILD_ID = "2026-09-18 07:25 UTC"
 
 MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
 # Ollama context window (prompt + reply budget). Ollama defaults this to only
@@ -149,6 +149,20 @@ TURBO = _bool("AGENT_TURBO", False)
 # unattended runs. Reads always run — asking about those teaches you to click
 # through prompts without reading them.
 INTERCEPTS = os.environ.get("AGENT_INTERCEPTS", "1") not in ("0", "false")
+
+# Notifications. Three levels rather than a single switch, because "off" for
+# a routine confirmation and "off" for a failure are different requests — and
+# silencing the second is how you find out a week later that nothing ran.
+#   all       every confirmation
+#   important errors, things held for review, anything waiting on you
+#   off       nothing at all
+NOTIFY_LEVEL = os.environ.get("AGENT_NOTIFY_LEVEL", "important").strip().lower()
+
+# Desktop notifications when the window isn't focused. Off by default: an app
+# that asks for notification permission the moment it loads is an app people
+# refuse out of reflex.
+NOTIFY_DESKTOP = os.environ.get("AGENT_NOTIFY_DESKTOP", "off").strip().lower() \
+    in ("1", "on", "true", "yes")
 
 BRAND_NAME = os.environ.get("AGENT_BRAND", "Symbolic Synapse")
 BRAND_TAGLINE = os.environ.get("AGENT_TAGLINE", "AI, BI & data")
@@ -268,6 +282,7 @@ _USER_KEYS = [
     "DEFAULT_ENGINE", "TEAMWORK", "PRIVACY_MODE", "AUDIT", "TIMEMACHINE",
     "SELFIMPROVE", "TURBO", "BLENDER_PATH", "NEURAL3D_CMD",
     "BRAND_NAME", "BRAND_TAGLINE", "BRAND_URL", "INTERCEPTS",
+    "NOTIFY_LEVEL", "NOTIFY_DESKTOP",
     "RAG_MAX_FILES", "RAG_MAX_FILE_MB",
 ]
 _DEFAULTS: dict = {}
@@ -337,6 +352,16 @@ def save_settings(updates: dict) -> dict:
     for k, v in (updates or {}).items():
         if k not in _USER_KEYS:
             continue
+        # An unrecognised level matches none of the three, so it would
+        # silently behave as "off": the setting would look saved and
+        # notifications would simply stop.
+        if k == "NOTIFY_LEVEL":
+            v = str(v).strip().lower()
+            if v not in ("all", "important", "off"):
+                rejected.append(
+                    f"'{v}' isn't a notification level. Use all, important "
+                    f"or off.")
+                continue
         # MODEL is the id sent to Anthropic. Saving an engine NAME here — as
         # happened with "DeepSeekReplika" — produces a 404 that names the
         # string and explains nothing, hours later and somewhere else.

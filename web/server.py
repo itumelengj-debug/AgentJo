@@ -301,11 +301,21 @@ def _engine_list() -> list:
     # and yours wins the moment you do.
     if not any(e["name"].lower() == "claude"
                for e in brainmod.load_custom_engines(refresh=True)):
+        # Offer it, but say plainly that it can't run without a key. It used
+        # to look identical to a working engine, so a fresh install without a
+        # key showed Claude selected and every message failed — with nothing
+        # in the list suggesting why.
+        _has_key = bool(os.environ.get("ANTHROPIC_API_KEY")
+                        or os.environ.get("AGENT_API_KEY"))
         items.append({"id": "Claude", "label": "Claude",
                       "model": config.MODEL, "kind": "cloud",
-                      "seed": True,
-                      "hint": "Built in. Add an engine called Claude with "
-                              "your own key and model to take it over."})
+                      "seed": True, "needs_key": not _has_key,
+                      "hint": ("Built in. Add an engine called Claude with "
+                               "your own key and model to take it over."
+                               if _has_key else
+                               "No API key set, so this can't run. Add one in "
+                               "Settings, or add a local engine — those need "
+                               "no key.")})
     # The preloaded "Ollama" engine only works when the running brain actually
     # has a live local model (hybrid/ollama backend with Ollama up). On the
     # anthropic backend it can't run and would just refuse — so hide it there
@@ -317,10 +327,12 @@ def _engine_list() -> list:
         # sys.exit — which inside a request meant /api/meta returned 500 and
         # the window never finished loading. Without a brain we simply can't
         # say whether a local model is live; the rest of the list stands.
+        # `return items` here was wrong and mine: it left the function before
+        # the user's own custom engines were added, so every engine they saved
+        # was stored correctly and never appeared. Skip the bit that needs a
+        # brain; carry on with the rest.
         _b = get_brain_or_none()
-        if _b is None:
-            return items
-        if getattr(_b, "local", None) is not None:
+        if _b is not None and getattr(_b, "local", None) is not None:
             items.append({"id": "Ollama", "label": "Ollama",
                           "model": config.OLLAMA_MODEL, "kind": "local"})
     except Exception:
@@ -999,13 +1011,56 @@ def health_probe():
 
 @app.get("/api/meta")
 def meta():
+    _meta_engines = _engine_list()
     return {"name": config.AGENT_NAME, "configured": _engine_configured(),
             "backend": config.BACKEND,
             "brand": getattr(config, "BRAND_NAME", "Symbolic Synapse"),
             "tagline": getattr(config, "BRAND_TAGLINE", ""),
-            "brand_url": getattr(config, "BRAND_URL", ""), "engines": _engine_list(),
+            "brand_url": getattr(config, "BRAND_URL", ""),
+            "engines": _meta_engines,
+            # what you chose, and what can actually run. Overloading one
+            # field with both meanings silently changed a stored setting
+            # into a suggestion — the setting round-trip stops being true.
             "default_engine": config.DEFAULT_ENGINE,
+            "start_engine": _usable_default(_meta_engines),
             "voice": {"stt": _stt_ok()}}
+
+
+def _usable_default(engines: list) -> str:
+    """The engine to start on — one that can actually run.
+
+    DEFAULT_ENGINE is "Auto", which routes hard work to the cloud tier, which
+    is Claude. On a machine with no API key that means every first message
+    fails, and nothing in the picker suggests why. So if the stored default
+    can't run, fall to one that can: a local engine needs no key, and a
+    custom cloud engine carries its own.
+    """
+    want = config.DEFAULT_ENGINE
+    by_id = {e["id"]: e for e in engines}
+    chosen = by_id.get(want)
+    broken = (chosen or {}).get("needs_key")
+
+    # "Auto" is only as good as the engines it can route to: with Claude the
+    # only cloud engine and no key, it has nothing to escalate to
+    if want == "Auto":
+        usable = [e for e in engines
+                  if e["id"] != "Auto" and not e.get("needs_key")]
+        if not usable:
+            return want                     # nothing better exists; say so
+        if any(e.get("needs_key") for e in engines
+               if e["id"] not in ("Auto",)) and len(usable) >= 1:
+            # a working engine exists, so start there rather than on a router
+            # whose only cloud option can't run
+            if all(e.get("needs_key") for e in engines
+                   if e.get("kind") == "cloud"):
+                return usable[0]["id"]
+        return want
+
+    if chosen is None or broken:
+        for e in engines:
+            if e["id"] != "Auto" and not e.get("needs_key"):
+                return e["id"]
+    return want
 
 
 def _stt_ok() -> bool:

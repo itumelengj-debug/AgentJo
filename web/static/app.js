@@ -87,6 +87,23 @@ const state = {
 
 // Mirrors the desktop app's managed settings (agent/config.py _USER_KEYS).
 const SETTINGS_SCHEMA = [
+  {
+    group: "Notifications",
+    items: [
+      { key: "NOTIFY_LEVEL", type: "choice", name: "Show me",
+        choices: [
+          ["all", "Everything"],
+          ["important", "Only what needs me"],
+          ["off", "Nothing"],
+        ],
+        desc: "'Only what needs me' covers errors, held drafts and anything "
+            + "waiting on a decision, and drops the routine confirmations. "
+            + "'Nothing' silences failures too — you'd find out by looking." },
+      { key: "NOTIFY_DESKTOP", type: "bool", name: "Desktop notifications",
+        desc: "Tell me when something finishes while this window isn't "
+            + "focused. Your browser will ask permission the first time." },
+    ],
+  },
   { group: "Behaviour", items: [
     { key: "AUTO_LEARN", type: "bool", name: "Learn facts from chats", desc: "Save durable facts to memory after turns" },
     { key: "ROUTING", type: "bool", name: "Smart routing", desc: "Auto-pick cloud vs local per turn (Auto engine)" },
@@ -122,6 +139,7 @@ async function boot() {
     const meta = await fetch("/api/meta").then(r => r.json());
     state.engines = meta.engines || [];
     state.defaultEngine = meta.default_engine || "Auto";
+  state.startEngine = d.start_engine || d.default_engine;
     state.voiceStt = !!(meta.voice && meta.voice.stt);
     if (state.voiceStt) $("#micBtn").hidden = false;
     // The footer named a supplier where the product's name belongs. The
@@ -1116,6 +1134,7 @@ async function openSettings() {
   try {
     const data = await fetch("/api/settings").then(r => r.json());
     renderSettings(data.settings || {});
+    notifyPrefs(data.settings || {});
     loadModelPickers();
     setSettingsStatus("", "");
   } catch (e) { setSettingsStatus("Could not load settings.", "err"); }
@@ -1601,7 +1620,34 @@ function errText(d, fallback) {
   return fallback || "Something went wrong.";
 }
 
-function toast(message, kind) {
+// Every in-app message passes through here, so one setting governs all 68
+// of them rather than each caller deciding. "important" keeps errors,
+// warnings and anything waiting on a decision; it drops the confirmations
+// that only tell you what you just did.
+let _notifyLevel = "important";
+let _notifyDesktop = false;
+
+function setNotifyLevel(l) { _notifyLevel = String(l); }
+
+function notifyPrefs(settings) {
+  if (!settings) return;
+  if (settings.NOTIFY_LEVEL) _notifyLevel = String(settings.NOTIFY_LEVEL);
+  _notifyDesktop = !!settings.NOTIFY_DESKTOP;
+  if (_notifyDesktop && "Notification" in window
+      && Notification.permission === "default") {
+    // asked only when the setting is switched on — an app that asks on load
+    // is one people refuse out of reflex
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+function _notifyWanted(kind) {
+  if (_notifyLevel === "off") return false;
+  if (_notifyLevel === "all") return true;
+  return kind === "bad" || kind === "warn";
+}
+
+function _showToast(message, kind) {
   // Panels each had their own status line, so an action taken in one place
   // and finishing elsewhere reported into a box nobody was looking at.
   const host = $("#toasts");
@@ -1617,6 +1663,21 @@ function toast(message, kind) {
   while (host.children.length > 4) host.removeChild(host.firstChild);
   return t;
 }
+
+function toast(msg, kind, opts) {
+  if (!_notifyWanted(kind)) return null;
+  const node = _showToast(msg, kind, opts);
+  // if the window isn't focused, the toast is seen by nobody
+  if (_notifyDesktop && typeof document !== "undefined"
+      && document.hidden && "Notification" in window
+      && Notification.permission === "granted") {
+    try {
+      new Notification("Agent Jo", { body: String(msg).slice(0, 180) });
+    } catch (e) { /* the browser may refuse; the toast still happened */ }
+  }
+  return node;
+}
+
 
 /* --------------------------- command palette ---------------------------- */
 // What each panel is FOR, so searching "spend" or "cv" finds it without
@@ -5424,9 +5485,15 @@ async function loadModelPickers() {
   const engCtrl = el("div", "set-control");
   const engSel = el("select"); engSel.id = "model_DEFAULT_ENGINE"; engSel.className = "model-select";
   (state.engines || []).forEach(e => {
-    const op = el("option"); op.value = e.id; op.textContent = e.label; engSel.appendChild(op);
+    const op = el("option"); op.value = e.id;
+    // an engine that can't run should look different from one that can,
+    // rather than failing only when you send the first message
+    op.textContent = e.label + (e.needs_key ? "  (needs an API key)" : "");
+    engSel.appendChild(op);
   });
-  engSel.value = state.defaultEngine || "Auto";
+  // start on something that can run: the stored default may be an engine
+  // with no key, and the first message would simply fail
+  engSel.value = state.startEngine || state.defaultEngine || "Auto";
   engCtrl.appendChild(engSel);
   engRow.append(engInfo, engCtrl);
   box.appendChild(engRow);
@@ -5584,6 +5651,15 @@ function renderSettings(values) {
         inp.checked = !!values[item.key];
         const track = el("span", "switch-track"); const dot = el("span", "switch-dot");
         track.appendChild(dot); lab.append(inp, track); ctrl.appendChild(lab);
+      } else if (item.type === "choice") {
+        const sel = el("select", "model-select");
+        sel.id = "set_" + item.key;
+        (item.choices || []).forEach(([v, label]) => {
+          const o = el("option"); o.value = v; o.textContent = label;
+          if (String(values[item.key]) === v) o.selected = true;
+          sel.appendChild(o);
+        });
+        ctrl.appendChild(sel);
       } else {
         const inp = el("input"); inp.type = "number"; inp.id = "set_" + item.key;
         inp.value = values[item.key]; inp.min = "1";
@@ -5598,7 +5674,11 @@ function collectSettings() {
   SETTINGS_SCHEMA.forEach(g => g.items.forEach(item => {
     const inp = $("#set_" + item.key);
     if (!inp) return;
-    updates[item.key] = item.type === "bool" ? inp.checked : Number(inp.value);
+    // a choice is a string — Number() on it gave NaN, which the server
+    // would have stored over the setting
+    updates[item.key] = item.type === "bool" ? inp.checked
+      : item.type === "choice" ? inp.value
+      : Number(inp.value);
   }));
   return updates;
 }
@@ -5617,6 +5697,7 @@ async function saveSettings() {
       if (eng) applyEngine(eng);
     }
     renderSettings(data.settings || {});
+    notifyPrefs(data.settings || {});
     loadModelPickers();
     setSettingsStatus(data.engine_reloaded ? "Saved — model switched." : "Saved.", "ok");
     showToast(data.engine_reloaded ? "Model switched" : "Settings saved.");
@@ -5627,6 +5708,7 @@ async function resetSettings() {
   try {
     const data = await fetch("/api/settings/reset", { method: "POST" }).then(r => r.json());
     renderSettings(data.settings || {});
+    notifyPrefs(data.settings || {});
     setSettingsStatus("Reset to defaults.", "ok"); showToast("Settings reset to defaults.");
   } catch (e) { setSettingsStatus("Could not reset settings.", "err"); }
 }
@@ -6587,6 +6669,26 @@ async function refreshDashboard() {
     const att = $("#dashAttention");
     if (att) {
       att.innerHTML = "";
+      // "off" should mean quiet, not blind: say how many were held back and
+      // give a way to see them, or the setting becomes a trap
+      if (d.hidden_by_level) {
+        const n = el("button", "dash-hidden-note");
+        n.type = "button";
+        n.textContent = `${d.hidden_by_level} card(s) hidden by your `
+          + `notification setting — show them`;
+        n.addEventListener("click", () => openSettings());
+        att.appendChild(n);
+      }
+      if ((d.dismissed || []).length) {
+        const n2 = el("button", "dash-hidden-note");
+        n2.type = "button";
+        n2.textContent = `${d.dismissed.length} dismissed — bring back`;
+        n2.addEventListener("click", async () => {
+          await saveDashPrefs({ hidden: [] });
+          toast("Dismissed cards are back.", "ok");
+        });
+        att.appendChild(n2);
+      }
       const row = el("div", "dash-clear");
       row.textContent = "Couldn't load the dashboard \u2014 the app is still "
         + "working. It retries automatically.";
@@ -6709,8 +6811,22 @@ function paintDashboard(d) {
           const w = el("div", "dash-item-why"); w.textContent = i.why;
           body.appendChild(w);
         }
+        // dismiss this one card. The notification setting is a blunt
+        // instrument when it's a single card you're tired of, and the
+        // alternative was silencing everything.
+        const x = el("span", "dash-item-x");
+        x.textContent = "\u00d7";
+        x.title = "Dismiss this — it comes back if the situation changes";
+        x.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          try {
+            const cur = (d.prefs && d.prefs.hidden) || [];
+            await saveDashPrefs({ hidden: cur.concat([i.id]) });
+            toast(`Dismissed "${i.title}".`, "ok");
+          } catch (e) { toast("Couldn't dismiss that.", "bad"); }
+        });
         const go = el("span", "dash-item-go"); go.textContent = "\u203a";
-        row.append(body, go);
+        row.append(body, x, go);
         // every item is a doorway to the panel that resolves it
         row.addEventListener("click", () => {
           const btn = $("#" + i.panel);

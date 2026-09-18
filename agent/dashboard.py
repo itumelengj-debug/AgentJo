@@ -35,8 +35,12 @@ ACT, REVIEW, NOTE = "act", "review", "note"
 
 
 def _item(severity, title, detail, panel, why=""):
-    return {"severity": severity, "title": title, "detail": detail[:200],
-            "panel": panel, "why": why[:160]}
+    # A stable id from the title, so a card you dismissed stays dismissed
+    # across restarts. The detail changes ("15 days old" becomes "16 days
+    # old"); the title doesn't, which is what makes it the right key.
+    key = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return {"id": key, "severity": severity, "title": title,
+            "detail": detail[:200], "panel": panel, "why": why[:160]}
 
 
 def _safe(fn, default=None):
@@ -257,11 +261,40 @@ def report(memory=None) -> dict:
     for fn in GATHERERS:
         items.extend(_safe(fn, []) or [])
     items.sort(key=lambda i: _ORDER.get(i["severity"], 9))
+
+    # The notification setting governs these too. It previously only gated
+    # the transient toasts, so switching notifications down changed nothing
+    # about the cards sitting permanently at the top of the window — which
+    # are the notifications most people mean.
+    #
+    #   all       every card
+    #   important only the ones asking you to do or decide something; the
+    #             notes — "spend so far", "nothing overdue" — are dropped
+    #   off       none, and the count still says how many were hidden, so
+    #             "off" means quiet rather than blind
+    # cards you dismissed individually — a global switch is too blunt when
+    # it's one card you're tired of
+    _hidden = set(_safe(prefs, {"hidden": []}).get("hidden") or [])
+    dismissed = [i for i in items if i["id"] in _hidden]
+    items = [i for i in items if i["id"] not in _hidden]
+
+    level = str(getattr(config, "NOTIFY_LEVEL", "important")).lower()
+    hidden_by_level = 0
+    if level == "off":
+        hidden_by_level = len(items)
+        items = []
+    elif level == "important":
+        keep = [i for i in items if i["severity"] in (ACT, REVIEW)]
+        hidden_by_level = len(items) - len(keep)
+        items = keep
     counts = {ACT: 0, REVIEW: 0, NOTE: 0}
     for i in items:
         counts[i["severity"]] = counts.get(i["severity"], 0) + 1
     return {"at": datetime.now(timezone.utc).strftime("%H:%M UTC"),
             "needs_you": items,
+            "notify_level": level,
+            "hidden_by_level": hidden_by_level,
+            "dismissed": [i["id"] for i in dismissed],
             "counts": counts,
             "all_clear": not any(i["severity"] in (ACT, REVIEW)
                                  for i in items),

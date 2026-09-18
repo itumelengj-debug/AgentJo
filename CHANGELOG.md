@@ -3915,3 +3915,89 @@ conclude the thing isn't meant for them.
 > attached, which hung a test run for five minutes. Both installers now skip
 > the prompt after `--check` and when nothing can answer; the Windows one
 > defaults to No after 30 seconds.
+
+
+### 103. Notifications, with three positions rather than two
+
+**Settings → Notifications.**
+
+A single on/off switch would have been the wrong shape. "Off" for a routine
+confirmation and "off" for a failure are different requests, and silencing the
+second is how you find out a week later that nothing ran. So:
+
+- **Everything** — every confirmation
+- **Only what needs me** *(default)* — errors, warnings, anything waiting on a
+  decision; drops the messages that only tell you what you just did
+- **Nothing** — silent, and the setting says plainly that failures go quiet too
+
+All 68 in-app messages already went through one `toast()` function, so gating
+there governs every one of them rather than each caller deciding.
+
+**Desktop notifications**, off by default, for when the window isn't focused —
+a toast nobody is looking at has notified nobody. Permission is requested when
+you switch the setting on, not when the app loads: an app that asks on load is
+one people refuse out of reflex.
+
+> Two bugs caught in testing. An unrecognised level was accepted and stored —
+> and since it matches none of the three, notifications would simply have
+> stopped while the setting looked saved; it's now refused with the valid
+> options named. And the gate initially swallowed `toast()`'s return value,
+> which the command-palette test depended on. That test now sets the level
+> explicitly and asserts the gate in both directions.
+
+
+### 104. The switch now governs the cards people actually mean
+
+The notification setting gated the transient toasts and nothing else, so
+turning it down changed nothing about the cards sitting permanently at the top
+of the window — "Drafts to rewrite", "Trends waiting on you", "Backup is
+stale". Those are the notifications most people mean, and a switch that
+doesn't move them is a switch that doesn't work.
+
+The cards already carried a severity — **act**, **review**, **note** — which
+maps onto the setting exactly:
+
+- **Everything** — every card
+- **Only what needs me** — the ones asking you to do or decide something; the
+  notes are dropped
+- **Nothing** — none
+
+**And a dismiss on each card**, because a global switch is too blunt when it's
+one card you're tired of. Cards now carry a stable id derived from the title
+rather than the detail — *"Backup is stale"* stays the same key while "15 days
+old" becomes "16 days old" — so a dismissal survives a restart and the card
+returns if the situation genuinely changes.
+
+**Off means quiet, not blind.** A line stays at the top saying how many cards
+the setting is holding back, and another offering to bring dismissed ones
+back. Otherwise the setting becomes a trap: silence that looks like
+everything being fine.
+
+
+### 105. A saved engine you could not see
+
+Reported from a fresh laptop: saving a new engine stored it, and the list
+never showed it.
+
+**My bug, and a recent one.** Fixing the keyless-crash last build, I added an
+early `return items` to `_engine_list()` when no brain could be built — and it
+sat *before* the loop that appends the user's own custom engines. So on a
+machine with no API key, every engine you saved was written correctly to disk
+and was invisible in the picker. The fix skips only the part that needs a
+brain.
+
+**And Claude no longer gets offered as if it works.** With no key it now
+carries `needs_key`, the picker labels it *"Claude (needs an API key)"*, and
+the hint says what to do instead of leaving you to discover it on the first
+message. The stored default is `Auto`, which routes hard work to the cloud
+tier — Claude — so on a keyless machine it failed the same way while looking
+fine.
+
+The app now reports two things rather than one: **`default_engine`**, the
+setting exactly as you saved it, and **`start_engine`**, the one the picker
+opens on — the stored default when it can run, otherwise the first engine that
+can. A local engine needs no key, so a fresh install with Ollama simply works.
+
+> An earlier version collapsed both into `default_engine`, which quietly
+> turned a stored setting into a suggestion and broke the settings round-trip.
+> A test from months ago caught it — one field, one meaning.

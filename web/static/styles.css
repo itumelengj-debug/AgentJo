@@ -2604,4 +2604,23 @@ body.presenting .composer { opacity: .35; pointer-events: none; }
 
 /* Kept last on purpose: anything appended after this could outrank
    it, which is exactly how the Jobs tabs broke once already. */
+
+/* --- dismissing a single dashboard card --------------------------------- */
+.dash-item-x {
+  flex: 0 0 auto; width: 22px; height: 22px; line-height: 20px;
+  text-align: center; border-radius: var(--r-sm); color: var(--faint);
+  font-size: 15px; cursor: pointer; opacity: 0; transition: opacity .12s;
+}
+.dash-item:hover .dash-item-x { opacity: 1; }
+.dash-item-x:hover { background: var(--surface-3); color: var(--text); }
+/* "off" should mean quiet, not blind — the way back is always visible */
+.dash-hidden-note {
+  display: block; width: 100%; text-align: left; padding: 6px 12px;
+  font-size: var(--t-small); color: var(--faint); background: none;
+  border: none; cursor: pointer; font-family: var(--font-body);
+}
+.dash-hidden-note:hover { color: var(--text); text-decoration: underline; }
+
+/* Kept last on purpose: anything appended after this could outrank
+   it, which is exactly how the Jobs tabs broke once already. */
 [hidden] { display: none !important; }
