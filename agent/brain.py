@@ -1093,7 +1093,15 @@ def _is_deepseek_model(model) -> bool:
 # Each entry: {"name","base_url","api_key","model"}. Stored at
 # AGENT_HOME/engines.json. Routed by engine NAME (the selector token), so two
 # engines may share a model id on different providers.
-_ENGINES_FILE = config.AGENT_HOME / "engines.json"
+def _engines_file():
+    """Resolved when used, not at import.
+
+    It was a module constant, so it pointed at whatever AGENT_HOME happened
+    to be when the module first loaded. Anything that changes the home
+    afterwards — a test, a second profile, a moved data folder — kept reading
+    and writing the old location while appearing to work.
+    """
+    return config.AGENT_HOME / "engines.json"
 _RESERVED_NAMES = None
 _custom_engines_cache = None
 _custom_brains: dict = {}
@@ -1118,8 +1126,8 @@ def load_custom_engines(refresh: bool = False) -> list:
         return _custom_engines_cache
     data = []
     try:
-        if _ENGINES_FILE.exists():
-            raw = json.loads(_ENGINES_FILE.read_text(encoding="utf-8"))
+        if _engines_file().exists():
+            raw = json.loads(_engines_file().read_text(encoding="utf-8"))
             need_migrate = False
             if isinstance(raw, list):
                 for e in raw:
@@ -1143,23 +1151,23 @@ def load_custom_engines(refresh: bool = False) -> list:
                     pass
             return data
     except Exception as exc:
-        print(f"[engines] could not read {_ENGINES_FILE}: {exc}")
+        print(f"[engines] could not read {_engines_file()}: {exc}")
     _custom_engines_cache = data
     return data
 
 
 def _save_custom_engines(engines: list) -> None:
     global _custom_engines_cache
-    _ENGINES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _engines_file().parent.mkdir(parents=True, exist_ok=True)
     on_disk = []
     for e in engines:
         d = dict(e)
         key = d.get("api_key", "")
         d["api_key"] = crypto.encrypt_str(key) if key else ""   # sealed at rest
         on_disk.append(d)
-    _ENGINES_FILE.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
+    _engines_file().write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
     try:
-        os.chmod(_ENGINES_FILE, 0o600)
+        os.chmod(_engines_file(), 0o600)
     except Exception:
         pass
     _custom_engines_cache = engines          # cache keeps usable plaintext keys
@@ -1595,6 +1603,33 @@ class HybridBrain(_PerThreadEngine):
             return []
 
 
+def _first_usable_custom():
+    """An engine the user configured that can actually run.
+
+    Prefers local — no key to be wrong — then any cloud engine carrying its
+    own key. Returns None when there's nothing, so the original error stands
+    rather than being replaced by a vaguer one.
+    """
+    try:
+        entries = load_custom_engines(refresh=True) or []
+    except Exception:
+        return None
+    ranked = sorted(
+        (e for e in entries
+         if e.get("base_url") and (e.get("api_key")
+                                   or is_local_endpoint(e.get("base_url")))),
+        key=lambda e: 0 if is_local_endpoint(e.get("base_url", "")) else 1)
+    for e in ranked:
+        try:
+            return OpenAIBrain(model=e.get("model"),
+                               base_url=e.get("base_url"),
+                               api_key=e.get("api_key") or "none",
+                               label=e.get("name") or "custom")
+        except Exception:
+            continue
+    return None
+
+
 def make_brain(backend: str | None = None, model: str | None = None):
     backend = (backend or config.BACKEND).lower()
     if backend == "ollama":
@@ -1605,7 +1640,17 @@ def make_brain(backend: str | None = None, model: str | None = None):
                 exc.message,
                 "Start Ollama, or switch to a cloud engine in Settings.")
     if backend == "anthropic":
-        return AnthropicBrain(model)
+        try:
+            return AnthropicBrain(model)
+        except EngineNotConfigured:
+            # BACKEND is "anthropic" out of the box, so someone who added a
+            # DeepSeek (or any other) engine and no Claude key still got an
+            # Anthropic brain built first — and a 500 on their first message.
+            # Their own engine is right there; use it.
+            fallback = _first_usable_custom()
+            if fallback is None:
+                raise
+            return fallback
     if backend == "hybrid":
         return HybridBrain(cloud_model=model)
     raise EngineNotConfigured(

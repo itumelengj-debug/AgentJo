@@ -90,7 +90,7 @@ import agent.challenges as challenges
 import agent.issues as issues
 import web.auth as auth
 from web.ratelimit import RateLimiter
-from agent.brain import make_brain
+from agent.brain import make_brain, EngineNotConfigured
 from agent.memory import MemoryStore
 
 # Path resolution works both as plain Python and when frozen into a single .exe
@@ -195,6 +195,20 @@ async def _security_headers(request: Request, call_next):
                      "geolocation=(), camera=(), microphone=(self)")
         h.setdefault("Content-Security-Policy", _CSP)
     return resp
+
+
+@app.exception_handler(EngineNotConfigured)
+async def _engine_not_configured(request: Request, exc: EngineNotConfigured):
+    """An engine that isn't set up is a 503 with an explanation, not a 500.
+
+    This escaped as an unhandled exception and reached the browser as a stack
+    trace — the user had configured a working engine, and the traceback named
+    Anthropic, which is the least useful thing it could have said.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"detail": exc.message
+                 + (f" {exc.fix}" if getattr(exc, "fix", "") else "")})
 
 
 @app.middleware("http")

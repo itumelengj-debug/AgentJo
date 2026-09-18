@@ -4001,3 +4001,35 @@ can. A local engine needs no key, so a fresh install with Ollama simply works.
 > An earlier version collapsed both into `default_engine`, which quietly
 > turned a stored setting into a suggestion and broke the settings round-trip.
 > A test from months ago caught it — one field, one meaning.
+
+
+### 106. Your engine, not Anthropic's
+
+From GitHub: a user added a DeepSeek key, said "hi", and got a 500.
+
+`BACKEND` ships as `anthropic`, so `get_brain()` built an **Anthropic** brain
+before the request's chosen engine mattered at all. Last build stopped that
+killing the process; it still failed the message. And the traceback named
+Anthropic — the least useful thing it could have said to someone who had just
+configured DeepSeek.
+
+`make_brain()` now falls back to an engine you actually configured: local
+first (nothing to get wrong), then any cloud engine carrying its own key. With
+nothing configured, the original error stands rather than being replaced by a
+vaguer one.
+
+**And the exception no longer reaches the browser as a stack trace.** An
+unconfigured engine is a 503 saying what to do.
+
+> Two bugs found on the way, both of the same kind — something resolved once
+> and then relied on forever.
+>
+> `_ENGINES_FILE` was a module constant computed at import, so it pointed at
+> whatever `AGENT_HOME` was at that moment. Anything that changed the home
+> afterwards — a test, a second profile, a moved data folder — kept reading
+> and writing the old location while appearing to work. It's resolved when
+> used now.
+>
+> And my exception handler was inserted between `@app.middleware("http")` and
+> the function it decorated, so the handler quietly became middleware and the
+> error capture lost its decorator. Both are now asserted.
