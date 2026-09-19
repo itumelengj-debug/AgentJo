@@ -4033,3 +4033,155 @@ unconfigured engine is a 503 saying what to do.
 > And my exception handler was inserted between `@app.middleware("http")` and
 > the function it decorated, so the handler quietly became middleware and the
 > error capture lost its decorator. Both are now asserted.
+
+
+### 107. "\\ was unexpected at this time"
+
+Reported: the app wouldn't start at all. The folder name gave it away —
+**`AgentJo-2026-09-18 (1)`**, the name a browser gives a second download of
+the same file.
+
+cmd expands `%~dp0` as literal text. Inside a parenthesised block, the `)` in
+`(1)` closes the block early, and the trailing backslash escapes the quote
+after it. Both `install.bat` and `start_agent_jo.bat` had a `%~dp0` inside a
+block, so both died before doing anything — with a message that names neither
+the file nor the cause.
+
+Both now name the folder **once**, in the `cd` at the top, and use relative
+paths from there. Blocks that referenced it became `goto` labels.
+
+Two checks scan every `.bat` in the repository for the pattern: no path
+expansion inside a parenthesised block, and every block closes. This is not a
+bug you find by reading — it depends on what the folder is called.
+
+> Anyone hitting this on an older build can rename the folder to remove the
+> brackets and it will start. The fix means you don't have to.
+
+
+### 108. No vendor is the default
+
+Asked why Anthropic couldn't simply stop being the main model. The honest
+answer was that it could, and I had been patching around it instead.
+
+`BACKEND` shipped as `"anthropic"`. One line, and everything followed from it:
+a user with a DeepSeek key still had an Anthropic brain constructed before
+their engine was consulted. **Four fixes across four builds — the keyless
+crash, the engine fallback, `needs_key`, `start_engine` — were all downstream
+of it.** Each was a real fix; none touched the cause.
+
+It ships as `"auto"` now, resolved when a brain is built:
+
+1. **an engine you configured** — local before paid, because a local model has
+   no key to be wrong
+2. **a running Ollama**
+3. **Anthropic**, if a key exists
+4. otherwise a plain *"No engine is set up yet"* naming where to add one
+
+An Anthropic key no longer outranks something you chose yourself. A
+Claude-only setup is unaffected, and `--backend anthropic` still does exactly
+what it says.
+
+`MODEL` stays a Claude id, and that's correct — it is the Anthropic model
+field, and putting another vendor's model in it is the bug `repair_model()`
+exists to undo.
+
+> Worth recording: four consecutive builds treated symptoms of a
+> one-line cause. The question that fixed it was not a bug report.
+
+
+### 109. A test that can fail, and a save that doesn't stall
+
+**"Test connection" never connected.** It checked that two fields weren't
+empty and said *"Looks valid. Save it, then send a message to confirm the
+endpoint responds."* A test that cannot fail is not a test — it sent people
+away confident about an endpoint nobody had contacted.
+
+It now sends one real message and classifies what comes back, because "it
+didn't work" is not a diagnosis when a wrong key, a wrong model id, a stopped
+server and a firewall all produce the same red text:
+
+| what happened | what it says |
+|---|---|
+| 401 | the provider rejected the API key — check for a copied space |
+| 404 | *'qwen3:8b'* isn't a model this endpoint knows — `ollama list` |
+| 429 | rate-limited, **which means it connected** |
+| no credit | connected, but the account has no credit |
+| refused | couldn't reach it — is Ollama running? `ollama serve` |
+| TLS | the certificate wasn't accepted — common behind a proxy |
+
+Local and cloud endpoints get different advice for the same symptom, and a
+success says plainly that a working connection isn't a working model.
+
+**Two real hazards fixed underneath it.** A provider error arrives from the
+brain as *text* rather than an exception, so it bypassed the classifier
+entirely and an unreachable host read as a vague "provider problem". And the
+chat client uses a 600-second timeout with two retries — sensible for a long
+generation, catastrophic for a connection test, where a host that drops
+packets would have hung the button for **half an hour**. The probe carries its
+own timeout and no retries.
+
+**The save stall was mine.** Making the backend vendor-neutral last build
+meant `resolve_backend()` constructs an `OllamaBrain` to see if one is
+running — a network probe of up to three seconds, run every time a brain is
+built, and the UI rebuilds one immediately after saving an engine. Whether
+Ollama is running doesn't change between two clicks, so the answer is cached
+for 30 seconds.
+
+
+### 110. Picking Claude has to reach Claude
+
+Reported: calls went to DeepSeek while Claude was selected, and other engines
+errored. One cause, and it was mine.
+
+`_force_model("Claude")` returned **`None`** — meaning "use whatever this
+brain defaults to". That was Anthropic for as long as the backend was
+hardcoded. Two builds ago the backend became whichever engine you configured,
+so `None` started meaning *your* engine: **choosing Claude called DeepSeek.**
+Naming a Claude model id instead was no better — it sent `claude-sonnet-4-6`
+to DeepSeek, which is the `400 invalid model name` in the report.
+
+Claude routes **by name** now, exactly like a custom engine. With no key it
+says so instead of falling through to something else.
+
+> Narrowing that took three attempts, and each one was the suite refusing a
+> worse version. Intercepting any Anthropic-looking model id bypassed
+> `HybridBrain`'s own cloud side — a test's injected client was ignored and a
+> real API call went out. Only the engine **name** is intercepted; a bare
+> model id still belongs to the calling brain, which was always the contract.
+
+**The other half of the report** — `DeepSeekReplika` isn't installed, run
+`ollama pull DeepSeekReplika` — is an engine called Nemotron with another
+engine's **name** in its model field. Ollama was then asked to pull a model by
+that name, so the error blamed the model rather than the mixed-up field.
+`repair_model()` has done this for the global setting since August; custom
+engines had no equivalent. Health now names the engine, the wrong value and
+where to fix it — and an engine named after its own model, which is the app's
+convention for local ones, is not flagged.
+
+
+### 111. A default destination is never a kindness
+
+Deleting every engine and adding them back fixed it, and that tells you what
+was wrong: the stored entries had lost their base URL.
+
+`OpenAIBrain` did `base_url or config.DEEPSEEK_BASE_URL`. So an engine with no
+base URL **silently called DeepSeek** — which is why the error read "could not
+reach the DeepSeek endpoint" on a machine whose engine was called Nemotron and
+pointed at Ollama. An error naming a service you never chose, on an engine you
+did.
+
+Three fixes, all the same principle: **fail where the problem is.**
+
+- An engine with no base URL is **refused**, naming itself and what to set.
+- Network errors name the engine and **its own endpoint** — *"Could not reach
+  Nemotron at http://localhost:11434/v1"* — rather than a default someone else
+  configured.
+- **Health checks stored engines before you send anything**: no base URL, a
+  URL without a scheme, no model id, a cloud engine with no key.
+
+And an entry the loader drops — missing a name or a model — used to vanish
+without trace, so an engine you saved simply wasn't in the list and nothing
+said why. It's reported now.
+
+> None of this needed deducing from a wrong error message, which is what it
+> cost to find.

@@ -360,7 +360,8 @@ class AnthropicBrain(_PerThreadEngine):
              on_text=None, model: str | None = None):
         """on_text: optional callback receiving text deltas as they stream.
         model: per-call override (used by routing)."""
-        _ds = _external_response(model, messages, system, tools, on_text)
+        _ds = _external_response(model, messages, system, tools, on_text,
+                                 caller=self)
         if _ds is not None:
             resp, self.last_engine, self.last_usage = _ds
             return resp
@@ -581,7 +582,8 @@ class OllamaBrain(_PerThreadEngine):
     # ---- interface ----------------------------------------------------- #
     def chat(self, messages: list, system, tools: list | None = None,
              on_text=None, model: str | None = None):
-        _ds = _external_response(model, messages, system, tools, on_text)
+        _ds = _external_response(model, messages, system, tools, on_text,
+                                 caller=self)
         if _ds is not None:
             resp, self.last_engine, self.last_usage = _ds
             return resp
@@ -707,10 +709,20 @@ class OpenAIBrain(_PerThreadEngine):
     def __init__(self, model: str | None = None, base_url: str | None = None,
                  api_key: str | None = None, label: str = "deepseek",
                  client=None, supports_tools: bool = True,
-                 supports_stream: bool = True):
+                 supports_stream: bool = True, timeout: float | None = None):
         self.model = model or config.DEEPSEEK_MODEL_PRO
         self._label = label
-        self.base_url = base_url or config.DEEPSEEK_BASE_URL
+        # An engine with no base URL used to silently become a DeepSeek
+        # call. So a misconfigured engine produced "could not reach the
+        # DeepSeek endpoint" while the badge said Nemotron — an error about
+        # a service the user had never chosen, on an engine they had.
+        # Defaulting a destination is never a kindness.
+        self.base_url = (base_url or "").strip()
+        if not self.base_url:
+            raise EngineNotConfigured(
+                f"Engine '{label}' has no base URL.",
+                "Open Engines and set one — https://api.deepseek.com/v1 for "
+                "DeepSeek, http://localhost:11434/v1 for Ollama.")
         self.supports_tools = supports_tools
         self.supports_stream = supports_stream
         self.last_engine = None
@@ -719,10 +731,15 @@ class OpenAIBrain(_PerThreadEngine):
             self._client = client            # injected (tests)
         else:
             from openai import OpenAI         # lazy: only when actually used
+            # 600s suits a long generation; it is catastrophic for a
+            # connection test, where a host that drops packets would hang the
+            # button for half an hour across two retries. The probe passes
+            # its own.
             self._client = OpenAI(
                 api_key=api_key or config.DEEPSEEK_API_KEY or "missing",
-                base_url=base_url or config.DEEPSEEK_BASE_URL,
-                timeout=600.0, max_retries=2)
+                base_url=self.base_url,
+                timeout=(timeout if timeout is not None else 600.0),
+                max_retries=(0 if timeout is not None else 2))
 
     def describe(self) -> str:
         return f"{self._label}: {self.model}"
@@ -1041,7 +1058,8 @@ class OpenAIBrain(_PerThreadEngine):
                     "model id matches your provider's naming (for example, NVIDIA "
                     "uses the `deepseek-ai/` prefix, DeepSeek's own API does not)._")
         if "timeout" in low or "timed out" in low or "connection" in low:
-            return ("_Could not reach the DeepSeek endpoint (network or timeout). "
+            return (f"_Could not reach {who} at {self.base_url} (network or "
+                    f"timeout). "
                     "Check your connection and the base URL, then try again._")
         return f"_{who} request failed \u2014 {name}: {s[:300]}_"
 
@@ -1125,12 +1143,22 @@ def load_custom_engines(refresh: bool = False) -> list:
     if _custom_engines_cache is not None and not refresh:
         return _custom_engines_cache
     data = []
+    _dropped_engines.clear()
     try:
         if _engines_file().exists():
             raw = json.loads(_engines_file().read_text(encoding="utf-8"))
             need_migrate = False
             if isinstance(raw, list):
                 for e in raw:
+                    # An entry missing a name or model is dropped here. It
+                    # used to vanish without trace, so an engine you saved
+                    # simply wasn't there and nothing said why. Record it.
+                    if isinstance(e, dict) and not (e.get("name")
+                                                    and e.get("model")):
+                        _dropped_engines.append({
+                            "name": e.get("name") or "(unnamed)",
+                            "why": ("no model id" if e.get("name")
+                                    else "no name")})
                     if isinstance(e, dict) and e.get("name") and e.get("model"):
                         stored = str(e.get("api_key", ""))
                         if stored and not crypto.is_encrypted(stored):
@@ -1220,6 +1248,88 @@ def engine_price(label) -> tuple:
             return (float(e.get("price_in", 0) or 0),
                     float(e.get("price_out", 0) or 0))
     return (0.0, 0.0)
+
+
+_dropped_engines = []
+
+
+def check_engines() -> dict:
+    """Stored engines that can't work, named before you send a message.
+
+    A saved engine that had lost its base URL used to be invisible: the call
+    fell through to a default endpoint, so the error named a service the user
+    had never chosen while the badge named the engine they had. The only way
+    out was to delete every engine and add them again, which is a thing
+    nobody should have to deduce.
+    """
+    problems = []
+    for e in load_custom_engines(refresh=True) or []:
+        name = e.get("name") or "(unnamed)"
+        base = (e.get("base_url") or "").strip()
+        model = (e.get("model") or "").strip()
+        if not base:
+            problems.append({
+                "engine": name, "what": "has no base URL",
+                "fix": ("Open Engines, edit it, and set one — "
+                        "http://localhost:11434/v1 for Ollama.")})
+        elif not base.startswith(("http://", "https://")):
+            problems.append({
+                "engine": name, "what": f"has '{base}' as its base URL",
+                "fix": "It needs to start with http:// or https://."})
+        if not model:
+            problems.append({
+                "engine": name, "what": "has no model id",
+                "fix": "Set the id the provider expects, e.g. qwen3:8b."})
+        if base and not is_local_endpoint(base) and not e.get("api_key"):
+            problems.append({
+                "engine": name,
+                "what": "is a cloud engine with no API key",
+                "fix": "Add its key, or point it at a local runner."})
+    for d in _dropped_engines:
+        problems.append({
+            "engine": d["name"],
+            "what": f"was dropped on load ({d['why']})",
+            "fix": ("Re-save it in Engines with every field filled — it "
+                    "isn't in the list at all until then.")})
+    return {"ok": not problems, "problems": problems,
+            "detail": "; ".join(f"'{p['engine']}' {p['what']}"
+                                for p in problems[:3]),
+            "count": len(problems)}
+
+
+def repair_engine_models() -> dict:
+    """An engine whose MODEL field holds another ENGINE's name.
+
+    Reported: an engine called Nemotron with the model 'DeepSeekReplika'.
+    Ollama was then asked to pull a model by that name, and the error read as
+    a missing model rather than a mixed-up field. `repair_model()` already
+    does this for the global setting; custom engines had no equivalent, so a
+    single mis-typed field broke every call through that engine with a
+    message pointing at the wrong thing.
+
+    Only fixes the unambiguous case — the model field naming a DIFFERENT
+    engine — because an engine legitimately named after its own model is the
+    app's own convention for local ones.
+    """
+    entries = load_custom_engines(refresh=True) or []
+    names = {e.get("name", "").lower() for e in entries}
+    fixed = []
+    for e in entries:
+        model = (e.get("model") or "").strip()
+        if not model:
+            continue
+        if (model.lower() in names
+                and model.lower() != (e.get("name") or "").lower()):
+            fixed.append({"engine": e.get("name"), "was": model})
+    return {"ok": True, "confused": fixed,
+            "detail": ("" if not fixed else
+                       "; ".join(f"'{f['engine']}' has another engine's name "
+                                 f"('{f['was']}') in its model field"
+                                 for f in fixed)),
+            "fix": ("" if not fixed else
+                    "Open Engines, edit it, and put the model id the "
+                    "provider expects in the Model field — `ollama list` for "
+                    "a local one.")}
 
 
 def custom_engine_by_name(name):
@@ -1451,7 +1561,8 @@ def _is_model_id(token: str) -> bool:
     return not (" " in t or any(c.isupper() for c in t))
 
 
-def _external_response(model, messages, system, tools, on_text):
+def _external_response(model, messages, system, tools, on_text,
+                       caller=None):
     """Handle DeepSeek (built-in) or any user-defined engine. `model` is the
     selector token: a DeepSeek model id, or a custom engine's NAME. Returns
     (response, engine, usage), or None if it's neither (caller proceeds)."""
@@ -1476,6 +1587,41 @@ def _external_response(model, messages, system, tools, on_text):
     # Your own definition wins. If you've added an engine called "Claude"
     # with your key and model, that is the one to use — the built-in exists
     # only so a fresh install works before you've configured anything.
+    # "Claude" has to route like any other engine now. It used to mean
+    # "whatever this brain defaults to", which was Anthropic while the
+    # backend was hardcoded — once the backend became whichever engine the
+    # user configured, choosing Claude quietly called DeepSeek, and sending a
+    # Claude model id to DeepSeek produced "invalid model name".
+    # Only the engine NAME. A bare model id ("claude-sonnet-4-6") means
+    # "the calling brain handles this" and always has — intercepting that
+    # took the decision away from a caller that was already equipped to
+    # make it, including one holding an injected client.
+    if model == "Claude":
+        # Only take over when the caller genuinely can't reach Anthropic.
+        # An Anthropic brain obviously can; so can a hybrid one, through its
+        # cloud side. Intercepting either would bypass their client — which
+        # in the hybrid case meant a test's injected fake was ignored and a
+        # real API call went out.
+        if (getattr(caller, "backend", "") == "anthropic"
+                or getattr(caller, "cloud", None) is not None):
+            return None
+        if not (os.environ.get("ANTHROPIC_API_KEY")
+                or os.environ.get("AGENT_API_KEY")):
+            note = ("Claude needs an API key, and none is set. Add one in "
+                    "Settings, or pick one of your own engines — a local "
+                    "one needs no key.")
+            return (SimpleNamespace(content=[SimpleNamespace(type="text",
+                                                             text=note)],
+                                    stop_reason="end_turn"), "claude", None)
+        try:
+            ab = AnthropicBrain(config.MODEL)
+        except EngineNotConfigured as exc:
+            return (SimpleNamespace(content=[SimpleNamespace(
+                type="text", text=f"{exc.message} {exc.fix}")],
+                stop_reason="end_turn"), "claude", None)
+        return (ab.chat(messages, system, tools, on_text=on_text),
+                ab.last_engine, ab.last_usage)
+
     entry = custom_engine_by_name(model)        # custom engines route by name
     if entry is None and model and not _is_model_id(model):
         names = ", ".join(custom_engine_names()) or "none configured"
@@ -1545,7 +1691,8 @@ class HybridBrain(_PerThreadEngine):
           - any other non-None id -> the local Ollama, run with THAT id
             (this is how a second local model, e.g. qwen3.6, is selected).
         Falls back to Claude if the local backend is unavailable."""
-        _ds = _external_response(model, messages, system, tools, on_text)
+        _ds = _external_response(model, messages, system, tools, on_text,
+                                 caller=self)
         if _ds is not None:
             resp, self.last_engine, self.last_usage = _ds
             return resp
@@ -1603,7 +1750,7 @@ class HybridBrain(_PerThreadEngine):
             return []
 
 
-def _first_usable_custom():
+def _first_usable_custom(build: bool = True):
     """An engine the user configured that can actually run.
 
     Prefers local — no key to be wrong — then any cloud engine carrying its
@@ -1619,6 +1766,8 @@ def _first_usable_custom():
          if e.get("base_url") and (e.get("api_key")
                                    or is_local_endpoint(e.get("base_url")))),
         key=lambda e: 0 if is_local_endpoint(e.get("base_url", "")) else 1)
+    if not build:
+        return ranked[0] if ranked else None
     for e in ranked:
         try:
             return OpenAIBrain(model=e.get("model"),
@@ -1630,8 +1779,171 @@ def _first_usable_custom():
     return None
 
 
+def probe_engine(base_url: str, api_key: str, model: str,
+                 timeout: float = 12.0) -> dict:
+    """Actually talk to an engine and report what happened.
+
+    The Test button used to check that two fields weren't empty and say
+    "Looks valid" — a test that cannot fail is not a test, and it sent people
+    away confident about an endpoint nobody had contacted.
+
+    This sends one real (tiny) message and classifies the result, because
+    "it didn't work" is not a diagnosis: a wrong key, a wrong model id, a
+    server that isn't running and a firewall all need different actions.
+    """
+    import time as _t
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return {"ok": False, "stage": "setup",
+                "error": "No base URL.",
+                "fix": "Something like https://api.deepseek.com/v1, or "
+                       "http://localhost:11434/v1 for Ollama."}
+    if not (model or "").strip():
+        return {"ok": False, "stage": "setup", "error": "No model id.",
+                "fix": "The exact id the provider expects, e.g. "
+                       "deepseek-chat or qwen3:8b."}
+    if not base.startswith(("http://", "https://")):
+        return {"ok": False, "stage": "setup",
+                "error": f"'{base}' isn't a URL.",
+                "fix": "It needs to start with http:// or https://."}
+
+    t0 = _t.time()
+    try:
+        brain = OpenAIBrain(model=model, base_url=base,
+                            api_key=(api_key or "none"), label="test",
+                            timeout=timeout)
+    except Exception as exc:
+        return {"ok": False, "stage": "client",
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+                "fix": "The OpenAI client couldn't be built for that URL."}
+
+    try:
+        resp = brain.chat([{"role": "user", "content": "Reply with: ok"}],
+                          ["Reply with exactly: ok"], None)
+        text = "".join(b.text for b in getattr(resp, "content", [])
+                       if getattr(b, "type", "") == "text").strip()
+    except Exception as exc:
+        return _probe_failure(exc, base, model, round(_t.time() - t0, 1))
+
+    took = round(_t.time() - t0, 1)
+    # a friendly error message is still a failure — the brain catches
+    # provider errors and returns them as text, so check for that shape
+    if text.startswith("_") and text.endswith("_"):
+        # OpenAIBrain catches provider errors and returns them as text rather
+        # than raising, so the classifier below never saw them — an
+        # unreachable host was reported as a vague "provider" problem. Run
+        # the message through the same classification.
+        return _probe_failure(RuntimeError(text.strip("_")), base, model,
+                              took)
+    if not text:
+        return {"ok": False, "stage": "empty",
+                "error": "Connected, but the reply was empty.",
+                "seconds": took,
+                "fix": "Often a model id the server accepts but can't run."}
+    return {"ok": True, "seconds": took, "reply": text[:120],
+            "detail": f"Connected and answered in {took}s.",
+            "note": ("A working connection isn't a working model — check the "
+                     "reply looks sane before trusting it.")}
+
+
+def _probe_failure(exc, base: str, model: str, took: float) -> dict:
+    """Name the cause. Each of these needs a different thing done about it."""
+    s = f"{type(exc).__name__}: {exc}"
+    low = s.lower()
+    local = is_local_endpoint(base)
+    if "401" in s or "authentication" in low or "unauthorized" in low:
+        return {"ok": False, "stage": "auth", "seconds": took,
+                "error": "The provider rejected the API key.",
+                "fix": "Check for a copied space, or a key from a different "
+                       "product of theirs."}
+    if "403" in s or "permission" in low or "forbidden" in low:
+        return {"ok": False, "stage": "auth", "seconds": took,
+                "error": "The key was accepted but isn't allowed to use this.",
+                "fix": "Usually a plan or region restriction on that model."}
+    if "404" in s or ("model" in low and "not" in low and "found" in low):
+        return {"ok": False, "stage": "model", "seconds": took,
+                "error": f"'{model}' isn't a model this endpoint knows.",
+                "fix": ("Run `ollama list` and use one of those exactly."
+                        if local else
+                        "Check the id against the provider's documentation — "
+                        "they differ between vendors for the same model.")}
+    if "429" in s or "rate" in low:
+        return {"ok": False, "stage": "limit", "seconds": took,
+                "error": "Rate-limited, which means it connected.",
+                "fix": "The engine works. Try again shortly."}
+    if ("insufficient" in low or "credit" in low or "quota" in low
+            or "billing" in low):
+        return {"ok": False, "stage": "credit", "seconds": took,
+                "error": "Connected, but the account has no credit.",
+                "fix": "Top up, or use a local engine — those cost nothing."}
+    if ("connection" in low or "refused" in low or "timed out" in low
+            or "timeout" in low or "unreachable" in low
+            or "name or service" in low or "getaddrinfo" in low):
+        return {"ok": False, "stage": "network", "seconds": took,
+                "error": f"Couldn't reach {base}.",
+                "fix": ("Is Ollama running? `ollama serve`, and check the "
+                        "port matches." if local else
+                        "Check the URL, and whether a proxy or firewall is "
+                        "in the way.")}
+    if "ssl" in low or "certificate" in low:
+        return {"ok": False, "stage": "network", "seconds": took,
+                "error": "The TLS certificate wasn't accepted.",
+                "fix": "Common behind a corporate proxy that re-signs traffic."}
+    return {"ok": False, "stage": "unknown", "seconds": took,
+            "error": s[:220],
+            "fix": "Unrecognised — the message above is the provider's own."}
+
+
+_ollama_probe = None          # (checked_at, was_running)
+
+
+def resolve_backend() -> str:
+    """Which backend to build, given what's actually set up.
+
+    Order: an engine you configured yourself (local before paid), then a
+    running Ollama, then Anthropic if a key exists. No vendor is privileged
+    by being written into a default — the first thing that works wins, and
+    yours comes first.
+    """
+    if _first_usable_custom(build=False) is not None:
+        return "custom"
+    # Constructing OllamaBrain probes the network for up to 3 seconds. This
+    # runs whenever a brain is built, and the UI rebuilds one right after
+    # saving an engine — so saving appeared to hang for three seconds on any
+    # machine without Ollama, every time. Cache the answer briefly: whether
+    # Ollama is running doesn't change between two clicks.
+    global _ollama_probe
+    import time as _t
+    now = _t.time()
+    if _ollama_probe and now - _ollama_probe[0] < 30:
+        if _ollama_probe[1]:
+            return "ollama"
+    else:
+        try:
+            OllamaBrain()
+            _ollama_probe = (now, True)
+            return "ollama"
+        except Exception:
+            _ollama_probe = (now, False)
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AGENT_API_KEY"):
+        return "anthropic"
+    return "none"
+
+
 def make_brain(backend: str | None = None, model: str | None = None):
     backend = (backend or config.BACKEND).lower()
+    if backend == "auto":
+        backend = resolve_backend()
+    if backend == "custom":
+        b = _first_usable_custom()
+        if b is not None:
+            return b
+        backend = "anthropic"
+    if backend == "none":
+        raise EngineNotConfigured(
+            "No engine is set up yet.",
+            "Add one in Engines — a local Ollama model needs no key at all — "
+            "or set an API key in Settings.")
     if backend == "ollama":
         try:
             return OllamaBrain(model)

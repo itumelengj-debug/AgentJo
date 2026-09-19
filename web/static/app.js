@@ -962,13 +962,29 @@ async function removeEngine(name) {
 
 async function testEngine() {
   const f = engineForm();
-  if (!f.base_url || !f.model) { setEngineStatus("Enter a base URL and model id to test.", "err"); return; }
-  setEngineStatus("Testing connection…", "");
-  // Save-then-noop isn't ideal; instead do a lightweight add+chat probe would
-  // need a key. We surface the server's validation by attempting a save in a
-  // dry manner: here we just validate fields client-side and tell the user to
-  // save, since a real probe runs server-side on first use.
-  setEngineStatus("Looks valid. Save it, then select it and send a message to confirm the endpoint responds.", "ok");
+  const btn = $("#testEngineBtn");
+  if (btn) btn.disabled = true;
+  setEngineStatus("Connecting\u2026", "");
+  try {
+    const r = await fetch("/api/engines/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: f.base_url, api_key: f.api_key,
+                             model: f.model, name: _editingEngine || "" }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setEngineStatus(`${d.detail} It replied: "${d.reply}"`, "ok");
+    } else {
+      // the stage says what to go and look at — "it didn't work" is not a
+      // diagnosis when a wrong key, a wrong model id and a firewall all
+      // produce the same red text
+      setEngineStatus(`${d.error} ${d.fix || ""}`, "err");
+    }
+  } catch (e) {
+    setEngineStatus("Couldn't run the test — the app itself didn't respond.",
+                    "err");
+  }
+  if (btn) btn.disabled = false;
 }
 
 function setEngineStatus(msg, kind) {

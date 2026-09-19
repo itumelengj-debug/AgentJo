@@ -17,11 +17,17 @@ if exist ".venv\Scripts\python.exe"  set "PY=.venv\Scripts\python.exe"
 if not defined PY if exist "venv\Scripts\python.exe"  set "PY=venv\Scripts\python.exe"
 if not defined PY if exist "env\Scripts\python.exe"   set "PY=env\Scripts\python.exe"
 
-if not defined PY (
+REM A goto, not a parenthesised block. %~dp0 expands as literal text, so a
+REM folder like "AgentJo-2026-09-18 (1)" puts a ")" inside the block and cmd
+REM closes it early — "\ was unexpected at this time", and nothing starts.
+if not defined PY goto no_venv
+goto have_venv
+
+:no_venv
   echo.
   echo   Could not find a virtual environment next to this file.
   echo   Expected: .venv\Scripts\python.exe  in
-  echo     %~dp0
+  echo     "%CD%"
   echo.
   echo   Set one up once, from this folder, with:
   echo     python -m venv .venv
@@ -30,7 +36,9 @@ if not defined PY (
   echo.
   pause
   exit /b 1
-)
+
+:have_venv
+
 
 echo.
 echo   Starting Agent Jo with %PY%
@@ -42,7 +50,7 @@ REM --- warn if voice isn't installed, but start anyway ---------------------
 if errorlevel 1 (
   echo   Note: voice input ^(faster-whisper^) is not installed in this venv.
   echo         Everything else works. To enable voice, run:
-  echo             %PY% -m pip install faster-whisper
+  echo             "%PY%" -m pip install faster-whisper
   echo.
 )
 

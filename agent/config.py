@@ -22,10 +22,20 @@ DB_PATH = AGENT_HOME / "agent.db"
 # Backend: "anthropic" (Claude API), "ollama" (local model), or "hybrid"
 # (local Ollama for simple turns + background work, Claude for hard turns —
 # saves API spend). Hybrid uses MODEL for Claude and OLLAMA_MODEL for local.
-BACKEND = os.environ.get("AGENT_BACKEND", "anthropic")
+# "auto" — whichever engine you have configured, resolved when a brain is
+# built rather than fixed here. This used to say "anthropic", which made one
+# vendor structurally the default: a user with a DeepSeek key still got an
+# Anthropic brain constructed first, and four separate fixes in as many
+# builds were all downstream of this single line. Anthropic is now one
+# option among several, reached when you have a key for it and nothing you
+# chose yourself.
+BACKEND = os.environ.get("AGENT_BACKEND", "auto")
 
 # Anthropic models — https://platform.claude.com/docs/en/about-claude/models/overview
 # MODEL powers conversation; FAST_MODEL handles cheap background memory extraction.
+# Only consulted when the Anthropic backend is actually in use. It stays a
+# Claude id because it IS the Anthropic model field — naming another
+# vendor's model here is the bug `repair_model()` exists to undo.
 MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-6")
 FAST_MODEL = os.environ.get("AGENT_FAST_MODEL", "claude-haiku-4-5-20251001")
 
@@ -86,7 +96,7 @@ def deepseek_flash_key():
 # Stamped when this build was packaged. Surfaced in problem reports so
 # "is the fix actually running?" is answerable at a glance — replacing
 # files without restarting the app has burned us more than once.
-BUILD_ID = "2026-09-18 08:47 UTC"
+BUILD_ID = "2026-09-19 05:19 UTC"
 
 MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
 # Ollama context window (prompt + reply budget). Ollama defaults this to only

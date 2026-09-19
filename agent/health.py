@@ -76,6 +76,35 @@ def _check_location():
     return _c("Where it lives", "Deploy", OK, str(here))
 
 
+def _check_engine_config():
+    """An engine that can't work should say so here, not at message time."""
+    try:
+        from . import brain as _b
+        r = _b.check_engines()
+        if r["problems"]:
+            return _c("Engine setup", "Engines", FAIL, r["detail"],
+                      r["problems"][0]["fix"])
+        return _c("Engine setup", "Engines", OK,
+                  "Every saved engine has a URL, a model and a key if it "
+                  "needs one.")
+    except Exception as exc:
+        return _c("Engine setup", "Engines", UNKNOWN, str(exc)[:160])
+
+
+def _check_engine_models():
+    """An engine whose model field names another engine breaks every call
+    through it, with an error that blames the model."""
+    try:
+        from . import brain as _b
+        r = _b.repair_engine_models()
+        if r["confused"]:
+            return _c("Engine models", "Engines", FAIL, r["detail"], r["fix"])
+        return _c("Engine models", "Engines", OK,
+                  "Every engine has a model id, not another engine's name.")
+    except Exception as exc:
+        return _c("Engine models", "Engines", UNKNOWN, str(exc)[:160])
+
+
 def _check_intercepts():
     """Is the gate actually on, and is anything waiting?
 
@@ -683,6 +712,8 @@ def report(memory=None) -> dict:
         _safe(_check_backups, "Backups", "Safety"),
         _safe(_check_index_truncated, "Document index", "Safety"),
         _safe(_check_intercepts, "Review gate", "Safety"),
+        _safe(_check_engine_models, "Engine models", "Engines"),
+        _safe(_check_engine_config, "Engine setup", "Engines"),
         _safe(_check_location, "Where it lives", "Deploy"),
         _safe(_check_disk, "Disk space", "Safety"),
         _safe(_check_budget, "Spend", "Safety"),

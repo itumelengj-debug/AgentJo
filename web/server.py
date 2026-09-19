@@ -381,7 +381,14 @@ def _force_model(choice: str):
     if choice in brainmod.custom_engine_names():
         return choice
     if choice == "Claude":
-        return None
+        # `None` means "use whatever this brain defaults to". That was
+        # Anthropic when the backend was hardcoded; since the backend became
+        # vendor-neutral the base brain is whichever engine you configured —
+        # so picking Claude quietly called DeepSeek. Name the model instead
+        # of relying on what the brain happens to be.
+        # route by name, exactly like a custom engine — the dispatcher knows
+        # how to reach Anthropic and won't send a Claude id to DeepSeek
+        return "Claude"
     if choice == "DeepSeek Pro":
         return config.DEEPSEEK_MODEL_PRO
     if choice == "DeepSeek Flash":
@@ -644,6 +651,26 @@ def turbo_status():
     ok, why = turbo.usable(inv)
     return {"enabled": bool(config.TURBO), "usable": ok, "why": why,
             **turbo.stats()}
+
+
+class ProbeBody(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    name: str = ""
+
+
+@app.post("/api/engines/test")
+def engines_test(body: ProbeBody):
+    """Actually connect. The old Test button checked two fields weren't
+    empty and said 'Looks valid' — a test that cannot fail."""
+    key = body.api_key
+    if not key and body.name:
+        # editing an existing engine: a blank key field means "keep the
+        # stored one", so testing must use it rather than sending nothing
+        entry = brainmod.get_custom_engine(body.name) or {}
+        key = entry.get("_api_key") or entry.get("api_key") or ""
+    return brainmod.probe_engine(body.base_url, key, body.model)
 
 
 @app.get("/api/engines/{name}")
