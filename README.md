@@ -9,11 +9,11 @@ installed on. Point it at a local model and nothing leaves at all.
 
 *by Symbolic Synapse*
 
----
-
 ## Demo
 
 ![Agent Jo screenshot](docs/demo.png)
+
+---
 
 ## What it actually does
 
@@ -42,6 +42,18 @@ imports what in a circle, what nothing imports at all. Exports to Mermaid,
 Graphviz or CSV for Visio.
 
 ---
+
+## Two apps
+
+**Agent Jo** — the agent: chat, documents, code map, schedules, the crew.
+
+**Agent Jo Jobs** — the job search, in its own window on port 8766. Roles,
+held drafts, auto-apply, and what actually produced replies. Start it with
+`start_agent_jo_jobs.bat` (or `./start_agent_jo_jobs.sh`).
+
+They share the data, the engines and the audit trail — the routes moved, they
+weren't copied, so there is one fabrication check and one auto-apply engine.
+Run both at once; that's the normal case.
 
 ## Install
 
@@ -117,6 +129,7 @@ licence is for.
 
 | | |
 |---|---|
+| [UPGRADING.md](UPGRADING.md) | Updating an install you already have |
 | [CHANGELOG.md](CHANGELOG.md) | How it was built, and what was learned |
 | [COMMERCIAL.md](COMMERCIAL.md) | Using it in a business |
 | [VERIFYING.md](VERIFYING.md) | Checking a download |

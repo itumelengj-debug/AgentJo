@@ -6,6 +6,7 @@
    ========================================================================== */
 "use strict";
 
+const JOBS_APP_URL = "http://127.0.0.1:8766/";
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
@@ -139,7 +140,11 @@ async function boot() {
     const meta = await fetch("/api/meta").then(r => r.json());
     state.engines = meta.engines || [];
     state.defaultEngine = meta.default_engine || "Auto";
-  state.startEngine = d.start_engine || d.default_engine;
+    // "meta", not "d": an earlier edit inserted this with the wrong variable
+    // name, it threw on every load, and the catch below reported it as
+    // "Could not reach the server" — while silently skipping the microphone,
+    // the no-engine warning and this very line.
+    state.startEngine = meta.start_engine || meta.default_engine;
     state.voiceStt = !!(meta.voice && meta.voice.stt);
     if (state.voiceStt) $("#micBtn").hidden = false;
     // The footer named a supplier where the product's name belongs. The
@@ -158,7 +163,10 @@ async function boot() {
   } catch (e) {
     showToast("Could not reach the server.", true);
   }
-  const savedId = (typeof state.defaultEngine === "string" && state.defaultEngine) || "Auto";
+  // open on an engine that can run — the stored default may need a key that
+  // isn't set, and the first message would simply fail
+  const savedId = (typeof state.startEngine === "string" && state.startEngine)
+    || (typeof state.defaultEngine === "string" && state.defaultEngine) || "Auto";
   const startEngine = state.engines.find(e => e.id === savedId)
     || state.engines.find(e => e.id === "Auto") || state.engines[0];
   applyEngine(startEngine);
@@ -496,6 +504,7 @@ function renderActive() {
   const empty = $("#emptyState");
   if (!conv || conv.messages.length === 0) {
     empty.classList.remove("hidden");
+    loadTaskFeed();
   } else {
     empty.classList.add("hidden");
     conv.messages.forEach(m => {
@@ -1600,7 +1609,6 @@ function closeAllModals() {
   closeTrends();
   closeCrew();
   closeBackup();
-  closeJobs();
   closeHealth();
   closeCaps();
   closeSetup();
@@ -1700,7 +1708,6 @@ function toast(msg, kind, opts) {
 // knowing what it's called. Panels themselves come from the sidebar, so this
 // can't drift out of date when one is added.
 const PALETTE_HINTS = {
-  jobsBtn: "search jobs, auto-apply, tailor a cv, resume, interview prep, track applications",
   settingsBtn: "engine, model, spending cap, budget, cost, turbo, themes, dark mode, voice",
   enginesBtn: "add or switch engine, api keys, local models",
   memoryBtn: "what it remembers about you, skills, facts",
@@ -1739,14 +1746,9 @@ function paletteItems() {
   out.push(
     { name: "New conversation", group: "Do", hint: "start a fresh chat",
       run: () => newConversation() },
-    { name: "Search my job sites", group: "Do",
-      hint: "find roles across your boards",
-      run: () => { $("#jobsBtn").click(); setTimeout(() => jobsTab("find"), 0); } },
-    { name: "Held drafts", group: "Do",
-      hint: "claims blocking your applications",
-      run: () => { $("#jobsBtn").click(); setTimeout(() => jobsTab("claims"), 0); } },
-    { name: "Run auto-apply", group: "Do", hint: "score, draft and send",
-      run: () => { $("#jobsBtn").click(); setTimeout(() => jobsTab("auto"), 0); } },
+    { name: "Jobs \u2014 find and apply", group: "Do",
+      hint: "roles, held drafts, auto-apply, cv \u2014 opens Agent Jo Jobs",
+      run: () => window.open(JOBS_APP_URL, "_blank", "noopener") },
     { name: "Verify the audit chain", group: "Do",
       hint: "prove the log wasn't altered",
       run: () => { $("#auditBtn").click(); setTimeout(() => {
@@ -3387,44 +3389,9 @@ function setTabBadge(id, n) {
   b.hidden = !n;
 }
 
-function jobsTab(which) {
-  const tabs = { find: "Find", tracked: "Tracked", claims: "Claims",
-                 results: "Results", auto: "Auto", where: "Where" };
-  Object.keys(tabs).forEach(k => {
-    const btn = $("#jobsTab" + tabs[k]), pane = $("#jobsPane" + tabs[k]);
-    if (btn) btn.classList.toggle("is-on", k === which);
-    if (pane) pane.hidden = k !== which;
-  });
-  if (which === "where") { loadJobSearchConfig(); loadSuggestedSites(); }
-  if (which === "tracked") loadJobs();
-  if (which === "claims") loadClaims();
-  if (which === "auto") loadAutoPreview();
-  if (which === "results") loadOutcomes();
-}
 
-async function searchThisPage(useBrowser) {
-  const b = useBrowser ? $("#jobsUrlBrowserBtn") : $("#jobsUrlBtn");
-  const url = $("#jobsUrl").value.trim();
-  if (!url) { $("#jobsStatus").textContent = "Paste a web address first."; return; }
-  const label = b.textContent;
-  b.disabled = true; b.textContent = "Reading…";
-  $("#jobsStatus").textContent = useBrowser
-    ? "Opening the page in a browser — this takes a few seconds…"
-    : "Reading that page…";
-  try {
-    const r = await fetch("/api/jobs/search/url", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, use_browser: !!useBrowser }) });
-    const d = await r.json();
-    if (!r.ok) { $("#jobsStatus").textContent = errText(d, "Could not read that page."); }
-    else {
-      renderJobResults(d.results || [], d,
-                       d.site + (d.how === "browser" ? " (via browser)" : ""));
-      $("#jobsStatus").textContent = d.note || "";
-    }
-  } catch (e) { $("#jobsStatus").textContent = "Could not read that page."; }
-  b.disabled = false; b.textContent = label;
-}
+
+
 
 function monogram(name) {
   const s = String(name || "?").trim();
@@ -3443,59 +3410,9 @@ function monogram(name) {
   return d;
 }
 
-function renderBulkBar() {
-  const bar = $("#jobsBulk");
-  if (!bar) return;
-  bar.hidden = _jobPicked.size === 0;
-  const c = $("#jobsBulkCount");
-  if (c) c.textContent = `${_jobPicked.size} selected`;
-}
 
-async function bulkDo(what) {
-  const keys = Array.from(_jobPicked);
-  if (!keys.length) return;
-  const eng = (($("#jobsEngine") || {}).value || "");
-  if (what === "remove") {
-    try {
-      const d = await fetch("/api/jobs/remove", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keys, forget: true }) }).then(r => r.json());
-      toast(`Removed ${d.removed} role(s). They won't be found again.`, "ok");
-    } catch (e) { toast("Could not remove those.", "bad"); }
-  } else {
-    // A fetch that returns 502 does NOT throw, so counting every call that
-    // didn't raise reported "scored 15 of 15" while all fifteen failed.
-    let done = 0;
-    const failures = [];
-    for (const key of keys) {
-      markRowBusy(key, true);
-      try {
-        const r = await fetch("/api/jobs/score", { method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, engine: eng }) });
-        if (r.ok) { done++; }
-        else {
-          const d = await r.json().catch(() => ({}));
-          failures.push(d.detail || `HTTP ${r.status}`);
-        }
-      } catch (e) { failures.push("could not reach the app"); }
-      markRowBusy(key, false);
-    }
-    if (!failures.length) {
-      toast(`Scored ${done} of ${keys.length}.`, "ok");
-    } else {
-      // fifteen identical failures are one problem, not fifteen
-      const same = new Set(failures);
-      toast(same.size === 1
-        ? `None scored — ${[...same][0]}`
-        : `Scored ${done} of ${keys.length}; ${failures.length} failed: ${failures[0]}`,
-        "bad");
-    }
-  }
-  _jobPicked.clear();
-  renderBulkBar();
-  loadJobs();
-}
+
+
 
 function jobRow(r, onPick) {
   const row = el("button", "job-row");
@@ -3603,606 +3520,29 @@ function emptyPane(host, title, body) {
   host.appendChild(box);
 }
 
-function renderJobResults(found, meta, label) {
-  const list = $("#jobsResults"), detail = $("#jobsFindDetail");
-  list.innerHTML = "";
-  // The summary used to concatenate every distinct reason, which meant one
-  // line per city — eighty of them. Show the three biggest and a total.
-  const rj = Object.entries((meta && meta.rejected) || {})
-    .sort((a, b) => b[1] - a[1]);
-  const skipped = rj.reduce((n, [, v]) => n + v, 0);
-  const top = rj.slice(0, 3).map(([k, n]) => `${n} ${k}`).join(", ");
-  const more = rj.length > 3 ? ` +${rj.length - 3} more` : "";
-  $("#jobsInfo").textContent =
-    `${(meta && meta.total) || found.length} found`
-    + (label ? ` · ${label}` : "");
-  const skipLine = $("#jobsSkipped");
-  if (skipLine) {
-    skipLine.textContent = skipped
-      ? `${skipped} skipped — ${top}${more}`
-      : "";
-    skipLine.title = rj.map(([k, n]) => `${n} ${k}`).join("\n");
-  }
-  if (!found.length) {
-    const errs = (meta && meta.errors) || [];
-    emptyPane(list, "Nothing found",
-      errs.length ? errs.join(" ")
-        : ((meta && meta.note) ||
-           "Try fewer words, or paste a job page into the box above."));
-    emptyPane(detail, "", "Pick a role to see it here.");
-    return;
-  }
-  const chosen = new Set();
-  found.forEach(r => {
-    list.appendChild(jobRow(r, (role) => {
-      detail.innerHTML = "";
-      const head = el("div", "detail-head");
-      head.textContent = role.title || "";
-      const sub = el("div", "detail-sub");
-      sub.textContent = [role.company, role.location, role.source]
-        .filter(Boolean).join(" · ");
-      const acts = el("div", "detail-actions");
-      const track = el("button", "btn primary btn-mini");
-      track.textContent = role.already_tracked ? "Already tracked" : "Track this role";
-      track.disabled = !!role.already_tracked;
-      track.addEventListener("click", async () => {
-        await addFromSearch([role]);
-        track.textContent = "Tracked ✓"; track.disabled = true;
-      });
-      acts.appendChild(track);
-      if (role.url) {
-        const a = el("a", "btn ghost btn-mini");
-        a.href = role.url; a.target = "_blank"; a.rel = "noopener";
-        a.textContent = "Open advert"; acts.appendChild(a);
-      }
-      detail.append(head, sub, acts);
-      if (role.summary) {
-        const b = el("div", "detail-block");
-        const h4 = el("h4"); h4.textContent = "From the advert";
-        const pre = el("pre"); pre.textContent = role.summary;
-        b.append(h4, pre); detail.appendChild(b);
-      }
-      if (!role.apply_email) {
-        const b = el("div", "detail-block");
-        const h4 = el("h4"); h4.textContent = "How you'd apply";
-        const pre = el("pre");
-        pre.textContent = "No address on the advert, so this is a portal "
-          + "application. Track it, draft a letter, then use Apply on portal "
-          + "from the Tracked tab.";
-        b.append(h4, pre); detail.appendChild(b);
-      }
-      chosen.add(role);
-    }));
-  });
-  const fresh = found.filter(r => !r.already_tracked);
-  if (fresh.length) {
-    const bar = el("div", "mcp-actions");
-    bar.style.cssText = "position:sticky;bottom:0;padding:8px 2px 2px;background:var(--surface)";
-    const all = el("button", "btn primary btn-mini");
-    all.textContent = `Track all ${fresh.length}`;
-    all.addEventListener("click", () => addFromSearch(fresh));
-    bar.appendChild(all);
-    list.appendChild(bar);
-  }
-  emptyPane(detail, "", "Pick a role on the left to see it here.");
-}
 
-async function searchJobs() {
-  const b = $("#jobsSearchBtn");
-  b.disabled = true; b.textContent = "Searching…";
-  $("#jobsStatus").textContent = "Looking across your enabled boards…";
-  try {
-    const d = await fetch("/api/jobs/search", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: $("#jobsQuery").value }) })
-      .then(r => r.json());
-    renderJobResults(d.results || [], d, "your boards");
-    $("#jobsStatus").textContent = "";
-  } catch (e) { $("#jobsStatus").textContent = "Search failed."; }
-  b.disabled = false; b.textContent = "Search boards";
-}
 
-async function addFromSearch(items) {
-  if (!items.length) { $("#jobsStatus").textContent = "Nothing selected."; return; }
-  try {
-    const d = await fetch("/api/jobs/search/add", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }) }).then(r => r.json());
-    $("#jobsStatus").textContent = `Now tracking ${d.added} role(s). Score them, or run auto-apply.`;
-    loadJobs();
-  } catch (e) { $("#jobsStatus").textContent = "Could not add those."; }
-}
 
-async function loadSuggestedSites() {
-  const host = $("#jobsSuggested");
-  if (!host) return;
-  try {
-    const d = await fetch("/api/jobs/sources/suggested").then(r => r.json());
-    host.innerHTML = "";
-    (d.suggested || []).forEach(s => {
-      const row = el("div", "dash-edit-row");
-      const lab = el("label");
-      const nm = el("span");
-      nm.textContent = `${s.name} — ${s.about}`;
-      lab.appendChild(nm);
-      const add = el("button", "btn ghost btn-mini");
-      add.textContent = s.added ? "Added" : "Add";
-      add.disabled = !!s.added;
-      add.addEventListener("click", async () => {
-        await fetch("/api/jobs/sources", { method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: s.name, url: s.url, kind: s.kind }) });
-        loadJobSearchConfig(); loadSuggestedSites();
-      });
-      row.append(lab, add);
-      host.appendChild(row);
-    });
-  } catch (e) { /* the panel works without suggestions */ }
-}
 
-async function loadJobSearchConfig() {
-  try {
-    const d = await fetch("/api/jobs/search/config").then(r => r.json());
-    const s = d.search || {};
-    $("#jobsExclude").value = (s.exclude || []).join(", ");
-    $("#jobsLocations").value = (s.locations || []).join(", ");
-    $("#jobsRemoteOnly").checked = s.remote_only !== false;
-    $("#jobsNeedEmail").checked = !!s.require_email;
-    const list = $("#jobsSourceList");
-    list.innerHTML = "";
-    if (!(d.sources || []).length) {
-      const p = el("div", "log-meta");
-      p.textContent = "No sites yet. Add any job page below, or pick one from Suggestions.";
-      list.appendChild(p);
-    }
-    (d.sources || []).forEach(src => {
-      const row = el("div", "dash-edit-row");
-      const lab = el("label");
-      const cb = el("input"); cb.type = "checkbox"; cb.checked = src.on !== false;
-      cb.addEventListener("change", async () => {
-        await fetch("/api/jobs/sources", { method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: src.url || src.name,
-                                 on: cb.checked }) });
-      });
-      const nm = el("span"); nm.textContent = `${src.name} (${src.kind})`;
-      lab.append(cb, nm);
-      const del = el("button", "btn ghost btn-mini"); del.textContent = "Remove";
-      del.addEventListener("click", async () => {
-        const r = await fetch("/api/jobs/sources/remove", { method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: src.name, url: src.url }) });
-        if (!r.ok) {
-          const d = await r.json().catch(() => ({}));
-          $("#jobsStatus").textContent = errText(d, "Could not remove that site.");
-        } else {
-          $("#jobsStatus").textContent = `Removed ${src.name}.`;
-        }
-        loadJobSearchConfig(); loadSuggestedSites();
-      });
-      row.append(lab, del);
-      list.appendChild(row);
-    });
-  } catch (e) { /* panel still usable without it */ }
-}
 
-async function saveJobSearchConfig() {
-  const split = (v) => (v || "").split(/[,;]/).map(s => s.trim()).filter(Boolean);
-  try {
-    await fetch("/api/jobs/search/config", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        exclude: split($("#jobsExclude").value),
-        locations: split($("#jobsLocations").value),
-        remote_only: $("#jobsRemoteOnly").checked,
-        require_email: $("#jobsNeedEmail").checked }) });
-    $("#jobsStatus").textContent = "Search settings saved — they apply to the daily run too.";
-  } catch (e) { /* non-fatal */ }
-}
 
-function openJobs() {
-  const m = $("#jobsModal");
-  m.hidden = false; m.style.display = "flex";
-  $("#jobsDraft").textContent = ""; $("#jobsStatus").textContent = "";
-  jobsTab("find");
-  loadJobs();
-  // so the badges are right before you've opened those tabs
-  fetch("/api/jobs/claims").then(r => r.json())
-    .then(d => setTabBadge("jobsBadgeClaims", d.count || 0))
-    .catch(() => {});
-}
-function closeJobs() {
-  const m = $("#jobsModal");
-  m.hidden = true; m.style.display = "none";
-}
-async function loadOutcomes() {
-  const head = $("#jobsResultsHead"), list = $("#jobsFindings");
-  const detail = $("#jobsBreakdown");
-  list.innerHTML = ""; detail.innerHTML = "";
-  try {
-    const d = await fetch("/api/jobs/outcomes").then(r => r.json());
-    head.innerHTML = "";
-    const line = el("div", "auto-line");
-    line.textContent = d.sent
-      ? `${d.replied} repl${d.replied === 1 ? "y" : "ies"} from `
-        + `${d.sent} application(s) — between ${d.overall.low}% and `
-        + `${d.overall.high}%.`
-      : "Nothing sent yet, so there's nothing to learn from.";
-    head.appendChild(line);
-    if (d.still_waiting.count) {
-      const w = el("div", "log-meta");
-      w.textContent = `${d.still_waiting.count} still waiting, the oldest `
-        + `${d.still_waiting.longest_days} days.`;
-      head.appendChild(w);
-    }
 
-    // findings first: the answers, before the tables they came from
-    (d.findings || []).forEach(f => {
-      const row = el("div", "auto-row" + (f.confident ? " good" : ""));
-      const t = el("div", "auto-row-title");
-      t.textContent = f.what;
-      const why = el("div", "log-meta");
-      why.textContent = f.why;
-      const doit = el("div", "log-meta");
-      doit.style.color = "var(--text)";
-      doit.textContent = f.do;
-      row.append(t, why, doit);
-      if (!f.confident) {
-        const tag = el("span", "job-tag warn");
-        tag.textContent = "not conclusive";
-        t.appendChild(tag);
-      }
-      list.appendChild(row);
-    });
 
-    // the tables underneath, with the range on every rate
-    const table = (title, rows, key) => {
-      if (!rows || !rows.length) return;
-      const b = el("div", "detail-block");
-      const h = el("h4"); h.textContent = title;
-      b.appendChild(h);
-      rows.forEach(r => {
-        const line2 = el("div", "outcome-row");
-        const name = el("span", "outcome-name");
-        name.textContent = r[key];
-        const bar = el("span", "outcome-bar");
-        const fill = el("span", "outcome-fill");
-        fill.style.left = r.low + "%";
-        fill.style.width = Math.max(1, r.high - r.low) + "%";
-        const dot = el("span", "outcome-dot");
-        dot.style.left = r.rate + "%";
-        bar.append(fill, dot);
-        const num = el("span", "outcome-num");
-        num.textContent = r.conclusive
-          ? `${r.rate}%`
-          : `${r.replied}/${r.sent}`;
-        num.title = r.conclusive
-          ? `${r.reading}`
-          : `${r.reading} — ${r.needed} more before this means anything`;
-        line2.append(name, bar, num);
-        if (!r.conclusive) line2.classList.add("is-thin");
-        b.appendChild(line2);
-      });
-      detail.appendChild(b);
-    };
-    table("By source", d.by_source, "source");
-    table("By fit score", d.by_score, "band");
-    table("By how you applied", d.by_method, "method");
-    const n = el("div", "log-meta");
-    n.style.marginTop = "8px";
-    n.textContent = d.note;
-    detail.appendChild(n);
-  } catch (e) {
-    emptyPane(list, "Couldn't work that out", "Try again.");
-  }
-}
 
-async function loadAutoPreview() {
-  const list = $("#jobsAutoPreview"), side = $("#jobsAutoSide");
-  const sum = $("#jobsAutoSummary");
-  if (!list) return;
-  list.innerHTML = ""; side.innerHTML = "";
-  try {
-    const d = await fetch("/api/jobs/auto/preview").then(r => r.json());
-    // the one line that answers "so what happens if I press it"
-    sum.innerHTML = "";
-    const head = el("div", "auto-line" + (d.enabled ? "" : " is-off"));
-    head.textContent = d.summary;
-    sum.appendChild(head);
-    const chips = el("div", "auto-chips");
-    const chip = (label, val, tone) => {
-      const c = el("span", "auto-chip" + (tone ? " " + tone : ""));
-      const b = el("b"); b.textContent = String(val);
-      const s = el("span"); s.textContent = " " + label;
-      c.append(b, s);
-      chips.appendChild(c);
-    };
-    chip("on today", `${d.sent_today}/${d.daily_cap}`,
-         d.room_today ? "" : "warn");
-    chip("minimum fit", d.min_score);
-    chip(d.dry_run ? "rehearsal" : "live", d.dry_run ? "✓" : "!",
-         d.dry_run ? "" : "warn");
-    sum.appendChild(chips);
 
-    const group = (title, items, tone, describe) => {
-      if (!items || !items.length) return;
-      const h = el("div", "palette-row-group");
-      h.textContent = `${title} (${items.length})`;
-      list.appendChild(h);
-      items.slice(0, 12).forEach(it => {
-        const row = el("div", "auto-row" + (tone ? " " + tone : ""));
-        const t = el("div", "auto-row-title");
-        t.textContent = typeof it === "string" ? it : (it.title || "");
-        row.appendChild(t);
-        const why = describe ? describe(it) : "";
-        if (why) {
-          const w = el("div", "log-meta");
-          w.textContent = why;
-          row.appendChild(w);
-        }
-        list.appendChild(row);
-      });
-    };
-    group("Would send", d.would_send, "good",
-          it => `to ${it.to}${it.fit ? ` · fit ${it.fit}` : ""}`);
-    group("Over today's limit", d.capped, "warn",
-          () => "waits for tomorrow");
-    group("Needs scoring first", d.needs_scoring, "");
-    group("Held back", d.would_hold, "warn", it => it.why);
-    group("No application address", d.no_address, "",
-          () => "portal only — apply from Tracked");
-    group("Ignored, no engine call spent", d.screened_out, "", it => it.why);
-    if (!list.children.length) {
-      emptyPane(list, "Nothing queued",
-        "Find some roles first, or lower the minimum fit.");
-    }
 
-    // what it has actually been doing
-    side.innerHTML = "";
-    const sh = el("div", "detail-head");
-    sh.textContent = "Recent unattended runs";
-    side.appendChild(sh);
-    if (!(d.runs || []).length) {
-      const p = el("div", "log-meta");
-      p.textContent = "It hasn't run on its own yet. “Run this daily” sets that up.";
-      side.appendChild(p);
-    } else {
-      d.runs.forEach(r => {
-        const row = el("div", "auto-row");
-        const t = el("div", "auto-row-title"); t.textContent = r.at;
-        const w = el("div", "log-meta"); w.textContent = `${r.what}: ${r.detail}`;
-        row.append(t, w);
-        side.appendChild(row);
-      });
-    }
-    if ((d.follow_ups || []).length) {
-      const b = el("div", "detail-block");
-      const h = el("h4"); h.textContent = "Waiting on a reply";
-      const pre = el("pre"); pre.textContent = d.follow_ups.join("\n");
-      b.append(h, pre);
-      side.appendChild(b);
-    }
-    const safety = el("div", "detail-block");
-    const sh2 = el("h4"); sh2.textContent = "What it will never do";
-    const pre2 = el("pre");
-    pre2.textContent = "Send a draft that claims something your profile "
-      + "can't support. Apply twice to the same role. Exceed the daily cap. "
-      + "Submit a portal form — those always stop for you.";
-    safety.append(sh2, pre2);
-    side.appendChild(safety);
-  } catch (e) {
-    emptyPane(list, "Couldn't work that out", "Try again.");
-  }
-}
 
-async function loadClaims() {
-  const list = $("#jobsClaimList"), detail = $("#jobsClaimDetail");
-  list.innerHTML = "";
-  try {
-    const d = await fetch("/api/jobs/claims").then(r => r.json());
-    setTabBadge("jobsBadgeClaims", d.count || 0);
-    $("#jobsInfo").textContent = d.count
-      ? (d.profile_empty
-          ? `${d.count} draft(s) held — profile empty`
-          : `${d.count} draft(s) held · ${d.distinct} claim(s) to decide`)
-      : "Nothing held.";
-    if (d.profile_empty && d.count) {
-      // listing 40 terms to approve one at a time is the wrong instruction
-      // when the cause is a single missing thing
-      emptyPane(list, "Your profile is empty",
-        `All ${d.count} drafts are held because there's nothing to check them `
-        + `against — every name and tool in them reads as unsourced `
-        + `(${d.would_be_claims} of them). Ask in chat: “build my job profile `
-        + `from my CV”, then redraft. Everything unblocks at once.`);
-      emptyPane(detail, "", "");
-      return;
-    }
-    // The tab listed CLAIMS and never the drafts themselves, so a draft held
-    // for a reason naming no claim showed as an empty tab beside a non-zero
-    // count. Show the drafts first — they're what's actually blocked.
-    const held = d.held || [];
-    if (!held.length && !d.claims.length) {
-      emptyPane(list, "Nothing held",
-        d.drafted_ready
-          ? `No draft is held. ${d.drafted_ready} are drafted and ready — you'll find them in Tracked.`
-          : "Every draft is backed by your profile. Auto-apply won't be blocked.");
-      emptyPane(detail, "", "");
-      return;
-    }
-    if (held.length) {
-      const hh = el("div", "palette-row-group");
-      hh.textContent = `${held.length} draft(s) held`;
-      list.appendChild(hh);
-      held.forEach(hd => {
-        const row = el("button", "job-row");
-        row.type = "button";
-        row.appendChild(monogram(hd.company || hd.title));
-        const body = el("div", "job-row-body");
-        const t = el("div", "job-row-title");
-        const nm = el("span"); nm.textContent = hd.title || "(untitled)";
-        t.appendChild(nm);
-        if (hd.company) {
-          const co = el("span", "job-row-co"); co.textContent = hd.company;
-          t.appendChild(co);
-        }
-        const m = el("div", "job-row-meta");
-        m.textContent = hd.needs_redraft
-          ? (hd.redraft_reason || "needs rewriting")
-          : (hd.problems || []).length
-            ? `${hd.problems.length} unsourced claim(s)`
-            : "held, but no specific claim was named";
-        body.append(t, m);
-        row.appendChild(body);
-        row.addEventListener("click", () => {
-          Array.from(list.children).forEach(c2 => c2.classList
-            && c2.classList.remove("is-on"));
-          row.classList.add("is-on");
-          showHeldDraft(hd);
-        });
-        list.appendChild(row);
-      });
-    }
-    if (d.claims.length) {
-      const ch = el("div", "palette-row-group");
-      ch.textContent = "Claims to decide";
-      list.appendChild(ch);
-    }
-    d.claims.forEach(c => {
-      const row = el("button", "job-row");
-      row.type = "button";
-      const t = el("div", "job-row-title"); t.textContent = c.term;
-      const m = el("div", "job-row-meta");
-      m.textContent = `claimed in ${c.roles.length} draft(s)`;
-      row.append(t, m);
-      row.addEventListener("click", () => {
-        Array.from(list.children).forEach(x => x.classList
-          && x.classList.remove("is-on"));
-        row.classList.add("is-on");
-        showClaim(c);
-      });
-      list.appendChild(row);
-    });
-    emptyPane(detail, "", "Pick a claim to confirm or dismiss it.");
-  } catch (e) {
-    emptyPane(list, "Couldn't load", "Try again.");
-  }
-}
 
-function showHeldDraft(hd) {
-  const detail = $("#jobsClaimDetail");
-  detail.innerHTML = "";
-  const head = el("div", "detail-head");
-  head.textContent = hd.title || "";
-  const sub = el("div", "detail-sub");
-  sub.textContent = hd.company || "";
-  detail.append(head, sub);
 
-  const acts = el("div", "detail-actions");
-  const rd = el("button", "btn primary btn-mini");
-  rd.textContent = "Redraft this";
-  rd.addEventListener("click", async () => {
-    rd.disabled = true;
-    const eng = (($("#jobsEngine") || {}).value || "");
-    try {
-      await fetch("/api/jobs/draft", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: hd.key, engine: eng }) });
-      toast("Redrafted — the check runs again automatically.", "ok");
-      loadClaims();
-    } catch (e) { toast("Could not redraft that.", "bad"); }
-    rd.disabled = false;
-  });
-  acts.appendChild(rd);
-  detail.appendChild(acts);
 
-  const blk = (title, text) => {
-    if (!text) return;
-    const b = el("div", "detail-block");
-    const h = el("h4"); h.textContent = title;
-    const pre = el("pre"); pre.textContent = text;
-    b.append(h, pre);
-    detail.appendChild(b);
-  };
-  if ((hd.problems || []).length) {
-    blk("Why it's held", hd.problems.map(p => "\u2022 " + p).join("\n"));
-  } else if (hd.redraft_reason) {
-    blk("Why it's held", hd.redraft_reason);
-  } else {
-    // the case that produced an empty tab: held, but nothing nameable
-    blk("Why it's held",
-        "The check failed without naming a specific claim. Redrafting "
-        + "usually clears it — the draft itself is below so you can see "
-        + "what it says.");
-  }
-  blk("Subject", hd.subject);
-  blk("The draft", hd.body);
-}
 
-function showClaim(c) {
-  const detail = $("#jobsClaimDetail");
-  detail.innerHTML = "";
-  const head = el("div", "detail-head"); head.textContent = c.term;
-  const sub = el("div", "detail-sub");
-  sub.textContent = c.detail || "";
-  detail.append(head, sub);
 
-  const q = el("div", "detail-block");
-  const qh = el("h4"); qh.textContent = "Is this true of you?";
-  const qp = el("pre");
-  qp.textContent = "If yes, say where it belongs and it will be added to "
-    + "your profile — every held draft is then re-checked immediately, at no "
-    + "cost. If no, dismiss it and drafts won't use it again.";
-  q.append(qh, qp); detail.appendChild(q);
 
-  const acts = el("div", "detail-actions");
-  const where = el("select"); where.className = "model-select";
-  [["technologies", "a tool I've used"],
-   ["skills", "a skill I have"],
-   ["achievements", "something I did"],
-   ["employers", "somewhere I worked"]].forEach(([v, label]) => {
-    const o = document.createElement("option");
-    o.value = v; o.textContent = label; where.appendChild(o);
-  });
-  const yes = el("button", "btn primary btn-mini");
-  yes.textContent = "Yes — add to my profile";
-  yes.addEventListener("click", async () => {
-    yes.disabled = true; yes.textContent = "Adding…";
-    try {
-      const r = await fetch("/api/jobs/claims/confirm", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ term: c.term, where: where.value }) })
-        .then(x => x.json());
-      $("#jobsStatus").textContent = r.cleared
-        ? `Added. ${r.cleared} draft(s) cleared and can now be sent.`
-        : `Added to your profile. ${r.still_held || 0} draft(s) still held for other claims.`;
-      loadClaims(); refreshDashboard();
-    } catch (e) { $("#jobsStatus").textContent = "Could not add that."; }
-    yes.disabled = false; yes.textContent = "Yes — add to my profile";
-  });
-  const no = el("button", "btn ghost btn-mini");
-  no.textContent = "No — don't claim this";
-  no.addEventListener("click", async () => {
-    await fetch("/api/jobs/claims/dismiss", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ term: c.term }) });
-    $("#jobsStatus").textContent =
-      `Noted. Redraft those roles and “${c.term}” won't be used.`;
-    loadClaims();
-  });
-  acts.append(where, yes, no);
-  detail.appendChild(acts);
 
-  if (c.context) {
-    const b = el("div", "detail-block");
-    const h = el("h4"); h.textContent = "Where it appears";
-    const pre = el("pre"); pre.textContent = c.context;
-    b.append(h, pre); detail.appendChild(b);
-  }
-  const rb = el("div", "detail-block");
-  const rh = el("h4"); rh.textContent = "Drafts affected";
-  const rp = el("pre"); rp.textContent = (c.roles || []).join("\n");
-  rb.append(rh, rp); detail.appendChild(rb);
-}
+
+
+
+
 
 let _jobFilters = { email: false, strong: false, unscored: false,
                     openonly: false };
@@ -4211,390 +3551,23 @@ const _jobPicked = new Set();
 let _jobSel = "";          // the key of the role you're looking at
 let _jobRoles = [];        // last payload, so actions can update in place
 
-async function loadPipeline() {
-  const host = $("#jobsPipeline");
-  if (!host) return;
-  try {
-    const p = await fetch("/api/jobs/pipeline").then(r => r.json());
-    if (!p.total) { host.hidden = true; return; }
-    host.hidden = false;
-    host.innerHTML = "";
-    const steps = [["found", "found"], ["scored", "scored"],
-                   ["drafted", "drafted"], ["held", "held back"],
-                   ["applied", "applied"], ["responded", "replied"]];
-    steps.forEach(([key, label]) => {
-      const n = p.stages[key] || 0;
-      const s = el("div", "pipe-step"
-        + (p.blocked_at === key ? " is-blocked" : "")
-        + (n ? "" : " is-empty"));
-      const v = el("div", "pipe-n"); v.textContent = n;
-      const l = el("div", "pipe-l"); l.textContent = label;
-      s.append(v, l);
-      host.appendChild(s);
-    });
-    if (p.blocked_at) {
-      const w = el("div", "pipe-why");
-      w.textContent = p.why;
-      host.appendChild(w);
-    }
-  } catch (e) { host.hidden = true; }
-}
+
 
 let _showArchive = false;
 
-async function loadArchive() {
-  const list = $("#jobsList"), detail = $("#jobsDetail");
-  list.innerHTML = "";
-  try {
-    const d = await fetch("/api/jobs/archive").then(r => r.json());
-    $("#jobsTrackedCount").textContent = `${d.count} archived`;
-    if (!d.count) {
-      emptyPane(list, "Nothing archived",
-        "Closed and expired roles land here when you archive them — kept, "
-        + "so you can see you'd already looked at a company.");
-      emptyPane(detail, "", "");
-      return;
-    }
-    d.roles.forEach(a => {
-      const row = el("button", "job-row");
-      row.type = "button";
-      row.appendChild(monogram(a.company || a.title));
-      const body = el("div", "job-row-body");
-      const t = el("div", "job-row-title");
-      const nm = el("span"); nm.textContent = a.title || "(untitled)";
-      t.appendChild(nm);
-      if (a.company) {
-        const co = el("span", "job-row-co"); co.textContent = a.company;
-        t.appendChild(co);
-      }
-      const m = el("div", "job-row-meta");
-      m.textContent = `${a.why}${a.when ? " · " + a.when.slice(0, 10) : ""}`;
-      body.append(t, m);
-      row.appendChild(body);
-      row.addEventListener("click", () => {
-        detail.innerHTML = "";
-        const h = el("div", "detail-head"); h.textContent = a.title;
-        const s2 = el("div", "detail-sub");
-        s2.textContent = [a.company, a.was_applied ? "you applied" : null,
-                          a.when].filter(Boolean).join(" · ");
-        detail.append(h, s2);
-        const acts = el("div", "detail-actions");
-        const back = el("button", "btn ghost btn-mini");
-        back.textContent = "Put it back";
-        back.addEventListener("click", async () => {
-          const res = await fetch("/api/jobs/unarchive", { method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: a.key }) });
-          const dd = await res.json().catch(() => ({}));
-          toast(res.ok ? `${dd.title}: ${dd.note}` : errText(dd, "Could not."),
-                res.ok ? "ok" : "warn");
-          if (res.ok) loadArchive();
-        });
-        acts.appendChild(back);
-        detail.appendChild(acts);
-        const b = el("div", "detail-block");
-        const bh = el("h4"); bh.textContent = "Why it was archived";
-        const pre = el("pre"); pre.textContent = a.why;
-        b.append(bh, pre); detail.appendChild(b);
-      });
-      list.appendChild(row);
-    });
-    emptyPane(detail, "", "Pick one to see it, or put it back.");
-  } catch (e) {
-    emptyPane(list, "Couldn't load the archive", "Try again.");
-  }
-}
 
-async function loadJobs() {
-  if (_showArchive) return loadArchive();
-  const list = $("#jobsList"), detail = $("#jobsDetail");
-  if (!list) return;
-  try {
-    const s = await fetch("/api/jobs").then(r => r.json());
-    const a = s.auto || {};
-    $("#jobsAutoOn").checked = !!a.enabled;
-    $("#jobsDryRun").checked = a.dry_run !== false;
-    $("#jobsMinScore").value = a.min_score ?? 75;
-    $("#jobsCap").value = a.daily_cap ?? 5;
-    $("#jobsCleanOnly").checked = a.require_clean_check !== false;
-    const hint = $("#jobsProfileHint");
-    if (hint) {
-      hint.textContent = s.profile_ready ? ""
-        : "Your profile is empty, so nothing can be drafted. Ask in chat: \u201cbuild my job profile from my CV\u201d.";
-    }
-    const eng0 = $("#jobsEngine");
-    if (eng0 && !eng0.children.length) {
-      const t = await fetch("/api/trends").then(r => r.json()).catch(() => ({}));
-      (t.engines || ["Auto"]).forEach(n => {
-        const o = document.createElement("option");
-        o.value = n; o.textContent = n; eng0.appendChild(o);
-      });
-    }
-    const want = ($("#jobsStageFilter") || {}).value || "";
-    let roles = (s.roles || []).filter(r => !want || r.stage === want);
-    // quick filters answer the questions you actually ask of a long list:
-    // what can it send, what is worth my time, what hasn't been looked at
-    if (_jobFilters.email) roles = roles.filter(r => r.apply_email);
-    if (_jobFilters.strong) {
-      roles = roles.filter(r => ((r.fit || {}).score || 0) >= 75);
-    }
-    if (_jobFilters.unscored) {
-      roles = roles.filter(r => (r.fit || {}).score === undefined
-                             || (r.fit || {}).score === null);
-    }
-    if (_jobFilters.openonly) {
-      roles = roles.filter(r => !r.expired && r.stage !== "closed");
-    }
-    const bystage = ["found", "drafted", "applied", "responded",
-                     "interview", "offer", "closed"];
-    roles = roles.slice().sort((a, b) => {
-      if (_jobSort === "new") return (b.added_at || "").localeCompare(a.added_at || "");
-      if (_jobSort === "company") {
-        return (a.company || "").localeCompare(b.company || "");
-      }
-      if (_jobSort === "stage") {
-        return bystage.indexOf(a.stage) - bystage.indexOf(b.stage);
-      }
-      return ((b.fit || {}).score || -1) - ((a.fit || {}).score || -1);
-    });
-    $("#jobsTrackedCount").textContent =
-      `${roles.length} of ${(s.roles || []).length} role(s)`;
-    setTabBadge("jobsBadgeTracked", (s.roles || []).length);
-    list.innerHTML = "";
-    if (!roles.length) {
-      emptyPane(list, "Nothing tracked yet",
-        "Use the Find tab to search your sites, or paste any job page — then press Track.");
-      emptyPane(detail, "", "Pick a role to work on it.");
-      return;
-    }
-    _jobRoles = roles;
-    loadPipeline();
-    roles.forEach(r => {
-      const row = jobRow(r, (role) => { _jobSel = role.key; showJobDetail(role); });
-      row.dataset.key = r.key;
-      list.appendChild(row);
-    });
-    // Every action used to reload the list, which threw away whatever you had
-    // open — click Draft and the pane you were reading vanished. Put you back
-    // where you were.
-    const keep = roles.find(r => r.key === _jobSel);
-    if (keep) {
-      const row = Array.from(list.children)
-        .find(c => c.dataset && c.dataset.key === keep.key);
-      if (row) row.classList.add("is-on");
-      showJobDetail(keep);
-      if (row && row.scrollIntoView) {
-        row.scrollIntoView({ block: "nearest" });
-      }
-    } else {
-      emptyPane(detail, "", "Pick a role on the left to score, draft or apply.");
-    }
-  } catch (e) {
-    emptyPane(list, "Couldn't load", "The app is still working; try again.");
-  }
-}
+
+
 
 function markRowBusy(key, busy) {
   // show the work where it was asked for, not only at the foot of the panel
-  const list = $("#jobsList");
   if (!list) return;
   const row = Array.from(list.children)
     .find(c => c.dataset && c.dataset.key === key);
   if (row) row.classList.toggle("is-busy", !!busy);
 }
 
-function showJobDetail(r) {
-  _jobSel = r.key;
-  const detail = $("#jobsDetail");
-  detail.innerHTML = "";
-  const head = el("div", "detail-head"); head.textContent = r.title || "";
-  const sub = el("div", "detail-sub");
-  sub.textContent = [r.company, r.location, r.stage,
-                     r.apply_email || "portal application"]
-    .filter(Boolean).join(" · ");
-  if (r.closed_at) {
-    const cl = el("div", "detail-sub");
-    cl.textContent = `${r.expired ? "Expired" : "Closed"} ${r.closed_at}`
-      + (r.closed_reason ? ` — ${r.closed_reason}` : "");
-    detail.appendChild(cl);
-  }
-  detail.append(head, sub);
 
-  const acts = el("div", "detail-actions");
-  const mk = (label, cls, fn) => {
-    const b = el("button", "btn " + cls + " btn-mini");
-    b.textContent = label;
-    b.addEventListener("click", async () => {
-      b.disabled = true;
-      const was = b.textContent; b.textContent = "Working…";
-      markRowBusy(r.key, true);
-      try { await fn(); } catch (e) { /* status line reports it */ }
-      markRowBusy(r.key, false);
-      b.textContent = was; b.disabled = false;
-    });
-    acts.appendChild(b);
-    return b;
-  };
-  const engine = () => (($("#jobsEngine") || {}).value || "");
-  mk("Score fit", "ghost", async () => {
-    const res = await fetch("/api/jobs/score", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: r.key, engine: engine() }) });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok) { toast(errText(d, "Could not score that."), "bad"); return; }
-    loadJobs();
-  });
-  mk("Draft application", "primary", async () => {
-    const res = await fetch("/api/jobs/draft", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: r.key, engine: engine() }) });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok) { toast(errText(d, "Could not draft that."), "bad"); return; }
-    loadJobs();
-  });
-  if (r.url && !r.apply_email) {
-    mk("Apply on portal", "ghost", async () => {
-      $("#jobsStatus").textContent = "Opening the form — the browser window is on this computer.";
-      const d = await fetch("/api/jobs/portal", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: r.key, submit: false }) }).then(x => x.json());
-      $("#jobsStatus").textContent = `[${d.ats || "unknown"}] ${d.state}: ${d.message || ""}`;
-      loadJobs();
-    });
-  }
-  mk("Match", "ghost", async () => {
-    const d = await fetch("/api/jobs/ats", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: r.key }) }).then(x => x.json());
-    const b = el("div", "detail-block");
-    const h = el("h4");
-    h.textContent = `Keyword match — ${d.score}% of ${d.total_terms} term(s)`;
-    const pre = el("pre");
-    pre.textContent = [
-      d.matched.length ? "You can evidence: " + d.matched.join(", ") : "",
-      d.missing.length ? "Not in your profile: " + d.missing.join(", ") : "",
-      ...(d.advice || []), d.note].filter(Boolean).join("\n\n");
-    b.append(h, pre);
-    detail.appendChild(b);
-    b.scrollIntoView({ block: "nearest" });
-  });
-  mk("Tailor CV", "ghost", async () => {
-    const res = await fetch("/api/jobs/cv", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: r.key, engine: engine() }) });
-    const d = await res.json();
-    if (!res.ok) { $("#jobsStatus").textContent = errText(d, "Could not tailor it."); return; }
-    $("#jobsStatus").textContent = `CV written to ${d.path}`;
-    loadJobs();
-  });
-  mk("Interview prep", "ghost", async () => {
-    const res = await fetch("/api/jobs/interview", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: r.key, engine: engine() }) });
-    const d = await res.json();
-    if (!res.ok) { $("#jobsStatus").textContent = errText(d, "Could not prepare."); return; }
-    loadJobs();
-  });
-  if (r.url) {
-    const a = el("a", "btn ghost btn-mini");
-    a.href = r.url; a.target = "_blank"; a.rel = "noopener";
-    a.textContent = "Open advert"; acts.appendChild(a);
-  }
-  // Most applications are still made by a person — a portal form, an email
-  // you wrote, a referral. Without this the role sat looking untouched: no
-  // follow-up clock, and a real chance of applying twice.
-  if (!["applied", "waiting", "closed", "expired"].includes(r.bucket || "")) {
-    mk("I applied", "primary", async () => {
-      const res = await fetch("/api/jobs/applied", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: r.key,
-          how: r.apply_email ? "by email" : "on their portal" }) });
-      const d = await res.json().catch(() => ({}));
-      toast(res.ok ? `${d.title}: ${d.note}` : errText(d, "Could not record that."),
-            res.ok ? "ok" : "warn");
-      if (res.ok) loadJobs();
-    });
-  }
-  const rm = el("button", "btn ghost btn-mini");
-  rm.textContent = "Not interested";
-  rm.title = "Stop tracking this, and don't find it again";
-  rm.addEventListener("click", async () => {
-    rm.disabled = true;
-    try {
-      const d = await fetch("/api/jobs/remove", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: r.key, forget: true }) })
-        .then(x => x.json());
-      $("#jobsStatus").textContent = d.title
-        ? `Removed “${d.title}”. It won't be found again.`
-        : "Removed.";
-      emptyPane($("#jobsDetail"), "", "Pick a role on the left.");
-      loadJobs(); refreshDashboard();
-    } catch (e) { $("#jobsStatus").textContent = "Could not remove that."; }
-    rm.disabled = false;
-  });
-  acts.appendChild(rm);
-  detail.appendChild(acts);
-
-  const block = (title, text) => {
-    if (!text) return;
-    const b = el("div", "detail-block");
-    const h = el("h4"); h.textContent = title;
-    const pre = el("pre"); pre.textContent = text;
-    b.append(h, pre); detail.appendChild(b);
-  };
-  if (r.fit) {
-    const b = el("div", "detail-block");
-    const h = el("h4"); h.textContent = "Fit";
-    const pill = el("div", "score-pill");
-    pill.textContent = `${r.fit.score}/100 — ${r.fit.verdict || ""}`;
-    b.append(h, pill);
-    if ((r.fit.against || []).length) {
-      const pre = el("pre");
-      pre.textContent = "Against: " + r.fit.against.join("; ");
-      b.appendChild(pre);
-    }
-    if ((r.fit.missing || []).length) {
-      const pre = el("pre");
-      pre.textContent = "Missing: " + r.fit.missing.join("; ");
-      b.appendChild(pre);
-    }
-    detail.appendChild(b);
-  }
-  if (r.draft) {
-    block("Draft — subject", r.draft.subject);
-    block("Draft — body", r.draft.body);
-    const c = r.draft.check || {};
-    if (c.ok === false) {
-      block("Verify before sending",
-        (c.problems || []).map(p => "• " + p.detail).join("\n"));
-    }
-  }
-  if (r.tailored_cv) {
-    const c = r.tailored_cv;
-    block("Tailored CV — headline", c.headline);
-    block("Tailored CV — summary", c.summary);
-    block("Tailored CV — key skills", (c.key_skills || []).join(", "));
-    if ((c.left_out || []).length) {
-      block("Left out (the advert wanted these; your profile can't support them)",
-            (c.left_out || []).join("\n"));
-    }
-    if (c.check && c.check.ok === false) {
-      block("CV needs checking",
-        (c.check.problems || []).map(p => "• " + p.detail).join("\n"));
-    }
-  }
-  if (r.interview) {
-    block("Likely questions",
-      (r.interview.questions || []).map(q =>
-        `Q: ${q.question}\n   ${q.answer_from_profile || "(nothing in your profile — think about this one)"}`
-      ).join("\n\n"));
-    if ((r.interview.ask_them || []).length) {
-      block("Worth asking them", (r.interview.ask_them || []).join("\n"));
-    }
-  }
-  block("From the advert", r.summary);
-}
 
 function showDraft(d) {
   const lines = [`Subject: ${d.subject}`, "", d.body];
@@ -4607,7 +3580,6 @@ function showDraft(d) {
     lines.push("", "\u2713 Every specific in this draft traces to your profile or the advert.");
   }
   lines.push("", "Copy it, check it, send it yourself.");
-  $("#jobsDraft").textContent = lines.join("\n");
 }
 
 /* --------------------------------- theme -------------------------------- */
@@ -4617,16 +3589,32 @@ function showDraft(d) {
    participate in the light/dark switch; pretending otherwise would produce
    an unreadable half-theme. */
 const THEMES = {
-  system: { label: "System (follow Windows)", dark: "fluent", light: "fluent-light" },
+  // "System" in dark mode is Glass now. The older dark themes stay one click
+  // away in Settings, so nobody loses a look they chose.
+  system: { label: "System (follow Windows)", dark: "glass", light: "fluent-light" },
+  glass: { label: "Glass (dark)", fixed: "glass" },
   "fluent-light": { label: "Light", fixed: "fluent-light" },
-  fluent: { label: "Dark", fixed: "fluent" },
+  fluent: { label: "Dark (classic)", fixed: "fluent" },
   instruments: { label: "Instruments (dark)", fixed: "instruments" },
   midnight: { label: "Midnight (dark)", fixed: "midnight" },
 };
 let _themeMedia = null;
 
 function currentTheme() {
-  try { return localStorage.getItem("agentjo-theme") || "system"; }
+  try {
+    // One-time move to Glass for anyone on the previous default dark look.
+    // Without it, someone who once picked "Dark" would never see the new
+    // design and reasonably conclude the upgrade hadn't installed. A choice
+    // made after this point is left alone — the flag makes it run once.
+    if (!localStorage.getItem("agentjo-theme-glass-migrated")) {
+      const was = localStorage.getItem("agentjo-theme");
+      if (!was || was === "fluent" || was === "system") {
+        localStorage.setItem("agentjo-theme", "glass");
+      }
+      localStorage.setItem("agentjo-theme-glass-migrated", "1");
+    }
+    return localStorage.getItem("agentjo-theme") || "system";
+  }
   catch (e) { return "system"; }
 }
 function resolveTheme(choice) {
@@ -4644,6 +3632,13 @@ function paintTheme(choice) {
   } else {
     document.documentElement.setAttribute("data-theme", resolved);
   }
+  // a theme can change the tile size (Glass does), and the first layout can
+  // run before the theme is painted — so lay the tiles out again, next frame
+  if (typeof layoutTiles === "function") {
+    const next = (typeof requestAnimationFrame === "function")
+      ? requestAnimationFrame : (f) => setTimeout(f, 16);
+    next(() => { try { layoutTiles(); } catch (e) {} });
+  }
 }
 function applyTheme(choice) {
   const c = THEMES[choice] ? choice : "system";
@@ -4660,6 +3655,82 @@ function applyTheme(choice) {
       else if (_themeMedia.addListener) _themeMedia.addListener(onChange);
     }
   }
+}
+
+/* ------------------------------- task feed ------------------------------- */
+// What's coming up and what just ran, beside the welcome screen. Built only
+// from real schedules and tasks — an empty feed says so rather than showing
+// placeholder rows that look like activity.
+function _ago(ts) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+function _until(ts) {
+  const s = Math.round((ts - Date.now()) / 1000);
+  if (s < 60) return "any moment";
+  if (s < 3600) return `in ${Math.round(s / 60)} min`;
+  if (s < 86400) return `in ${Math.round(s / 3600)} h`;
+  return `in ${Math.round(s / 86400)} d`;
+}
+// In the Glass theme the switches in the top bar show only their icon, so
+// each one carries its name as a tooltip — hiding a label must not hide
+// what the control does.
+function labelSwitches() {
+  document.querySelectorAll(".access").forEach(a => {
+    const l = a.querySelector(".access-label");
+    if (l && !a.title) a.title = l.textContent.trim();
+  });
+}
+async function loadTaskFeed() {
+  labelSwitches();
+  const host = document.getElementById("taskFeedList");
+  if (!host) return;
+  let tasks = [], scheds = [];
+  try { tasks = (await fetch("/api/tasks").then(r => r.json())).tasks || []; } catch (e) {}
+  try { scheds = (await fetch("/api/schedules").then(r => r.json())).schedules || []; } catch (e) {}
+  const rows = [];
+  scheds.filter(s => s.enabled && s.next_run).forEach(s => rows.push({
+    kind: "upcoming", when: s.next_run * 1000, title: s.name,
+    meta: "Upcoming \u00b7 " + _until(s.next_run * 1000),
+    open: () => { const b = $("#schedBtn"); if (b) b.click(); },
+  }));
+  tasks.slice(0, 12).forEach(t => {
+    const ts = Date.parse(t.updated_at || t.created_at || "") || 0;
+    rows.push({
+      kind: t.status === "completed" ? "done" : t.status === "abandoned" ? "stopped" : "active",
+      when: ts, title: t.title,
+      meta: (t.status === "completed" ? "Done" : t.status === "abandoned"
+             ? "Stopped" : "In progress") + " \u00b7 " + (ts ? _ago(ts) : ""),
+      // tasks live in a pane of the Scheduler panel
+      open: () => {
+        const b = $("#schedBtn"); if (b) b.click();
+        setTimeout(() => { const t = $("#schedTabTasks"); if (t) t.click(); }, 60);
+      },
+    });
+  });
+  // upcoming first (soonest), then the most recent
+  rows.sort((a, b) => (a.kind === "upcoming") !== (b.kind === "upcoming")
+    ? (a.kind === "upcoming" ? -1 : 1)
+    : a.kind === "upcoming" ? a.when - b.when : b.when - a.when);
+  host.innerHTML = "";
+  if (!rows.length) {
+    const e = el("div", "tf-empty");
+    e.textContent = "Nothing scheduled and no tasks yet. Schedules and multi-step work appear here.";
+    host.appendChild(e);
+    return;
+  }
+  rows.slice(0, 6).forEach(r => {
+    const it = el("button", "tf-item tf-" + r.kind);
+    it.type = "button";
+    const m = el("div", "tf-meta"); m.textContent = r.meta;
+    const t = el("div", "tf-title"); t.textContent = r.title;
+    it.append(m, t);
+    it.addEventListener("click", r.open);
+    host.appendChild(it);
+  });
 }
 
 /* --------------------------------- crew --------------------------------- */
@@ -6592,7 +5663,14 @@ function layoutTiles() {
   if (!n) return;
   const width = grid.clientWidth || (grid.parentElement && grid.parentElement.clientWidth) || 0;
   if (!width) return;                       // hidden, or not laid out yet
-  let fit = Math.max(1, Math.floor((width + TILE_GAP) / (TILE_MIN + TILE_GAP)));
+  // a theme can ask for narrower tiles — Glass sets --tile-min so eleven
+  // tiles fit six across, as in its design — without replacing this layout
+  let themeMin = 0;
+  try {
+    themeMin = parseFloat(getComputedStyle(grid).getPropertyValue("--tile-min"));
+  } catch (e) { /* no style information: use the default size */ }
+  const tmin = themeMin > 0 ? themeMin : TILE_MIN;
+  let fit = Math.max(1, Math.floor((width + TILE_GAP) / (tmin + TILE_GAP)));
   fit = Math.min(fit, TILE_MAX_COLS, n);
   const rows = Math.ceil(n / fit);
   const cols = Math.ceil(n / rows);
@@ -7282,336 +6360,6 @@ $("#projectFilter").addEventListener("change", async (e) => {
     mcpFind.textContent = was; mcpFind.disabled = false;
   });
   $("#mcpBtn").addEventListener("click", openMcp);
-  const saveAuto = async () => {
-    const body = {
-      enabled: $("#jobsAutoOn").checked,
-      dry_run: $("#jobsDryRun").checked,
-      min_score: parseInt($("#jobsMinScore").value || "75", 10),
-      daily_cap: parseInt($("#jobsCap").value || "5", 10),
-      require_clean_check: $("#jobsCleanOnly").checked };
-    try {
-      await fetch("/api/jobs/auto", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body) });
-      $("#jobsStatus").textContent = body.enabled
-        ? (body.dry_run
-            ? `Auto-apply ON in rehearsal — it will prepare applications and send nothing. Min fit ${body.min_score}, cap ${body.daily_cap}/day.`
-            : `Auto-apply ON and LIVE — it will send applications for you. Min fit ${body.min_score}, cap ${body.daily_cap}/day, clean drafts only: ${body.require_clean_check}.`)
-        : "Auto-apply off.";
-    } catch (e) { $("#jobsStatus").textContent = "Could not save."; }
-  };
-  ["#jobsAutoOn", "#jobsDryRun", "#jobsMinScore", "#jobsCap", "#jobsCleanOnly"]
-    .forEach(sel => $(sel).addEventListener("change", saveAuto));
-  $("#jobsAutoRunBtn").addEventListener("click", async () => {
-    const b = $("#jobsAutoRunBtn");
-    b.disabled = true; b.textContent = "Running…";
-    $("#jobsStatus").textContent = "Scoring, drafting and applying where the gates allow…";
-    try {
-      const eng = $("#jobsEngine");
-      const r = await fetch("/api/jobs/auto/run", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ engine: eng ? eng.value : "" }) });
-      const d = await r.json();
-      if (!r.ok) { $("#jobsStatus").textContent = errText(d, "Run failed."); }
-      else {
-        const lines = [`${d.sent.length} application(s) ${d.dry_run ? "REHEARSED (nothing sent)" : "sent"}, ${d.held.length} held for you.`];
-        d.sent.forEach(s => lines.push(`  → ${s.title} @ ${s.company} (${s.to})`));
-        if (d.held.length) lines.push("", "Waiting on you:");
-        d.held.forEach(h => lines.push(`  • ${h.title} @ ${h.company} — ${h.reason}`));
-        if (d.common_error) {
-          lines.push("", `All ${(d.errors || []).length} failed the same way: ${d.common_error}`);
-        } else {
-          (d.errors || []).forEach(e => lines.push(`  ! ${e}`));
-        }
-        $("#jobsDraft").textContent = lines.join("\n");
-        $("#jobsStatus").textContent = "";
-        loadJobs();
-      }
-    } catch (e) { $("#jobsStatus").textContent = "Run failed."; }
-    b.disabled = false; b.textContent = "Run auto-apply";
-  });
-  [["Find", "find"], ["Tracked", "tracked"], ["Claims", "claims"],
-    ["Results", "results"], ["Auto", "auto"],
-    ["Where", "where"]].forEach(([id, key]) => {
-    const b = $("#jobsTab" + id);
-    if (b) b.addEventListener("click", () => jobsTab(key));
-  });
-  const autoP = $("#jobsAutopilotBtn");
-  if (autoP) autoP.addEventListener("click", async () => {
-    autoP.disabled = true;
-    try {
-      const d = await fetch("/api/jobs/autopilot", { method: "POST" })
-        .then(r => r.json());
-      toast(d.note || "Daily run set up.", "ok");
-      loadJobs();
-    } catch (e) { toast("Could not set that up.", "bad"); }
-    autoP.disabled = false;
-  });
-  $("#jobsUrlBtn").addEventListener("click", () => searchThisPage(false));
-  $("#jobsUrlBrowserBtn").addEventListener("click", () => {
-    $("#jobsUrl").value = ($("#jobsQuery") || {}).value || "";
-    searchThisPage(true);
-  });
-  const alertOut = () => $("#jobsAlertOut");
-  const pasteB = $("#jobsAlertPasteBtn");
-  if (pasteB) pasteB.addEventListener("click", async () => {
-    const raw = ($("#jobsAlertPaste") || {}).value || "";
-    if (!raw.trim()) { toast("Paste an alert email first.", "warn"); return; }
-    pasteB.disabled = true;
-    try {
-      const r = await fetch("/api/jobs/alerts/paste", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw }) });
-      const d = await r.json();
-      if (!r.ok) { toast(errText(d, "Couldn't read that."), "bad"); }
-      else {
-        toast(`${d.board}: found ${d.count}, tracked ${d.added} new.`, "ok");
-        const box = alertOut();
-        if (box) {
-          box.innerHTML = "";
-          d.roles.forEach(x => {
-            const line = el("div", "log-meta");
-            line.textContent = x.title + (x.company ? " — " + x.company : "");
-            box.appendChild(line);
-          });
-        }
-        $("#jobsAlertPaste").value = "";
-        loadJobs();
-      }
-    } catch (e) { toast("Couldn't read that.", "bad"); }
-    pasteB.disabled = false;
-  });
-  const folderB = $("#jobsAlertFolderBtn");
-  if (folderB) folderB.addEventListener("click", async () => {
-    folderB.disabled = true;
-    try {
-      const r = await fetch("/api/jobs/alerts/folder", { method: "POST" });
-      const d = await r.json();
-      toast(r.ok
-        ? `Read ${d.files} file(s): tracked ${d.added} new role(s).`
-        : errText(d, "Nothing to read."), r.ok ? "ok" : "warn");
-      if (r.ok) loadJobs();
-    } catch (e) { toast("Could not read the folder.", "bad"); }
-    folderB.disabled = false;
-  });
-  const guideB = $("#jobsAlertGuideBtn");
-  if (guideB) guideB.addEventListener("click", async () => {
-    try {
-      const d = await fetch("/api/jobs/alerts/guide").then(r => r.json());
-      const box = alertOut();
-      if (!box) return;
-      box.innerHTML = "";
-      const why = el("div", "log-meta");
-      why.textContent = d.why;
-      box.appendChild(why);
-      (d.guide || []).forEach(g => {
-        const line = el("div", "log-meta");
-        line.textContent = `${g.board}: ${g.how}`;
-        box.appendChild(line);
-      });
-    } catch (e) { toast("Could not load that.", "bad"); }
-  });
-  const findB = $("#jobsFindBoardsBtn");
-  if (findB) findB.addEventListener("click", async () => {
-    findB.disabled = true;
-    const was = findB.textContent;
-    findB.textContent = "Checking boards…";
-    toast("Checking each board actually returns jobs — this takes a moment.");
-    try {
-      const r = await fetch("/api/jobs/boards/auto", { method: "POST" });
-      const d = await r.json();
-      if (!r.ok) { toast(errText(d, "Could not do that."), "bad"); }
-      else {
-        const names = (d.added || []).map(a => a.name).join(", ");
-        toast(d.added.length
-          ? `Added ${d.added.length}: ${names}. ${d.rejected.length} didn't return anything.`
-          : `None of the ${d.tried} boards tried returned jobs — see the list for why.`,
-          d.added.length ? "ok" : "warn");
-        const host = $("#jobsSourceList");
-        if (host && (d.rejected || []).length) {
-          const box = el("div", "log-meta");
-          box.style.marginTop = "8px";
-          box.textContent = "Not added: " + d.rejected
-            .map(x => `${x.name} (${x.why})`).join("; ");
-          host.appendChild(box);
-        }
-        loadJobSearchConfig();
-      }
-    } catch (e) { toast("Could not do that.", "bad"); }
-    findB.textContent = was; findB.disabled = false;
-  });
-  const pruneBtn = $("#jobsPruneBtn");
-  if (pruneBtn) pruneBtn.addEventListener("click", async () => {
-    pruneBtn.disabled = true;
-    try {
-      const r = await fetch("/api/jobs/prune", { method: "POST" });
-      const d = await r.json();
-      $("#jobsStatus").textContent = r.ok
-        ? `Removed ${d.removed} entr(ies) that were never vacancies: ${(d.titles || []).slice(0, 4).join(", ")}${d.removed > 4 ? "…" : ""}`
-        : errText(d, "Nothing to remove.");
-      loadJobs();
-    } catch (e) { $("#jobsStatus").textContent = "Could not clean those up."; }
-    pruneBtn.disabled = false;
-  });
-  const archB = $("#jobsArchiveBtn");
-  if (archB) archB.addEventListener("click", async () => {
-    archB.disabled = true;
-    try {
-      const r = await fetch("/api/jobs/archive", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ applied_before_days: 0 }) });
-      const d = await r.json();
-      toast(r.ok
-        ? `Archived ${d.moved}: ${(d.titles || []).slice(0, 3).join(", ")}${d.moved > 3 ? "…" : ""}. Kept, not deleted.`
-        : errText(d, "Nothing to archive."), r.ok ? "ok" : "");
-      if (r.ok) loadJobs();
-    } catch (e) { toast("Could not archive those.", "bad"); }
-    archB.disabled = false;
-  });
-  const sweepB = $("#jobsSweepBtn");
-  if (sweepB) sweepB.addEventListener("click", async () => {
-    sweepB.disabled = true;
-    const was = sweepB.textContent;
-    sweepB.textContent = "Checking…";
-    try {
-      const d = await fetch("/api/jobs/sweep", { method: "POST" })
-        .then(r => r.json());
-      toast(d.closed.length
-        ? `Closed ${d.closed.length}: ${d.closed.map(c => c.title).join(", ")}. `
-          + `${d.still_open} still open.`
-        : `None have closed. ${d.still_open} still open`
-          + (d.unknown.length ? `, ${d.unknown.length} couldn't be checked.` : "."),
-        d.closed.length ? "ok" : "");
-      loadJobs();
-    } catch (e) { toast("Could not check those.", "bad"); }
-    sweepB.textContent = was; sweepB.disabled = false;
-  });
-  const archChip = $("#jobsChipArchive");
-  if (archChip) archChip.addEventListener("click", async () => {
-    _showArchive = !_showArchive;
-    archChip.classList.toggle("is-on", _showArchive);
-    if (_showArchive) loadArchive(); else loadJobs();
-  });
-  [["jobsChipEmail", "email"], ["jobsChipStrong", "strong"],
-    ["jobsChipUnscored", "unscored"], ["jobsChipOpen", "openonly"]]
-    .forEach(([id, key]) => {
-    const c = $("#" + id);
-    if (!c) return;
-    c.addEventListener("click", () => {
-      _jobFilters[key] = !_jobFilters[key];
-      c.classList.toggle("is-on", _jobFilters[key]);
-      loadJobs();
-    });
-  });
-  const sortSel = $("#jobsSort");
-  if (sortSel) sortSel.addEventListener("change", () => {
-    _jobSort = sortSel.value;
-    loadJobs();
-  });
-  const bs = $("#jobsBulkScore");
-  if (bs) bs.addEventListener("click", () => bulkDo("score"));
-  const br = $("#jobsBulkRemove");
-  if (br) br.addEventListener("click", () => bulkDo("remove"));
-  const bc = $("#jobsBulkClear");
-  if (bc) bc.addEventListener("click", () => {
-    _jobPicked.clear(); renderBulkBar(); loadJobs();
-  });
-  const clearBtn = $("#jobsClearBtn");
-  if (clearBtn) clearBtn.addEventListener("click", async () => {
-    const stage = ($("#jobsStageFilter") || {}).value || "";
-    if (!stage) {
-      $("#jobsStatus").textContent =
-        "Choose a stage on the left first — this won't clear everything at once.";
-      return;
-    }
-    clearBtn.disabled = true;
-    try {
-      const r = await fetch("/api/jobs/clear", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stage, forget: false }) });
-      const d = await r.json();
-      $("#jobsStatus").textContent = r.ok
-        ? `Removed ${d.removed} role(s) at stage “${stage}”. These can be found again.`
-        : errText(d, "Nothing to clear.");
-      loadJobs();
-    } catch (e) { $("#jobsStatus").textContent = "Could not clear those."; }
-    clearBtn.disabled = false;
-  });
-  // moving through a list of forty roles with the mouse is the slow part
-  const jobsKeys = (e) => {
-    const m = $("#jobsModal");
-    if (!m || m.hidden) return;
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const pane = $("#jobsPaneTracked").hidden ? $("#jobsResults") : $("#jobsList");
-    const rows = Array.from(pane.children).filter(c => c.classList
-      && c.classList.contains("job-row"));
-    if (!rows.length) return;
-    e.preventDefault();
-    const at = rows.findIndex(r => r.classList.contains("is-on"));
-    const next = e.key === "ArrowDown"
-      ? Math.min(rows.length - 1, at + 1)
-      : Math.max(0, at < 0 ? 0 : at - 1);
-    rows[next].click();
-    if (rows[next].scrollIntoView) {
-      rows[next].scrollIntoView({ block: "nearest" });
-    }
-  };
-  document.addEventListener("keydown", jobsKeys);
-
-  const stageF = $("#jobsStageFilter");
-  if (stageF) stageF.addEventListener("change", loadJobs);
-  $("#jobsQuery").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") $("#jobsSearchBtn").click();
-  });
-  const looksLikeUrl = (s) => /^(https?:\/\/|www\.)/i.test((s || "").trim())
-    || /^[\w-]+(\.[\w-]+){1,}\/\S*$/.test((s || "").trim());
-  const qBox = $("#jobsQuery");
-  const syncSearchMode = () => {
-    const isUrl = looksLikeUrl(qBox.value);
-    $("#jobsSearchBtn").textContent = isUrl ? "Read this page" : "Search";
-    const br = $("#jobsUrlBrowserBtn");
-    if (br) br.hidden = !isUrl;
-  };
-  if (qBox) qBox.addEventListener("input", syncSearchMode);
-  $("#jobsSearchBtn").addEventListener("click", () => {
-    // Two boxes asked you to know which kind of thing you had. One box that
-    // notices is the same feature with less to read.
-    if (looksLikeUrl(qBox.value)) {
-      $("#jobsUrl").value = qBox.value.trim();
-      searchThisPage(false);
-    } else {
-      searchJobs();
-    }
-  });
-  $("#jobsQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") searchJobs(); });
-  ["#jobsExclude", "#jobsLocations", "#jobsRemoteOnly", "#jobsNeedEmail"]
-    .forEach(sel => $(sel).addEventListener("change", saveJobSearchConfig));
-  $("#jobsSrcAdd").addEventListener("click", async () => {
-    const name = $("#jobsSrcName").value.trim(), url = $("#jobsSrcUrl").value.trim();
-    if (!name || !url) { $("#jobsStatus").textContent = "A board needs a name and a URL."; return; }
-    try {
-      const r = await fetch("/api/jobs/sources", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, url, kind: $("#jobsSrcKind").value }) });
-      const d = await r.json();
-      $("#jobsStatus").textContent = r.ok ? `Added ${name}.` : errText(d, "Could not add that.");
-      if (r.ok) { $("#jobsSrcName").value = ""; $("#jobsSrcUrl").value = ""; loadJobSearchConfig(); }
-    } catch (e) { $("#jobsStatus").textContent = "Could not add that."; }
-  });
-  $("#jobsBtn").addEventListener("click", openJobs);
-  $("#closeJobsModal").addEventListener("click", closeJobs);
-  $("#jobsModal").addEventListener("click", (e) => { if (e.target === $("#jobsModal")) closeJobs(); });
-  $("#jobsDaily").addEventListener("change", async (e) => {
-    try {
-      const d = await fetch("/api/jobs/schedule", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: e.target.checked }) }).then(r => r.json());
-      e.target.checked = !!d.daily;
-      $("#jobsStatus").textContent = d.daily
-        ? "Daily scan on — 07:00. It finds, scores and drafts. It never sends."
-        : "Daily scan off.";
-    } catch (err) { e.target.checked = !e.target.checked; }
-  });
   $("#closeSetupModal").addEventListener("click", closeSetup);
   $("#setupModal").addEventListener("click", (e) => { if (e.target === $("#setupModal")) closeSetup(); });
   $("#setupSaveBtn").addEventListener("click", saveSetupKey);

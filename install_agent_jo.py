@@ -247,9 +247,12 @@ def check_app() -> bool:
     py = venv_python()
     if not py.exists():
         return False
+    # both apps, because a release that installs cleanly and then can't open
+    # the job search has only half worked
     code, out = run([str(py), "-c",
                      "import sys; sys.path.insert(0, r'%s'); "
-                     "import agent.config, web.server; print('ok')" % HERE],
+                     "import agent.config, web.server, jobs.server; "
+                     "print('ok')" % HERE],
                     timeout=180)
     if code == 0 and "ok" in out:
         step("Agent Jo", OK, "loads cleanly")
@@ -409,6 +412,10 @@ def main(argv: list = None) -> int:
             else:
                 print(f"  Start it:  {STARTER}")
             print(_c("  It opens at http://127.0.0.1:8765", "dim"))
+            print()
+            print("  The job search is its own app:")
+            print(f"    {'start_agent_jo_jobs.bat' if IS_WIN else './start_agent_jo_jobs.sh'}"
+                  f"  \u2192 http://127.0.0.1:8766")
 
     # a machine-readable copy, so a failure elsewhere can be sent to me
     try:

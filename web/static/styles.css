@@ -259,7 +259,7 @@ body::before {
   padding: 6px; box-shadow: 0 18px 44px -10px rgba(0,0,0,0.75);
   backdrop-filter: none;
 }
-.engine-menu[hidden] { display: none; }   /* explicit, so it can't be overridden */
+.engine-menu   /* explicit, so it can't be overridden */
 .engine-opt {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-sm);
   cursor: pointer; transition: background .12s;
@@ -2623,4 +2623,277 @@ body.presenting .composer { opacity: .35; pointer-events: none; }
 
 /* Kept last on purpose: anything appended after this could outrank
    it, which is exactly how the Jobs tabs broke once already. */
+
+
+/* ======================================================================= */
+/*  GLASS — deep teal-black, translucent panels, one teal accent.          */
+/*  Restyles existing markup only; every control that worked before still  */
+/*  exists. The older themes are untouched and selectable in Settings.     */
+/* ======================================================================= */
+[data-theme="glass"] {
+  --ink: #0a1113;
+  --surface: rgba(24, 36, 40, .62);
+  --surface-2: rgba(30, 44, 48, .58);
+  --surface-3: rgba(40, 58, 62, .58);
+  --line: rgba(160, 230, 225, .12);
+  --line-soft: rgba(160, 230, 225, .07);
+
+  --text: #e9f3f2;
+  --dim: #9fb3b3;
+  --faint: #7b9091;
+
+  --accent: #5fe0cf;
+  --accent-2: #3fb8c9;
+  --grad: linear-gradient(120deg, #5fe0cf 0%, #3fb8c9 100%);
+  --danger: #ff7a6b;
+  --ok: #5fe0cf;
+  --warn: #f5c46b;
+  --bronze: #3fb8c9; --silver: #9fb3b3; --gold: #5fe0cf;
+
+  --r-sm: 9px; --r-md: 12px; --r-lg: 16px;
+  --glass-blur: blur(18px) saturate(1.2);
+  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, .06);
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+
+/* the backdrop: a soft teal glow behind everything */
+[data-theme="glass"] body {
+  background:
+    radial-gradient(900px 600px at 70% 12%, rgba(40, 110, 110, .22), transparent 70%),
+    radial-gradient(700px 500px at 20% 90%, rgba(30, 80, 90, .18), transparent 70%),
+    radial-gradient(1200px 800px at 50% 50%, #0d1a1d, #070c0e 80%);
+  background-attachment: fixed;
+}
+[data-theme="glass"] #app,
+[data-theme="glass"] .main { background: transparent; }
+
+/* --- sidebar: each group is its own glass panel ------------------------- */
+[data-theme="glass"] .sidebar {
+  background: rgba(10, 20, 22, .55);
+  backdrop-filter: var(--glass-blur);
+  border-right: 1px solid var(--line);
+}
+[data-theme="glass"] .foot-group {
+  margin: 10px 0 0; padding: 4px 6px 6px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge);
+}
+[data-theme="glass"] .foot-group-toggle {
+  display: flex; align-items: center; width: 100%;
+  padding: 7px 8px; font-size: 12.5px; font-weight: 600;
+  text-transform: none; letter-spacing: 0; color: var(--text);
+}
+/* the chevron sits on the right, as in the reference */
+[data-theme="glass"] .foot-group-toggle .fg-chev {
+  order: 2; margin-left: auto; color: var(--dim); font-size: 11px;
+}
+[data-theme="glass"] .foot-group-items {
+  border-left: 0; margin-left: 0; padding-left: 0;
+}
+[data-theme="glass"] .foot-btn {
+  border-radius: var(--r-sm); padding: 6px 9px; font-size: 13px;
+  color: var(--dim);
+}
+[data-theme="glass"] .foot-btn:hover {
+  background: rgba(95, 224, 207, .08); color: var(--text);
+}
+[data-theme="glass"] .foot-btn svg { color: var(--accent); opacity: .85; }
+
+/* new conversation: a lit glass button */
+[data-theme="glass"] #newChatBtn,
+[data-theme="glass"] .new-chat {
+  background: linear-gradient(180deg, rgba(95, 224, 207, .22), rgba(63, 184, 201, .12));
+  border: 1px solid rgba(95, 224, 207, .35);
+  box-shadow: 0 0 18px rgba(95, 224, 207, .15), var(--glass-edge);
+  border-radius: var(--r-md);
+}
+
+/* --- top bar: title left, a centred glass pill, engine chip right ------- */
+[data-theme="glass"] .topbar {
+  background: transparent; border-bottom: 0;
+  display: flex; align-items: center; gap: 14px;
+}
+[data-theme="glass"] .topbar-title { flex: 1 1 0; font-weight: 600; }
+[data-theme="glass"] .topbar-actions {
+  flex: 0 1 auto; display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+/* switches become compact: icon + track; the name moves to the tooltip */
+[data-theme="glass"] .access .access-label { display: none; }
+[data-theme="glass"] .access { padding: 3px 5px; border-radius: 999px; }
+[data-theme="glass"] .access:hover { background: rgba(95, 224, 207, .08); }
+[data-theme="glass"] .icon-btn,
+[data-theme="glass"] .speak-toggle {
+  border-radius: 999px; background: transparent; border: 0;
+}
+[data-theme="glass"] .icon-btn:hover,
+[data-theme="glass"] .speak-toggle:hover { background: rgba(95, 224, 207, .1); }
+/* the engine chip is pulled out to the right edge */
+[data-theme="glass"] .engine-pill {
+  margin-left: 6px; border-radius: var(--r-md);
+  background: rgba(10, 20, 22, .6); border: 1px solid var(--line);
+}
+
+/* --- the attention banner becomes a slim status strip -------------------- */
+[data-theme="glass"] .dash-attention .dash-item {
+  border-radius: var(--r-md); padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  backdrop-filter: var(--glass-blur);
+}
+[data-theme="glass"] .dash-attention .dash-item-detail { font-size: 12px; }
+
+/* --- stat tiles: glass with a faint teal wash, charts in teal ---------- */
+[data-theme="glass"] .dash-tile {
+  border-radius: var(--r-md);
+  background:
+    linear-gradient(160deg, rgba(95, 224, 207, .07), transparent 55%),
+    var(--surface);
+  border: 1px solid var(--line);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), 0 8px 22px rgba(0, 0, 0, .28);
+  transition: border-color .15s, transform .15s;
+}
+[data-theme="glass"] .dash-tile:hover {
+  border-color: rgba(95, 224, 207, .32); transform: translateY(-1px);
+}
+[data-theme="glass"] .dash-tile-val { color: var(--text); letter-spacing: -0.01em; }
+/* the first tile and the spend lead in teal, as in the reference */
+[data-theme="glass"] .dash-tile:nth-child(1) .dash-tile-val,
+[data-theme="glass"] .dash-tile:nth-child(3) .dash-tile-val { color: var(--accent); }
+[data-theme="glass"] .dash-spark { color: var(--accent); }
+[data-theme="glass"] .dash-spark path:not(.dash-spark-area) { stroke: var(--accent); }
+[data-theme="glass"] .dash-bar { background: rgba(255, 255, 255, .07); border-radius: 99px; }
+[data-theme="glass"] .dash-bar-fill {
+  background: linear-gradient(90deg, #3fb8c9, #5fe0cf); border-radius: 99px;
+}
+
+/* --- welcome: avatar with a teal halo, glass suggestion cards ----------- */
+[data-theme="glass"] .empty-mark img,
+[data-theme="glass"] .empty-mark {
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(95, 224, 207, .35), 0 0 28px rgba(95, 224, 207, .28);
+}
+[data-theme="glass"] .empty-title { font-weight: 500; letter-spacing: -0.01em; }
+[data-theme="glass"] .suggest-card {
+  border-radius: var(--r-md);
+  background: var(--surface); border: 1px solid var(--line);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), 0 6px 18px rgba(0, 0, 0, .25);
+}
+[data-theme="glass"] .suggest-card:hover {
+  border-color: rgba(95, 224, 207, .38);
+  box-shadow: 0 0 20px rgba(95, 224, 207, .14), var(--glass-edge);
+}
+
+/* --- task feed: a glass panel to the right of the welcome ---------------- */
+.task-feed { display: none; }
+[data-theme="glass"] .main { position: relative; }
+[data-theme="glass"] .empty:not(.hidden) .task-feed {
+  display: block; position: absolute; right: 18px; top: 18px;
+  width: 230px; max-height: 330px; overflow: hidden;
+  padding: 10px; border-radius: var(--r-lg);
+  background: rgba(22, 34, 38, .72); border: 1px solid var(--line);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+  text-align: left; z-index: 2;
+}
+[data-theme="glass"] .tf-head { font-weight: 600; font-size: 13.5px; margin: 2px 4px 8px; }
+[data-theme="glass"] .tf-list { display: flex; flex-direction: column; gap: 6px;
+  max-height: 280px; overflow-y: auto; }
+[data-theme="glass"] .tf-item {
+  appearance: none; text-align: left; cursor: pointer; width: 100%;
+  padding: 8px 10px; border-radius: var(--r-sm); color: var(--text);
+  background: rgba(10, 20, 22, .5); border: 1px solid var(--line-soft);
+}
+[data-theme="glass"] .tf-item:hover { border-color: rgba(95, 224, 207, .3); }
+[data-theme="glass"] .tf-meta { font-size: 11px; color: var(--dim); }
+[data-theme="glass"] .tf-meta::before {
+  content: ""; display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%; margin-right: 6px; vertical-align: 0;
+  background: var(--faint);
+}
+[data-theme="glass"] .tf-upcoming .tf-meta::before { background: var(--warn); }
+[data-theme="glass"] .tf-active .tf-meta::before { background: var(--accent); }
+[data-theme="glass"] .tf-done .tf-meta::before { background: #6fb0a6; }
+[data-theme="glass"] .tf-title { font-size: 12.5px; margin-top: 2px; line-height: 1.35; }
+[data-theme="glass"] .tf-empty { font-size: 12px; color: var(--dim); padding: 6px 4px; }
+
+/* --- composer: a glass pill ------------------------------------------- */
+[data-theme="glass"] .composer-wrap { background: transparent; border-top: 0; }
+[data-theme="glass"] .composer {
+  border-radius: 16px; background: var(--surface);
+  border: 1px solid var(--line); backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), var(--glass-shadow);
+}
+[data-theme="glass"] .composer:focus-within {
+  border-color: rgba(95, 224, 207, .45);
+  box-shadow: 0 0 0 3px rgba(95, 224, 207, .12), var(--glass-shadow);
+}
+
+/* --- conversations list and search ---------------------------------- */
+[data-theme="glass"] .conv-list .conv-item.active,
+[data-theme="glass"] .conv-item.active {
+  background: rgba(95, 224, 207, .1); border-radius: var(--r-sm);
+}
+[data-theme="glass"] input, [data-theme="glass"] select, [data-theme="glass"] textarea {
+  background-color: rgba(10, 20, 22, .55);
+}
+[data-theme="glass"] .modal-card, [data-theme="glass"] .modal > div {
+  background: rgba(18, 30, 33, .92); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--line);
+}
+
+/* --- glass: placement fixes from the first screenshot ------------------ */
+/* the feed belongs beside the greeting, not over the tiles */
+[data-theme="glass"] .main { position: static; }
+[data-theme="glass"] .empty { position: relative; width: 100%; }
+[data-theme="glass"] .empty:not(.hidden) .task-feed { top: 0; right: 18px; }
+@media (max-width: 1100px) {
+  /* no room beside the greeting: it goes under the suggestions instead */
+  [data-theme="glass"] .empty:not(.hidden) .task-feed {
+    position: static; width: min(520px, 100%); margin: 22px auto 0;
+  }
+}
+/* the tiles: six across and compact, as in the reference */
+[data-theme="glass"] .dash-tiles {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+[data-theme="glass"] .dash-tile { min-height: 0; padding: 11px 12px 10px; }
+[data-theme="glass"] .dash-tile-val { font-size: 22px; }
+[data-theme="glass"] .dash-tile-lbl { font-size: 12px; }
+[data-theme="glass"] .dash-tile-sub { font-size: 11px; }
+[data-theme="glass"] .dash-spark { height: 30px; margin-top: 6px; }
+/* the engine chip stands apart at the right */
+[data-theme="glass"] .topbar > .engine-pill { margin-left: 14px; flex: 0 0 auto; }
+[data-theme="glass"] .topbar-actions { margin-left: auto; margin-right: auto; }
+
+/* --- glass: second-pass placement -------------------------------------- */
+[data-theme="glass"] .dash-tiles { --tile-min: 118; }
+/* The feed anchors to the chat area, not the 620px centred welcome column.
+   Beside the greeting only when the chat area is wide enough for it to sit
+   in the gutter without covering anything; otherwise under the suggestions.
+   A container query, because what matters is the chat area's width, not the
+   window's — the sidebar takes a different share at different sizes. */
+[data-theme="glass"] #thread { position: relative; container-type: inline-size; }
+[data-theme="glass"] .empty { position: static; }
+[data-theme="glass"] .empty:not(.hidden) .task-feed {
+  position: static; width: min(620px, 100%); margin: 26px auto 0;
+  max-height: none;
+}
+[data-theme="glass"] .empty:not(.hidden) .task-feed .tf-list { max-height: 260px; }
+@container (min-width: 1080px) {
+  [data-theme="glass"] .empty:not(.hidden) .task-feed {
+    position: absolute; top: 24px; right: 22px; width: 220px; margin: 0;
+  }
+}
+
+/* Kept last: a class that sets display must never outrank [hidden].
+   The Glass theme was once appended after this and the check caught it. */
 [hidden] { display: none !important; }

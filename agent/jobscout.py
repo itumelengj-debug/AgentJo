@@ -75,11 +75,18 @@ DEFAULT_PROFILE = {
     "achievements": [],
     "certifications": [],
     "years_experience": {},
-    "target_roles": ["Data Engineer", "BI Consultant", "AI Engineer"],
-    "arrangement": "remote contract",
+    # Empty by default. These used to hold the author's own targets — Data
+    # Engineer, BI Consultant, remote contract, South Africa — which was
+    # harmless in one person's app and wrong the moment anyone else
+    # installed it: they'd start with someone else's job search, and the
+    # onboarding would tell them step one was already done. Your saved
+    # profile overrides these, so emptying them changes nothing for an
+    # existing install.
+    "target_roles": [],
+    "arrangement": "",
     "rate": "",
     "availability": "",
-    "locations_ok": ["Remote", "South Africa"],
+    "locations_ok": [],
     "must_haves": [],
     "deal_breakers": [],
     "voice_notes": ("Write plainly and specifically. Short sentences. No "
@@ -1369,25 +1376,79 @@ def search(query: str = "", limit: int = 40) -> dict:
         cfg = {**cfg, "queries": [q.strip() for q in
                                   re.split(r"[,;]| OR ", query) if q.strip()]}
     found, errors, per_source = _fetch_all(query)
-    have = {r.get("key") for r in roles()}
     results, rejected = [], {}
     for j in found:
         keep, why = matches_search(j, cfg)
         if not keep:
             rejected[why] = rejected.get(why, 0) + 1
             continue
-        j = dict(j)
-        j["already_tracked"] = _slug(
-            f"{j.get('company','')}-{j.get('title','')}") in have
         results.append(j)
+    results = mark_tracked(results)
     return {"ok": True, "query": query, "results": results[:limit],
             "total": len(results), "per_source": per_source,
             "rejected": rejected, "errors": errors}
 
 
-def add_from_search(items: list) -> dict:
-    """Record roles chosen from a search preview."""
-    return add_roles(items or [])
+def role_key(job: dict) -> str:
+    """The key a role is stored under — the one definition of "same role"."""
+    return _slug(f"{_as_text(job.get('company'))}-{_as_text(job.get('title'))}")
+
+
+def mark_tracked(results: list) -> list:
+    """Say, for each found role, whether it's already tracked or was removed.
+
+    A search that doesn't say which results you already have makes you
+    track the same role twice or wonder why nothing happened — and a role
+    you removed is silently skipped by add_roles, so without this its Track
+    button did nothing at all.
+    """
+    have = {r.get("key") for r in roles()}
+    gone = {k.lower() for k in ignored_keys()}
+    out = []
+    for j in results or []:
+        j = dict(j)
+        k = role_key(j)
+        j["key"] = k
+        j["already_tracked"] = k in have
+        j["removed_before"] = (not j["already_tracked"]) and k.lower() in gone
+        out.append(j)
+    return out
+
+
+def add_from_search(items: list, restore: bool = False) -> dict:
+    """Record roles chosen from a search preview, and say what happened to
+    each one.
+
+    It used to return only a count, and the window assumed success — so when
+    nothing was added, nothing said so. Each item now gets its own outcome:
+    added, already tracked, removed earlier, or not a real role.
+    """
+    items = items or []
+    if restore:
+        # tracking a role you removed earlier means you've changed your mind
+        for i in items:
+            unignore(role_key(i))          # takes one key at a time
+    before = {r.get("key") for r in roles()}
+    gone = {k.lower() for k in ignored_keys()}
+    r = add_roles(items)
+    after = {x.get("key") for x in roles()}
+    outcomes = []
+    for i in items:
+        k = role_key(i)
+        if not _as_text(i.get("title")).strip():
+            status = "not a role"
+        elif k in before:
+            status = "already tracked"
+        elif k in after:
+            status = "added"
+        elif k.lower() in gone:
+            status = "removed earlier"
+        else:
+            status = "not a role"
+        outcomes.append({"key": k, "title": _as_text(i.get("title")),
+                         "status": status})
+    return {**r, "outcomes": outcomes,
+            "added": sum(o["status"] == "added" for o in outcomes)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1659,7 +1720,9 @@ def search_url(url: str, limit: int = 40, use_browser: bool = False) -> dict:
             f"{j.get('company','')}-{j.get('title','')}") in have
         kept.append(j)
     return {"ok": True, "url": url, "site": _site_of(url), "how": how,
-            "results": kept[:limit], "total": len(kept),
+            # reading one page said nothing about which roles you already
+            # had; it goes through the same marker as keyword search now
+            "results": mark_tracked(kept[:limit]), "total": len(kept),
             "rejected": rejected,
             "note": ("Titles come from the page's links, so company and "
                      "location are often blank until you open the advert."

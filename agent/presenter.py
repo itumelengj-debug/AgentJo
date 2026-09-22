@@ -241,7 +241,8 @@ SCENES = [
         "note": "The pipeline strip is the thing to point at: it shows where "
                 "the work has stopped, which is what a status bar should do "
                 "and almost never does.",
-        "panel": "jobsBtn", "seconds": 20,
+        # the Jobs app is a separate window, so there is no panel to open
+        "panel": "", "opens": "Agent Jo Jobs", "seconds": 20,
     },
     {
         "key": "fabrication",
@@ -255,7 +256,7 @@ SCENES = [
         "note": "This is the honest centre of the whole app. A tool that "
                 "sends confident applications you'd have to defend in an "
                 "interview is worse than no tool.",
-        "panel": "jobsBtn", "seconds": 18,
+        "panel": "", "opens": "Agent Jo Jobs", "seconds": 18,
     },
     {
         "key": "gates",

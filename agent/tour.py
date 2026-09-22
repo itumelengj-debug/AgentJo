@@ -105,15 +105,6 @@ STOPS = [
      "try": "Open Crew and run “find three prospects who need BI” on "
             "auto-route.",
      "panel": "crewBtn"},
-    {"key": "jobs", "chapter": "Working unattended",
-     "title": "Job hunting",
-     "what": "Finds remote contract roles, scores them honestly, and drafts "
-             "applications grounded only in your real profile.",
-     "why": "Auto-apply can send them for you, but only for roles that clear "
-            "the gates you set — and never with a claim your profile can't "
-            "support.",
-     "try": "Ask it to build your job profile from your CV, then open Jobs.",
-     "panel": "jobsBtn"},
     {"key": "trends", "chapter": "Working unattended",
      "title": "Trends",
      "what": "Watches what's happening in AI agents and drafts skills you "
@@ -277,17 +268,6 @@ STOPS = [
      "try": "Map this app's own folder — it finds one import cycle and shows "
             "that fifty-odd modules depend on config.",
      "panel": "codemapBtn"},
-    {"key": "results", "chapter": "Working unattended",
-     "title": "Learning from what happened",
-     "what": "Which boards produced replies, whether your fit score predicts "
-             "anything, and whether email beats a portal form.",
-     "why": "Every rate is shown with the range it could really be. Five "
-            "applications with two replies is a 40% rate and also entirely "
-            "consistent with 8% — a tool that prints 40% there sends you "
-            "chasing a board that was merely lucky.",
-     "try": "Jobs \u2192 Results. Below a dozen applications it will tell "
-            "you plainly that it can't conclude anything yet.",
-     "panel": "jobsBtn"},
     {"key": "finetune", "chapter": "Making it yours",
      "title": "Fine-tuning a local model",
      "what": "Ask it to fine-tune a model for a subject and it plans, builds "
@@ -313,7 +293,18 @@ STOPS = [
      "try": "Models \u2192 point it at a spreadsheet, name the column to "
             "predict, press Build a model. Read the leakage note before "
             "believing a high score.",
-     "panel": "mlBtn"}
+     "panel": "mlBtn"},
+    {"key": "jobsapp", "chapter": "Specialist tools",
+     "title": "The job search is its own app",
+     "what": "Agent Jo Jobs runs beside this one in its own window: roles, "
+             "held drafts, auto-apply, and what actually produced replies.",
+     "why": "It had become a different product living inside this one. "
+            "Someone running a job search doesn't want a code map in the "
+            "way, and someone working doesn't want a job hunt in their "
+            "sidebar. Same data, same engines, same audit trail.",
+     "try": "Start it with start_agent_jo_jobs.bat, or press Ctrl+K and "
+            "type jobs.",
+     "panel": "tourBtn"}
 ]
 
 

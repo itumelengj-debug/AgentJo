@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Agent Jo Jobs</title>
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png" />
+<link rel="stylesheet" href="/static/jobs.css" />
+</head>
+<body>
+
+<div class="backdrop" aria-hidden="true"></div>
+<div class="shell">
+
+  <!-- The rail carries live counts, so you can see where the work is without
+       opening anything. A top bar can't hold that much; a rail can. -->
+  <aside class="rail">
+    <div class="rail-brand">
+      <img class="avatar" src="/static/icons/icon-192.png" alt="" width="38" height="38" />
+      <div>
+        <div class="rail-title">Agent Jo <em>Jobs</em></div>
+        <div class="rail-sub" id="railSub">by Symbolic Synapse</div>
+      </div>
+    </div>
+
+    <nav class="rail-nav" id="nav">
+      <button class="nav" data-view="overview"><i class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></i><span>Overview</span></button>
+      <button class="nav" data-view="roles"><i class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18"/></svg></i><span>Roles</span><b id="nRoles"></b></button>
+      <button class="nav" data-view="search"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></i><span>Search</span></button>
+      <button class="nav" data-view="drafts"><i class="ic"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg></i><span>Drafts</span><b id="nDrafts" class="warn"></b></button>
+      <button class="nav" data-view="auto"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18h5a4 4 0 0 0 4-4V8.5"/></svg></i><span>Auto-apply</span><b id="nAuto"></b></button>
+      <div class="rail-rule"></div>
+      <button class="nav" data-view="sources"><i class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></i><span>Sources</span><b id="nSources"></b></button>
+      <button class="nav" data-view="results"><i class="ic"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg></i><span>Results</span></button>
+      <button class="nav" data-view="archive"><i class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg></i><span>Archive</span><b id="nArchive"></b></button>
+      <button class="nav" data-view="profile"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></i><span>Your profile</span><b id="nProfile" class="warn"></b></button>
+    </nav>
+
+    <div class="rail-foot">
+      <label class="rail-label" for="engine">Engine for scoring &amp; drafting</label>
+      <select id="engine" class="select"></select>
+      <div class="rail-build" id="build"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- OVERVIEW ---------------------------------------------------------- -->
+    <section class="view" id="v-overview">
+      <header class="hero">
+        <p class="eyebrow" id="ovDate"></p>
+        <h1 id="ovHead">Good to see you.</h1>
+        <p class="lede" id="ovLede"></p>
+      </header>
+
+      <div id="onboard"></div>
+
+      <div class="bar" id="ovActions">
+        <button class="btn primary" id="ovCycle">Run a full cycle</button>
+        <button class="btn" id="ovDiscover">Discover new roles</button>
+        <button class="btn ghost" id="ovAdd">Add a role by hand</button>
+        <span class="muted">A cycle finds, scores and drafts in one go — it never sends.</span>
+      </div>
+
+      <div class="track" id="track"></div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h3>What's in the way</h3>
+          <div id="ovBlocked"></div>
+        </article>
+        <article class="card">
+          <h3>The next unattended run</h3>
+          <div id="ovPreview"></div>
+        </article>
+      </div>
+
+      <article class="card" id="ovFollowCard" hidden>
+        <h3>Follow-ups due</h3>
+        <div id="ovFollow"></div>
+      </article>
+    </section>
+
+    <!-- ROLES ------------------------------------------------------------- -->
+    <section class="view view-split" id="v-roles">
+      <div class="pane-list">
+        <div class="list-head">
+          <input id="roleFilter" class="input" type="search" placeholder="Filter roles…" />
+          <select id="roleSort" class="select small">
+            <option value="fit">Best fit</option>
+            <option value="new">Newest</option>
+            <option value="company">Company</option>
+            <option value="stage">Stage</option>
+          </select>
+        </div>
+        <div class="chips" id="roleChips"></div>
+        <div class="bulk" id="bulk" hidden>
+          <span id="bulkN"></span>
+          <button class="btn sm" data-bulk="score">Score</button>
+          <button class="btn sm" data-bulk="remove">Remove</button>
+          <button class="btn sm ghost" data-bulk="clear">Clear</button>
+        </div>
+        <div class="list" id="roleList"></div>
+      </div>
+      <div class="pane-detail" id="roleDetail"></div>
+    </section>
+
+    <!-- SEARCH ------------------------------------------------------------ -->
+    <section class="view" id="v-search">
+      <header class="hero compact">
+        <h1>Find roles</h1>
+        <p class="lede">Search your sources by keyword, or paste a single posting's
+          address and it will read the page.</p>
+      </header>
+      <div class="bar">
+        <input id="q" class="input grow" placeholder="data engineer, remote — or https://…" />
+        <label class="check"><input type="checkbox" id="qBrowser" /> use browser</label>
+        <button class="btn primary" id="qGo">Search</button>
+      </div>
+      <div class="list" id="results"></div>
+    </section>
+
+    <!-- DRAFTS ------------------------------------------------------------ -->
+    <section class="view view-split" id="v-drafts">
+      <div class="pane-list">
+        <div class="pane-intro">
+          <h2>Held drafts</h2>
+          <p>A draft that claims something your profile can't support stops here
+            instead of being sent.</p>
+        </div>
+        <div class="list" id="heldList"></div>
+        <div class="pane-intro" style="margin-top:22px">
+          <h2>Claims that keep coming up</h2>
+          <p>Confirm one and it's added to your profile; dismiss it and drafts
+            stop making it.</p>
+        </div>
+        <div class="list" id="claimList"></div>
+      </div>
+      <div class="pane-detail" id="draftDetail"></div>
+    </section>
+
+    <!-- AUTO-APPLY -------------------------------------------------------- -->
+    <section class="view" id="v-auto">
+      <header class="hero compact">
+        <h1>Auto-apply</h1>
+        <p class="lede">What runs without you. Rehearsal keeps everything local
+          until you're sure.</p>
+      </header>
+      <div class="grid-2">
+        <article class="card">
+          <h3>Rules</h3>
+          <div class="form" id="autoForm">
+            <label class="toggle"><input type="checkbox" id="aOn" /><span>Auto-apply on</span></label>
+            <label class="toggle"><input type="checkbox" id="aDry" /><span>Rehearsal — draft but never send</span></label>
+            <label class="toggle"><input type="checkbox" id="aClean" /><span>Only send drafts that pass the claims check</span></label>
+            <div class="field"><label>Minimum fit</label><input id="aMin" class="input" type="number" min="0" max="100" /></div>
+            <div class="field"><label>Most per day</label><input id="aCap" class="input" type="number" min="0" max="50" /></div>
+            <div class="field"><label>Signature</label><textarea id="aSig" class="input" rows="3"></textarea></div>
+            <button class="btn primary" id="aSave">Save rules</button>
+          </div>
+        </article>
+        <article class="card">
+          <h3>If it ran now</h3>
+          <div id="autoPreview"></div>
+          <div class="actions">
+            <button class="btn" id="aRun">Run once now</button>
+            <button class="btn ghost" id="aPilot">Set up the daily loop</button>
+          </div>
+          <label class="toggle" style="margin-top:14px"><input type="checkbox" id="aDaily" /><span>Daily scan at 07:00 — finds, scores, drafts</span></label>
+        </article>
+      </div>
+      <article class="card">
+        <h3>Portal applications so far</h3>
+        <div id="portalHistory"></div>
+      </article>
+    </section>
+
+    <!-- SOURCES ----------------------------------------------------------- -->
+    <section class="view" id="v-sources">
+      <header class="hero compact">
+        <h1>Where roles come from</h1>
+        <p class="lede">A board is checked before it's added — one that returns
+          nothing is worse than none, because it looks like it's working.</p>
+      </header>
+      <div class="bar">
+        <input id="srcName" class="input" placeholder="Name" style="max-width:180px" />
+        <input id="srcUrl" class="input grow" placeholder="https://… a board, a careers page, an RSS feed" />
+        <button class="btn" id="srcAdd">Add</button>
+        <button class="btn primary" id="srcAuto">Find some for me</button>
+      </div>
+      <div class="list" id="srcList"></div>
+
+      <div class="grid-2" style="margin-top:26px">
+        <article class="card">
+          <h3>Suggested for your profile</h3>
+          <div id="srcSuggested"></div>
+          <div class="actions"><button class="btn sm ghost" id="srcMatch">Which boards suit me?</button></div>
+          <div id="srcMatchOut" class="muted"></div>
+        </article>
+        <article class="card">
+          <h3>Job-alert emails</h3>
+          <p class="muted">Boards that block scraping still send alert emails.
+            Paste one here, or point it at a folder of saved .eml files.</p>
+          <textarea id="alertRaw" class="input" rows="4" placeholder="Paste an alert email…"></textarea>
+          <div class="actions">
+            <button class="btn" id="alertPaste">Read this email</button>
+            <button class="btn ghost" id="alertFolder">Read the alerts folder</button>
+            <button class="btn ghost" id="alertGuide">How to set it up</button>
+          </div>
+          <div id="alertOut" class="muted"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- RESULTS ----------------------------------------------------------- -->
+    <section class="view" id="v-results">
+      <header class="hero compact">
+        <h1 id="resHead">Results</h1>
+        <p class="lede" id="resLede"></p>
+      </header>
+      <div class="grid-2">
+        <div id="findings"></div>
+        <article class="card" id="breakdown"></article>
+      </div>
+    </section>
+
+    <!-- ARCHIVE ----------------------------------------------------------- -->
+    <section class="view" id="v-archive">
+      <header class="hero compact">
+        <h1>Archive &amp; tidy</h1>
+        <p class="lede">Closed and old roles, kept out of the way. Nothing here is
+          deleted — it can come back.</p>
+      </header>
+      <div class="bar">
+        <button class="btn" id="tArchive">Archive closed roles</button>
+        <button class="btn" id="tDedupe">Merge duplicates</button>
+        <button class="btn" id="tSweep">Check which are still open</button>
+        <button class="btn ghost" id="tPrune">Prune stale</button>
+        <button class="btn ghost danger" id="tClear">Clear never-scored</button>
+        <button class="btn ghost" id="tUnignore">Stop ignoring removed roles</button>
+      </div>
+      <div class="list" id="archList"></div>
+    </section>
+
+    <!-- PROFILE ----------------------------------------------------------- -->
+    <section class="view view-split" id="v-profile">
+      <div class="pane-list">
+        <div class="pane-intro">
+          <h2>What you can claim</h2>
+          <p>Everything here is what a draft is allowed to say about you. A thin
+            profile means held drafts, not bad ones.</p>
+        </div>
+        <div class="form" id="profileForm"></div>
+      </div>
+      <div class="pane-detail" id="profileSide"></div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="/static/jobs.js"></script>
+</body>
+</html>

@@ -120,9 +120,6 @@
             <button class="foot-btn" id="challengesBtn">
             <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M1.8 8h12.4M8 1.8c1.7 2 2.5 4 2.5 6.2s-.8 4.2-2.5 6.2c-1.7-2-2.5-4-2.5-6.2s.8-4.2 2.5-6.2z"/></svg></span> Challenges
           </button>
-            <button class="foot-btn" id="jobsBtn">
-            <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4.8" width="12" height="8.4" rx="1.4"/><path d="M5.8 4.8V3.6a1.2 1.2 0 0 1 1.2-1.2h2a1.2 1.2 0 0 1 1.2 1.2v1.2"/><path d="M2 8.6h12"/></svg></span> Jobs
-          </button>
           <button class="foot-btn" id="schedBtn">
           <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.6"/></svg></span> Scheduler
         </button>
@@ -224,6 +221,8 @@
             <span class="access-track"><span class="access-dot"></span></span>
             <span class="access-label">Second opinion</span>
           </label>
+          <div class="engine-menu" id="engineMenu" role="listbox" hidden></div>
+        </div>
           <button class="engine-pill" id="enginePill" aria-haspopup="listbox">
             <span class="pulse" id="enginePulse"></span>
             <span class="engine-pill-text">
@@ -232,8 +231,6 @@
             </span>
             <span class="caret">▾</span>
           </button>
-          <div class="engine-menu" id="engineMenu" role="listbox" hidden></div>
-        </div>
       </header>
 
       <div class="dash" id="dash">
@@ -255,6 +252,10 @@
       <section class="thread" id="thread">
         <!-- Empty state -->
         <div class="empty" id="emptyState">
+          <aside class="task-feed" id="taskFeed" aria-label="Task feed">
+            <div class="tf-head">Task Feed</div>
+            <div class="tf-list" id="taskFeedList"></div>
+          </aside>
           <div class="empty-mark"><img src="/avatar" alt="" /></div>
           <h1 class="empty-title" id="greeting">How can I help?</h1>
           <p class="empty-sub">A private agent with memory, tools, and a choice of engines.</p>
@@ -948,231 +949,6 @@
         <span class="issues-count" id="mcpCount"></span>
       </div>
       <div class="out-log" id="mcpList"></div>
-    </div>
-  </div>
-
-  <!-- ============ Jobs ============ -->
-  <div class="modal-backdrop" id="jobsModal" hidden>
-    <div class="modal modal-portal" role="dialog" aria-modal="true" aria-labelledby="jobsTitle">
-      <div class="modal-head">
-        <h2 id="jobsTitle">Jobs</h2>
-        <button class="icon-btn" id="closeJobsModal" aria-label="Close">✕</button>
-      </div>
-
-      <div class="pipeline" id="jobsPipeline" hidden></div>
-
-      <div class="tabs" role="tablist">
-        <button class="tab is-on" id="jobsTabFind" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 1.8a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM10.4 10.4 14.2 14.2"/></svg><span>Find</span></button>
-        <button class="tab" id="jobsTabTracked" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.4 5.6 12 14 3.2"/></svg><span>Tracked</span><span class="tab-badge" id="jobsBadgeTracked" hidden></span></button>
-        <button class="tab" id="jobsTabClaims" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8v7M8 12.2h.01M8 1.8 1.8 13.4h12.4z"/></svg><span>Held</span><span class="tab-badge" id="jobsBadgeClaims" hidden></span></button>
-        <button class="tab" id="jobsTabResults" role="tab">
-          <svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-               stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true"><path d="M2 13V7M6 13V3M10 13v-4M14 13V5"/></svg>
-          <span>Results</span></button>
-                <button class="tab" id="jobsTabAuto" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8v4.4M8 1.8 5.4 4.4M8 1.8l2.6 2.6M2.6 8.4v3.8h10.8V8.4"/></svg><span>Auto-apply</span></button>
-        <button class="tab" id="jobsTabWhere" role="tab"><svg class="tab-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 8h12.4M8 1.8a11 11 0 0 1 0 12.4 11 11 0 0 1 0-12.4zM8 1.8a6.2 6.2 0 1 0 0 12.4 6.2 6.2 0 0 0 0-12.4z"/></svg><span>Sites</span></button>
-        <span style="flex:1"></span>
-        <span class="issues-count" id="jobsInfo"></span>
-      </div>
-
-      <!-- FIND -->
-      <section class="tabpane" id="jobsPaneFind">
-        <div class="search-bar">
-          <svg class="search-ico" viewBox="0 0 16 16" fill="none"
-               stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-               aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
-          <input type="text" id="jobsQuery" class="search-input"
-                 placeholder="data engineer, power bi — or paste a job page URL" />
-          <button class="btn primary btn-mini" id="jobsSearchBtn">Search</button>
-          <button class="btn ghost btn-mini" id="jobsUrlBrowserBtn" hidden
-                  title="Load the page in a real browser — for sites that block readers or build their list in JavaScript">Use browser</button>
-        </div>
-        <input type="hidden" id="jobsUrl" />
-        <button id="jobsUrlBtn" hidden></button>
-        <div class="skip-line" id="jobsSkipped"
-             title="Hover for the full breakdown"></div>
-        <div class="portal-split">
-          <div class="portal-list" id="jobsResults"></div>
-          <div class="portal-detail" id="jobsFindDetail"></div>
-        </div>
-      </section>
-
-      <!-- TRACKED -->
-      <section class="tabpane" id="jobsPaneTracked" hidden>
-        <div class="issues-toolbar">
-          <select id="jobsSort" class="model-select" title="Order">
-            <option value="fit">Best fit first</option>
-            <option value="new">Newest first</option>
-            <option value="company">By company</option>
-            <option value="stage">By stage</option>
-          </select>
-          <select id="jobsStageFilter" class="model-select">
-            <option value="">All stages</option>
-            <option value="found">Found</option>
-            <option value="drafted">Drafted</option>
-            <option value="applied">Applied</option>
-            <option value="responded">Responded</option>
-            <option value="interview">Interview</option>
-            <option value="offer">Offer</option>
-            <option value="closed">Closed</option>
-          </select>
-          <span style="flex:1"></span>
-          <span class="issues-count" id="jobsTrackedCount"></span>
-          <button class="btn ghost btn-mini" id="jobsPruneBtn"
-                  title="Remove entries that were never vacancies — scraped category links">Remove non-jobs</button>
-          <button class="btn ghost btn-mini" id="jobsClearBtn"
-                  title="Remove every role at the stage selected on the left">Clear stage</button>
-        </div>
-        <div class="list-controls compact">
-          <button class="chip" id="jobsChipEmail" type="button">Can email</button>
-          <button class="chip" id="jobsChipStrong" type="button">Fit 75+</button>
-          <button class="chip" id="jobsChipUnscored" type="button">Not scored</button>
-          <button class="chip" id="jobsChipOpen" type="button">Still open</button>
-          <button class="chip" id="jobsChipArchive" type="button">Archive</button>
-          <span style="flex:1"></span>
-          <button class="btn ghost btn-mini" id="jobsArchiveBtn"
-                  title="Move closed and expired roles out of the list — kept, not deleted">Archive closed</button>
-                    <button class="btn ghost btn-mini" id="jobsSweepBtn"
-                  title="Check the oldest adverts and close the ones that say they've shut">Check for expired</button>
-        </div>
-        <div class="bulk-bar" id="jobsBulk" hidden>
-          <span id="jobsBulkCount"></span>
-          <span style="flex:1"></span>
-          <button class="btn ghost btn-mini" id="jobsBulkScore">Score these</button>
-          <button class="btn ghost btn-mini" id="jobsBulkRemove">Not interested</button>
-          <button class="btn ghost btn-mini" id="jobsBulkClear">Clear</button>
-        </div>
-        <div class="portal-split">
-          <div class="portal-list" id="jobsList"></div>
-          <div class="portal-detail" id="jobsDetail"></div>
-        </div>
-      </section>
-
-      <!-- CLAIMS -->
-      <section class="tabpane" id="jobsPaneClaims" hidden>
-        <p class="modal-intro">
-          These drafts were held back because they say something your profile
-          can't back up. Nearly always the claim is true and simply isn't
-          written down — confirm it and the drafts clear immediately. If it
-          isn't true, dismiss it and it won't be used again.
-        </p>
-        <div class="portal-split">
-          <div class="portal-list" id="jobsClaimList"></div>
-          <div class="portal-detail" id="jobsClaimDetail"></div>
-        </div>
-      </section>
-
-      <!-- RESULTS -->
-      <section class="tabpane" id="jobsPaneResults" hidden>
-        <div class="auto-summary" id="jobsResultsHead"></div>
-        <div class="portal-split">
-          <div class="portal-list" id="jobsFindings"></div>
-          <div class="portal-detail" id="jobsBreakdown"></div>
-        </div>
-      </section>
-
-            <!-- AUTO-APPLY -->
-      <section class="tabpane" id="jobsPaneAuto" hidden>
-        <div class="issues-toolbar">
-          <label style="display:flex;align-items:center;gap:6px">
-            <input type="checkbox" id="jobsAutoOn" /> <strong>Auto-apply on</strong>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px">
-            <input type="checkbox" id="jobsDryRun" /> Rehearsal (send nothing)
-          </label>
-          <span style="flex:1"></span>
-          <select id="jobsEngine" class="model-select" title="Which engine scores and drafts"></select>
-          <button class="btn ghost btn-mini" id="jobsAutopilotBtn"
-                  title="Find, de-duplicate, screen, score, draft and apply — once a day, on its own">Run this daily</button>
-          <button class="btn primary btn-mini" id="jobsAutoRunBtn">Run now</button>
-        </div>
-        <div class="doc-note">
-          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-            <label>Minimum fit <input type="number" id="jobsMinScore" class="model-input" style="width:64px" min="0" max="100" /></label>
-            <label>Daily cap <input type="number" id="jobsCap" class="model-input" style="width:56px" min="1" max="50" /></label>
-            <label style="display:flex;align-items:center;gap:5px">
-              <input type="checkbox" id="jobsCleanOnly" /> only send drafts with no unsourced claims
-            </label>
-            <label style="display:flex;align-items:center;gap:5px">
-              <input type="checkbox" id="jobsDaily" /> run daily
-            </label>
-          </div>
-        </div>
-        <div class="auto-summary" id="jobsAutoSummary"></div>
-        <div class="portal-split" style="margin-top:10px">
-          <div class="portal-list" id="jobsAutoPreview"></div>
-          <div class="portal-detail" id="jobsAutoSide"></div>
-        </div>
-        <div class="portal-list" id="jobsAutoLog" hidden></div>
-      </section>
-
-      <!-- SITES -->
-      <section class="tabpane" id="jobsPaneWhere" hidden>
-        <div class="portal-split">
-          <div class="portal-list">
-            <h4 style="margin:4px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)">Your sites</h4>
-            <div id="jobsSourceList"></div>
-            <div class="issues-toolbar" style="margin-top:10px">
-              <input type="text" id="jobsSrcName" class="model-input" style="flex:1;min-width:90px" placeholder="Name" />
-              <input type="text" id="jobsSrcUrl" class="model-input" style="flex:2;min-width:130px" placeholder="Any job page or feed URL" />
-              <select id="jobsSrcKind" class="model-select">
-                <option value="html">Any web page</option>
-                <option value="rss">RSS feed</option>
-                <option value="remotive">Remotive API</option>
-                <option value="remoteok">RemoteOK API</option>
-              </select>
-              <button class="btn ghost btn-mini" id="jobsSrcAdd">Add</button>
-              <button class="btn primary btn-mini" id="jobsFindBoardsBtn"
-                      title="Find boards that suit your CV and serve somewhere you can work — each one checked before it's added">Find sites for me</button>
-            </div>
-            <h4 style="margin:16px 0 8px;font-size:11px;color:var(--faint)">Job alerts by email</h4>
-            <div class="doc-note">
-              Boards that block readers will email you the same listings.
-              Save your search as an alert on each, then paste one here — or
-              drop the .eml files in the alerts folder.
-            </div>
-            <textarea id="jobsAlertPaste" class="model-input" rows="4"
-                      style="width:100%;margin-top:6px"
-                      placeholder="Paste a job-alert email here, links and all"></textarea>
-            <div class="issues-toolbar">
-              <button class="btn primary btn-mini" id="jobsAlertPasteBtn">Read this email</button>
-              <button class="btn ghost btn-mini" id="jobsAlertFolderBtn">Read the alerts folder</button>
-              <button class="btn ghost btn-mini" id="jobsAlertGuideBtn">How do I set these up?</button>
-            </div>
-            <div id="jobsAlertOut" class="out-log" style="margin-top:6px;max-height:150px"></div>
-
-                        <h4 style="margin:16px 0 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)">Suggestions</h4>
-            <div id="jobsSuggested"></div>
-          </div>
-          <div class="portal-detail">
-            <div class="detail-block">
-              <h4>What to ignore</h4>
-              <input type="text" id="jobsExclude" class="model-input" style="width:100%" placeholder="agency, unpaid, internship" />
-            </div>
-            <div class="detail-block">
-              <h4>Locations you'd accept</h4>
-              <input type="text" id="jobsLocations" class="model-input" style="width:100%" placeholder="South Africa, EMEA" />
-            </div>
-            <div class="detail-block">
-              <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-                <input type="checkbox" id="jobsRemoteOnly" /> Remote only (your accepted locations still come through)
-              </label>
-              <label style="display:flex;align-items:center;gap:6px">
-                <input type="checkbox" id="jobsNeedEmail" /> Only roles it can email — hides portal-only adverts
-              </label>
-            </div>
-            <div class="detail-block">
-              <h4>How this is used</h4>
-              <pre>These apply to searches and to the unattended daily run. Words to ignore are checked before your search terms, so a banned word always wins.</pre>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div class="doc-note" id="jobsStatus"></div>
-      <div class="doc-note" id="jobsProfileHint"></div>
-      <pre id="jobsDraft" hidden></pre>
     </div>
   </div>
 

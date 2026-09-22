@@ -4185,3 +4185,242 @@ said why. It's reported now.
 
 > None of this needed deducing from a wrong error message, which is what it
 > cost to find.
+
+
+### 112. Agent Jo Jobs
+
+The job search is its own application now, on its own port, with its own
+window.
+
+It had become a different product living inside another one. Someone running a
+job search doesn't want a code map, a 3D lab and an MCP panel in the way; and
+someone using the agent for work doesn't want a job hunt in their sidebar.
+
+**Separated, not duplicated.** All 49 routes moved rather than being copied,
+and every module — `jobscout`, `boards`, `cv`, `portal`, `outcomes` — is
+imported from where it already lived. One fabrication check, one auto-apply
+engine, one definition of "held". Two copies would drift, and the half that
+decides whether an application goes out is not a half to let drift. Shared
+data, shared engines, shared audit trail; different window.
+
+**The interface follows the work, not a template.** The pipeline is one
+continuous object across the top rather than six equal tiles — equal tiles
+would claim all six stages matter equally, when the blocked one is the only
+one you can act on, and it's the only one that takes the accent colour. Roles
+are a dense scannable list rather than a card grid: you read forty looking for
+two. Six views — Pipeline, Roles, Drafts, Results, Sources, You.
+
+> **Four bugs caught by testing the window against the running server rather
+> than against my assumptions.** `stages` is a dict of counts with
+> `blocked_at` naming the stuck one, not a list of objects. `/api/jobs/held`
+> doesn't exist — held drafts come from `/claims`. Sources are read from
+> `/search/config`; `POST /sources` only adds one. And the scan is `/search`,
+> not `/scan`. Every one would have drawn an empty view that looked like
+> "nothing found yet" — the worst kind of wrong, because it looks like an
+> answer.
+
+The main app keeps one command-palette entry that opens the Jobs window. Four
+test harnesses that drove the old panel were replaced by one that drives the
+new app against real payload shapes.
+
+
+### 113. Upgrading
+
+`UPGRADING.md`, because "replace the folder" needs to be shown to be safe
+rather than asserted.
+
+**Nothing of yours is in the app folder.** Conversations, memories, engines,
+settings, roles, the audit trail and backups all live in `.local_agent` beside
+your home directory. Upgrading replaces the code next to it.
+
+Verified rather than claimed: a fixture with an engine, a profile and a role,
+a second copy of the code pointed at the same data, then the original folder
+deleted outright — all three survived. Four checks now assert the property
+that makes this true, so a future change that starts writing user data beside
+the code fails the suite rather than quietly breaking upgrades.
+
+The two things that actually break an upgrade are called out: unzipping into
+`%TEMP%`, which Windows empties without warning, and a folder named
+`AgentJo (1)` — the bracket a browser adds to a second download breaks batch
+files.
+
+
+### 114. Agent Jo Jobs, properly this time
+
+Feedback on the first cut: it looked mid, and functions had gone missing. Both
+true, and the second was worse than the first.
+
+**It wired 12 of 47 endpoints.** Scoring, drafting, the ATS check, CV
+tailoring, interview prep, portal applications, confirming and dismissing
+claims, every auto-apply control, alerts, the archive — gone. A redesign that
+removes what people used is a regression wearing new clothes. **46 of 47 are
+reachable now**; the one without a button is internal plumbing the alerts
+folder calls. A check fails the build if a user-facing endpoint loses its UI
+again.
+
+**Looked at, not imagined.** The first version was built blind. This one was
+rendered in a real browser, screenshotted with realistic data, and changed on
+what the screenshots showed: serif headlines over a sans interface with mono
+numbers; a left rail with live counts; the pipeline as a track with the stuck
+stage lit; a three-step checklist for a first run instead of a row of zeros;
+roles as master and detail, set like an article, with actions grouped by
+intent; and the highlighted action being the next step for that role rather
+than always the first button.
+
+> **Four bugs the screenshots caught.** Every read was failing: the request
+> helper attached a JSON body to GETs, which the browser rejects before
+> sending — so the pipeline showed zeros under a headline counting eight
+> roles. "0 selected" showed with nothing selected, because a class setting
+> `display` outranks the `hidden` attribute. Ticking a role gave no visible
+> sign. And held drafts showed no reason, because reasons arrive as strings
+> and were read as objects.
+>
+> Removed on inspection: per-stage conversion rates. "Sent — 100% of held"
+> was computed against a stage that isn't in the funnel. A number that looks
+> like analysis and isn't is worse than none.
+
+
+### 115. Agent Jo Jobs as its own project
+
+Agent Jo Jobs now exists as a **separate repository**, `agent-jo-jobs`, that
+installs, runs and tests with no copy of Agent Jo on the machine.
+
+**It needed one import removed to be possible.** The Jobs server imported
+`agent.main` for two marker values — and `agent.main` pulls in the tool layer
+and everything behind it: **51 of 63 modules, 25,700 lines**, including the
+Blender lab, neural 3D and the fine-tuner. Defined locally instead, it needs
+**17 modules and 11 load at runtime**, every one of them about jobs.
+
+**The honest cost is two copies.** Being separate means those 17 modules live
+in both repos, and a fix to the fabrication check here doesn't reach the Jobs
+app by itself. So that is made visible rather than left to be discovered:
+`tools/sync_jobs_app.py --check` reports every shared module that has drifted,
+by hash, and without `--check` copies them across. The Jobs repo carries
+`VENDORED.json` naming the build it came from. The check was proven against a
+real change before being trusted.
+
+**Found on the first fresh install: the default profile was the author's.**
+"Data Engineer, BI Consultant, AI Engineer, remote contract, South Africa"
+shipped as everyone's starting targets — harmless in one person's app, wrong
+the moment a stranger installs it, and the reason onboarding claimed step one
+was already done. The defaults are empty now; an existing saved profile
+overrides them, so nothing changes for a current install. The window also had
+three definitions of "profile ready" that disagreed; it uses the server's.
+
+It carries the Agent Jo portrait as its icon — in the rail, the browser tab,
+and the desktop shortcut the installer creates — and its own 24 checks.
+
+
+### 116. Agent Jo Jobs — the reference look
+
+Restyled to a reference supplied by the user: cool charcoal behind a soft
+blurred backdrop, translucent glass cards, a mint accent with a glow on the
+primary action, a bold sans for headlines, icons on every navigation item,
+three separate onboarding cards each carrying an illustration, the pipeline
+as ring counters, pill buttons, and the engine picker pinned to the bottom of
+the sidebar.
+
+Compared screenshot against reference at the same 1024×640 size and adjusted
+until they matched: a narrower sidebar and tighter padding so step titles stop
+wrapping, and type a step smaller. No functionality changed — all 46
+user-facing endpoints are still reachable.
+
+The window is now identical in both repositories, so the sync tool carries it
+across along with the shared modules.
+
+
+### 117. Chrome buttons
+
+Lit buttons in Agent Jo Jobs are polished metal now: a mint-tinted chrome
+gradient with a hard specular band, and a highlight that sweeps across on
+hover. **While a button is working the sweep runs continuously** and the glow
+breathes — the same language as a thinking indicator, so a busy control reads
+as the agent at work rather than a frozen button. Every busy button gets it,
+not only the primary ones.
+
+The class is added when work starts and removed in `finally`, so a failed
+request can't leave a button shimmering forever. People who've asked their
+operating system for less motion get the chrome without the sweep.
+
+> Caught at 2× zoom: `overflow:hidden`, which the sheen needs, let a crowded
+> row squeeze the primary button until its label read "Run a full cyc".
+> Buttons never shrink now; the helper text beside them gives way. And a
+> white sweep on pale mint barely registered, so the primary's band is
+> brighter and blends as added light.
+
+
+### 118. Times New Roman, and the reference matched to the pixel
+
+Every heading in Agent Jo Jobs — page titles, card and step titles, role
+titles, the app name — is set in Times New Roman; the working interface stays
+in the sans. Times ships with Windows and macOS, so nothing is downloaded.
+Each heading goes up a touch, because Times sits smaller than the sans at the
+same size.
+
+Then compacted against the supplied reference at 1024×640 until the bottom
+cards sat fully in view, as they do there (577px of 640). The sidebar name and
+the engine box stopped wrapping; the box's side padding gave way so its text
+fits in full rather than being clipped — checked with the sandbox's fallback
+font, which is wider than Segoe UI, so it has room to spare on Windows. Step
+card buttons are rounded rectangles, as in the reference; the rest stay pills.
+
+
+### 119. Search shows what you have, and Track actually saves
+
+Reported: search results didn't say which roles were already tracked, and
+untracked ones couldn't be tracked.
+
+**Tracking from search had never saved anything.** The window sent
+`{"roles": [...]}`; the route's field is `items`. The unknown key was dropped,
+the call answered `ok` with nothing added, and the window then showed every
+role as tracked. The request now refuses unknown fields, so a wrong name fails
+loudly instead of succeeding at nothing.
+
+**The server already knew which results were tracked** — it computed
+`already_tracked` for every keyword search. The window just never read it.
+Reading a single posting by URL didn't compute it at all; both paths now go
+through one `mark_tracked`, which also flags roles **you removed earlier**.
+Those mattered most: `add_roles` skips them silently, so their Track button
+did nothing.
+
+Each result now shows its state — **New**, **Tracked** or **Removed earlier**
+— with the matching action: Track, Open, or Restore. A summary counts them
+before you touch anything, chips filter by state, and **Track N new** tracks
+only what you don't already have. Rows update from the server's per-role
+answer, never from an assumption that it worked.
+
+Verified in a real browser against the real write path: three new, two
+tracked and one removed became six tracked, and the store held six roles.
+
+
+### 120. Glass
+
+A new theme, restyled to a supplied reference: deep teal-black, translucent
+panels, one teal accent. It's what "System" resolves to in dark mode; anyone on
+the previous dark default is moved to it once, and a choice made after that is
+left alone. The older themes stay selectable in Settings.
+
+- Each sidebar group — Core, Automation, Extend, Safety — is its own glass
+  panel with the chevron on the right.
+- The top-bar controls sit in a centred pill, the engine chip on its own at the
+  right. The four switches are still there, compacted to icon and track with
+  their names as tooltips; hiding a label doesn't hide what a switch does.
+- Tiles run six across, compact, with teal charts. The size comes from a CSS
+  variable the existing layout reads, so rows still fill completely.
+- **Task Feed**: upcoming schedule runs and recent tasks, from real data, beside
+  the greeting. A container query puts it under the suggestions when the chat
+  area is too narrow to hold it without covering anything.
+
+> **Found while restyling, and mine: every load has shown "Could not reach the
+> server" since build 105.** An edit meant for another function put
+> `state.startEngine = d.start_engine` into the start-up block, where the
+> variable is `meta`. It threw on every load; the catch blamed the server; and
+> everything after it was silently skipped — the microphone button, the
+> no-engine warning, and the start-engine fix the line was meant to deliver.
+> Nothing ever executed start-up, so nothing noticed. A check now does.
+>
+> Three existing checks caught the restyle on the way through: the tile
+> harness has no `getComputedStyle` and the dashboard harness no
+> `requestAnimationFrame` (both now fall back gracefully, as an old browser
+> should); and the Glass rules had been appended after `[hidden] { display:
+> none !important; }`, which must stay last.
