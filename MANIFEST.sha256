@@ -1,9 +1,9 @@
 {
-  "created": "2026-09-24 00:24:36 UTC",
+  "created": "2026-09-24 00:38:37 UTC",
   "entries": {
     ".gitattributes": "12d62641e982f4f08f066118d9f77ef3c407739cd24ca5a7f5ba620e3f2890ef",
-    ".gitignore": "219ec7123005af9fa74bdce96faad9d91c46f76a3385cf7798fea6e4bd4f9f3c",
-    "CHANGELOG.md": "ff81a7f115400cac7e255fc6bcfdcfb953c2a5f896f5254f54e911448fbdf26d",
+    ".gitignore": "3c0e5e777a9c93ac6af73d1c9133efb42324241dd784b1f35660f278b431b4f8",
+    "CHANGELOG.md": "e78a7c1230c50b411c0b31d827bdfcb1b30589d52421497ad2c3371d2f8661c2",
     "COMMERCIAL.md": "b7e1eb991e3f9908482cd9eaef3daa812d1831682f351501d48873b308fb8e4c",
     "LICENSE": "aff65fb25e605dec3f5bc7a9e940a7b3859cbeaf9fdb0826473a18f0f53eedb6",
     "READ ME FIRST.md": "eac2d94c1875e586c78dab62c6f966400a04ff7cbafe489f9a92bb5dc3e6956a",
@@ -11,7 +11,7 @@
     "SIGNING.md": "c35c41540949878864f4349d820dc81989a5b4aed2583c8f3344b3fe501dffaf",
     "UPGRADING.md": "477da5ee128b292221c2b0dac100285acf82eb97a1d137ab48ffddb78a584ec7",
     "VERIFYING.md": "abd11b3eb0be6bba6c6a80155e5bd37316f0029abc5b1fc7a66ccdec5a445516",
-    "VERSION": "b389fd695d0f1725d524f22834c6aabefebc74cb314e9532f7e8a25c29ee47d2",
+    "VERSION": "2306deab5abc025bcdea64017c121b95106baf78145aaf4eda3883e93979ce48",
     "agent/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "agent/audit.py": "bf91d293813870ea0bbe209ed5529e21b9dcd4b583ddda4cae9f863de336dc3e",
     "agent/autoresume.py": "a63c6edd7a80b5eb7ab1006db61eb9d8b2291a3d4a3569a31aac42a6ba429983",
@@ -24,7 +24,7 @@
     "agent/challenges.py": "78eabdd0495015250c717c9c20105a9c6ea006e731ea9cf6d65ab4154a293da4",
     "agent/codemap.py": "612f312130cf5cb52f6cf94fdf85efaefeb49db8179086f428ab3ad40bbf712a",
     "agent/collaborate.py": "e95b4896bd64c72f552f07f88a2d77123633c5a09b3b07382d7970fbe12abd98",
-    "agent/config.py": "47eec23972e29568e5eabed1e90fd12682aa8263a6e522403c0140804d81bd99",
+    "agent/config.py": "e3fb3b553a8d33d4f3bf783cb200c698c03dbc5c673d7d3d0a9bfec714959820",
     "agent/costs.py": "16eeb8047e6db11c6b102257a41761da25378d82e19225a74de7fd378e61cd4f",
     "agent/crew.py": "111cc0dd93c078501316a8e486a595d4becca1ba794f352fb0f1e6eb1792157c",
     "agent/crypto.py": "e43dffc03f7a581644b3284432a1dcba757b5dc8f55b4ec61541735bf7b1ac3f",
@@ -52,7 +52,7 @@
     "agent/neural3d.py": "74173b508037940a6e0f47297c90062cc5844e8be4b50df1c9f1cbac87d7068a",
     "agent/outcomes.py": "b990684d311f0823c53cb2ff12ae3fbb6a4fd46b6f5e8d80b7ca09b6a3c1e5ce",
     "agent/outreach.py": "55185e80e8dd32e25b8a9a892e93e635f17c982ab7366d8aa661c23d6f1f8e06",
-    "agent/portal.py": "8814ba344cd6ff3053ea6b666b41a0ec3c1685aa4b23fdbc7f2346bc17bc7396",
+    "agent/portal.py": "cd8d9d5595c54c8f0d1ff882d68db9eab5171dbfd017e2539122782b93818a03",
     "agent/presenter.py": "424f53193d8a6f4f17ad0698fed6b71a43089626e2ac46f98c9f238fff929c17",
     "agent/privacy.py": "9bbfac19d5a93bdb6c5a8b1ef13a8d9f7f7d4f2b49b2c14247b69b5db36e895b",
     "agent/rag.py": "b9fdac05448c4c1067ba9fead39e9da4add4182691b8bf120722ba240cb8b715",
@@ -85,7 +85,7 @@
     "install.sh": "7db074d055094f6bf7a5550551bd0121ea99f957ee61c22b4f9829bd8b99340f",
     "install_agent_jo.py": "ec59eec1b4d47efddac3da03f04385418ff5268a68c230ad2eba5e5721c9b076",
     "jobs/__init__.py": "26e2a0391e9cf6583f01e0a4f891cdc014e6457d80b96e7a918251b16bafadd6",
-    "jobs/server.py": "4e9438ce82e0f302562ebf489b192a9805d2f389250cfb0f5e814d0749db760e",
+    "jobs/server.py": "a335ae9a4f224b4e031f2b8589c5abe253ab340bff2b371a5244e73439cd4a63",
     "requirements-app.txt": "3b74b3ee252586153d6eb88c4cc9128a49f1d5b3ea7f74a3c8038d0b9a549286",
     "requirements-rag.txt": "7d60fa4d0bab6f141ecc063830d004354bf3541e27f559660140f9c7b3dea393",
     "requirements-voice.txt": "a3caf3ccac6b53202a19172725c944df31bd4649885f2e7acfafaba6161fa1fb",
@@ -124,8 +124,8 @@
     "web_jobs/icons/icon-384.png": "cb1129b9c5e05d7ccabb4e5ca85329dcf839529ca162197ac2fa7617e44ad636",
     "web_jobs/icons/icon-512.png": "be66fa11300a9e682251ad7cad8556783fdbb1935a07ef08c938ff57df5056da",
     "web_jobs/index.html": "3220da80a4ea7f976ca054bdb239041db82068770afbee1610589543aa85cc2d",
-    "web_jobs/jobs.css": "b3d68781f9bf07858284f79cf1639f01108df18553c15b5404f300a0d40c3e86",
-    "web_jobs/jobs.js": "7efbf0f3aaf3ba65df09e121929454f77503a170a6716d228d1a0af949358f06"
+    "web_jobs/jobs.css": "9dafc44da7d1a67d8933676c2ade23b2c0ab5a2f87e8754ec53c77a65c1af402",
+    "web_jobs/jobs.js": "88b57401aa98d573a184d3e4b96f53e07e22cfe5010a02e9fa4ffbdba98de461"
   },
   "files": 125
 }
