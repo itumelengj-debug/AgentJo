@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -491,6 +493,105 @@ class PlaywrightDriver:
             pass
 
 
+WAITING = "waiting_for_you"
+RUNNING = "running"
+CANCELLED = "cancelled"
+
+# Live sessions, keyed by role. A portal application can sit waiting for a
+# person for minutes, so it runs on its own thread and reports progress here;
+# the window polls it. An unattended run never waits — it records what needs
+# you and moves on.
+_sessions: dict = {}
+_sessions_lock = threading.Lock()
+
+
+def session(key: str) -> dict:
+    with _sessions_lock:
+        return dict(_sessions.get(key) or {})
+
+
+def _set_session(key: str, **fields) -> None:
+    with _sessions_lock:
+        s = _sessions.setdefault(key, {})
+        s.update(fields)
+        s["at"] = _iso()
+
+
+def session_continue(key: str) -> dict:
+    """The person says they've handled it. Checked by the waiting loop."""
+    _set_session(key, resume=True)
+    return session(key)
+
+
+def session_cancel(key: str) -> dict:
+    _set_session(key, cancel=True)
+    return session(key)
+
+
+def _wait_for_person(key: str, driver, page, state: str,
+                     timeout_s: float = 900.0) -> bool:
+    """Stop, ask for help, and carry on once it's handled.
+
+    A sign-in page or a captcha used to end the attempt: it reported what it
+    saw and closed. But the browser is already open on the person's own
+    machine, so the useful thing is to wait — they sign in or solve it, and
+    the application continues from where it stopped. It notices by itself when
+    the page clears, and there's a Continue button for when it can't tell.
+    """
+    _set_session(key, state=WAITING, blocked_by=state,
+                 message=handover_message(state),
+                 screenshot=driver.shot(page, "waiting"),
+                 waiting_since=_iso(), resume=False, cancel=False)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        s = session(key)
+        if s.get("cancel"):
+            return False
+        try:
+            if page_state(driver.html(page), "") == "":
+                return True                    # they handled it
+        except Exception:
+            pass                               # page mid-navigation; look again
+        if s.get("resume"):
+            return True                        # they say it's handled
+        time.sleep(2)
+    _set_session(key, message="Nobody came back within 15 minutes, so it "
+                              "stopped. Nothing was submitted.")
+    return False
+
+
+def start_apply(role: dict, profile_data: dict, *, submit: bool = False,
+                brain=None, model=None) -> dict:
+    """Begin a portal application in the background and return at once.
+
+    Waiting for a person can take minutes; a browser request can't be held
+    open that long, so the work runs on its own thread and the window follows
+    it through session().
+    """
+    key = str((role or {}).get("key") or (role or {}).get("url") or "role")
+    with _sessions_lock:
+        live = _sessions.get(key) or {}
+        if live.get("state") in (RUNNING, WAITING):
+            return dict(live)                  # already going; don't start twice
+        _sessions[key] = {"state": RUNNING, "at": _iso(), "key": key,
+                          "title": (role or {}).get("title", "")}
+
+    def _run():
+        try:
+            res = apply_to_portal(role, profile_data, submit=submit,
+                                  brain=brain, model=model, wait=True,
+                                  session_key=key)
+        except Exception as exc:
+            res = {"ok": False, "state": FAILED,
+                   "message": _explain_portal_error(exc)}
+        _set_session(key, **{**res, "state": res.get("state", FAILED),
+                             "done": True})
+
+    threading.Thread(target=_run, daemon=True,
+                     name=f"portal-{key}").start()
+    return session(key)
+
+
 def _explain_portal_error(exc: Exception) -> str:
     """Say what to do, not what the library printed.
 
@@ -521,7 +622,8 @@ def _explain_portal_error(exc: Exception) -> str:
 
 
 def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
-                    headless: bool = False, brain=None, model=None) -> dict:
+                    headless: bool = False, brain=None, model=None,
+                    wait: bool = False, session_key: str = "") -> dict:
     """Open the advert, fill what we can, and either submit or hand over.
 
     Runs the browser off the event loop. Playwright's synchronous API refuses
@@ -542,13 +644,16 @@ def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
         with _TPE(max_workers=1, thread_name_prefix="portal") as _ex:
             return _ex.submit(_apply_to_portal, role, profile_data,
                               submit=submit, headless=headless,
-                              brain=brain, model=model).result()
+                              brain=brain, model=model, wait=wait,
+                              session_key=session_key).result()
     return _apply_to_portal(role, profile_data, submit=submit,
-                            headless=headless, brain=brain, model=model)
+                            headless=headless, brain=brain, model=model,
+                            wait=wait, session_key=session_key)
 
 
 def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
-                     headless: bool = False, brain=None, model=None) -> dict:
+                     headless: bool = False, brain=None, model=None,
+                     wait: bool = False, session_key: str = "") -> dict:
     url = str((role or {}).get("url") or "").strip()
     if not url:
         return {"ok": False, "state": FAILED,
@@ -573,11 +678,25 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
 
         blocked = page_state(html, url)
         if blocked:
-            result.update({"state": blocked,
-                           "message": handover_message(blocked),
-                           "screenshot": driver.shot(page, "handover")})
-            log(result)
-            return result
+            # A sign-in or a captcha used to end it. The browser is open on
+            # this machine, so it asks for you and carries on afterwards.
+            if wait and session_key:
+                if not _wait_for_person(session_key, driver, page, blocked):
+                    result.update({"state": blocked,
+                                   "message": handover_message(blocked),
+                                   "screenshot": driver.shot(page, "handover")})
+                    log(result)
+                    return result
+                _set_session(session_key, state=RUNNING,
+                             message="Thanks — carrying on.")
+                html = driver.html(page)
+                result["waited_for_you"] = blocked
+            else:
+                result.update({"state": blocked,
+                               "message": handover_message(blocked),
+                               "screenshot": driver.shot(page, "handover")})
+                log(result)
+                return result
 
         fields = driver.fields(page)
         p = plan(role, profile_data, fields)
@@ -647,6 +766,25 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                                        "Press submit in the browser when "
                                        "you're happy with it."),
                            "screenshot": driver.shot(page, "filled")})
+            log(result)
+            return result
+
+        # a sign-in or a captcha often appears only at the submit step
+        late = page_state(driver.html(page), url)
+        if late and wait and session_key:
+            if _wait_for_person(session_key, driver, page, late):
+                _set_session(session_key, state=RUNNING,
+                             message="Thanks — submitting.")
+                result["waited_for_you"] = late
+            else:
+                result.update({"state": late,
+                               "message": handover_message(late),
+                               "screenshot": driver.shot(page, "handover")})
+                log(result)
+                return result
+        elif late:
+            result.update({"state": late, "message": handover_message(late),
+                           "screenshot": driver.shot(page, "handover")})
             log(result)
             return result
 

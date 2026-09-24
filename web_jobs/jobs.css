@@ -1108,4 +1108,18 @@ body { font-size: 13px; }
 }
 .copy-fallback { position: fixed; left: -9999px; top: 0; }
 
+/* it is waiting for you — this must be hard to miss */
+.portal-waiting {
+  border-color: rgba(243, 196, 109, .45) !important;
+  background: linear-gradient(180deg, rgba(243, 196, 109, .10), transparent 60%),
+              var(--paper-2) !important;
+  animation: portal-pulse 2.4s ease-in-out infinite;
+}
+@keyframes portal-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(243, 196, 109, .25); }
+  50%      { box-shadow: 0 0 0 1px rgba(243, 196, 109, .5),
+                         0 0 22px rgba(243, 196, 109, .18); }
+}
+@media (prefers-reduced-motion: reduce) { .portal-waiting { animation: none; } }
+
 [hidden] { display: none !important; }

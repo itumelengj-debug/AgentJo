@@ -539,6 +539,81 @@ async function copyText(text, btn) {
   }
 }
 
+// It can stop mid-way and ask for you — a sign-in page, a captcha. The
+// browser is open on this machine, so the useful thing is to say so and wait,
+// then carry on from where it stopped.
+function followPortal(r) {
+  if (S._portalTimer) clearInterval(S._portalTimer);
+  const tick = async () => {
+    let s;
+    try { s = await api(`/api/jobs/portal/session/${encodeURIComponent(r.key)}`); }
+    catch (e) { return; }
+    if (s.state === "waiting_for_you") {
+      showPortalWaiting(s, r);
+      return;
+    }
+    if (s.state === "running") {
+      showPortalRunning(s, r);
+      return;
+    }
+    if (s.state) {
+      clearInterval(S._portalTimer);
+      S._portalTimer = null;
+      showPortal(s, r);
+      refresh().then(drawRoleList);
+    }
+  };
+  tick();
+  S._portalTimer = setInterval(tick, 2000);
+}
+
+function portalBox(title) {
+  const box = el("div", "out portal-out");
+  box.appendChild(el("h4", "", title));
+  return box;
+}
+
+function showPortalRunning(s, r) {
+  const box = portalBox("Working through the form…");
+  box.appendChild(el("p", "muted", s.message || "The browser is open on this machine."));
+  const d = $("#roleDetail");
+  const was = d.querySelector(".portal-out");
+  if (was) was.replaceWith(box); else d.appendChild(box);
+}
+
+function showPortalWaiting(s, r) {
+  const box = portalBox(s.blocked_by === "needs_captcha"
+    ? "It needs you — there's a captcha"
+    : "It needs you — this one wants you signed in");
+  box.classList.add("portal-waiting");
+  box.appendChild(el("p", "", s.message
+    || "Handle it in the open browser window; it will carry on by itself."));
+  box.appendChild(el("p", "muted",
+    "It watches the page and continues the moment it clears. Press Continue "
+    + "if it can't tell, or Stop to leave it."));
+  const bar = el("div", "actions");
+  const go = el("button", "btn primary sm", "I've handled it — continue");
+  go.addEventListener("click", () => busy(go, "Carrying on…", async () => {
+    await api("/api/jobs/portal/continue", { key: r.key });
+  }));
+  const stop = el("button", "btn sm ghost danger", "Stop");
+  stop.addEventListener("click", () => busy(stop, "Stopping…", async () => {
+    await api("/api/jobs/portal/cancel", { key: r.key });
+  }));
+  bar.append(go, stop);
+  box.appendChild(bar);
+  const d = $("#roleDetail");
+  const was = d.querySelector(".portal-out");
+  if (was) was.replaceWith(box); else d.appendChild(box);
+  // a quiet nudge, because the browser window may be behind this one
+  if (!S._portalNudged) {
+    S._portalNudged = true;
+    toast(s.blocked_by === "needs_captcha"
+      ? "A captcha needs you — the browser window is open."
+      : "A sign-in needs you — the browser window is open.", "warn");
+  }
+}
+
 function showPortal(x, r) {
   const d = $("#roleDetail");
   const out = el("div", "out portal-out");
@@ -553,6 +628,12 @@ function showPortal(x, r) {
   }[state] || state);
   out.appendChild(head);
   if (x.message) out.appendChild(el("p", "muted", x.message));
+  if (x.waited_for_you) {
+    out.appendChild(el("p", "muted", x.waited_for_you === "needs_captcha"
+      ? "Carried on after you solved the captcha."
+      : "Carried on after you signed in."));
+  }
+  S._portalNudged = false;
 
   const answers = x.answers || [];
   if (answers.length) {
@@ -712,17 +793,14 @@ function openRole(r) {
 
   group("Apply", [
     ["Apply via the portal (rehearse)", async (btn) => busy(btn, "Opening…", async () => {
-      const x = await api("/api/jobs/portal",
-                          withEngine({ key: r.key, submit: false }));
-      showPortal(x, r);
+      await api("/api/jobs/portal", withEngine({ key: r.key, submit: false }));
+      followPortal(r);
     })],
     ["…and submit", async (btn) => {
       if (!confirm("Submit this application through the portal for real?")) return;
       busy(btn, "Submitting…", async () => {
-        const x = await api("/api/jobs/portal",
-                            withEngine({ key: r.key, submit: true }));
-        showPortal(x, r);
-        await refresh(); drawRoleList();
+        await api("/api/jobs/portal", withEngine({ key: r.key, submit: true }));
+        followPortal(r);
       });
     }, "danger"],
     ["I applied myself", async (btn) => busy(btn, "Saving…", async () => {

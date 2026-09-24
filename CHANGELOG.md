@@ -4790,3 +4790,30 @@ questions left for you.
 > Submitting on its own stays **off** unless you ask for it. A form filled by a
 > machine and sent without being read is the one thing worse than a form not
 > filled at all.
+
+
+### 135. Captchas and sign-ins: it calls you, then carries on
+
+A captcha or a sign-in page used to end a portal application — it reported
+what it saw and closed the browser. But the browser is open **on your own
+machine**, so the useful thing is to stop, ask for you, and continue from
+where it stopped.
+
+- It **notices by itself** when the page clears — you sign in or solve the
+  captcha and it carries straight on. Verified: blocked, then cleared, then
+  continued.
+- **"I've handled it — continue"** for when it can't tell, and **Stop** to
+  leave it. Both verified.
+- The panel **pulses amber** and a message appears, because the browser window
+  is often behind the app.
+- It waits **fifteen minutes**, then stops without submitting anything.
+- A block that appears **at the submit step** — many sites ask to sign in only
+  then — is handled the same way.
+
+**An unattended run never waits for anybody.** Auto-apply records what needs
+you and moves on; only a session you started yourself will sit and wait.
+
+> The application now runs in the background with the window following it, so
+> a browser request is never held open for minutes. That moved where the
+> outcome is recorded: the request that starts it returns immediately, so the
+> role is marked applied when the session actually finishes.

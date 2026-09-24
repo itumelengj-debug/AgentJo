@@ -319,15 +319,41 @@ def jobs_portal(body: PortalApplyBody):
     # the engine answers the questions a field table can't — and every answer
     # is checked against the profile, as a drafted email is
     model, why = _trend_model(getattr(body, "engine", "") or "")
-    res = portal.apply_to_portal(role, jobscout.profile(),
-                                 submit=bool(body.submit),
-                                 brain=(None if why else get_brain_or_none()),
-                                 model=(None if why else model))
-    if res.get("state") == portal.SUBMITTED:
-        jobscout.set_stage(body.key, "applied", "submitted via portal")
-    elif res.get("state") == portal.FILLED:
-        jobscout.update_role(body.key, portal_filled_at=res.get("at", ""))
+    # started in the background: a sign-in or a captcha can leave it waiting
+    # for you for minutes, which no browser request should be held open for
+    res = portal.start_apply(role, jobscout.profile(),
+                             submit=bool(body.submit),
+                             brain=(None if why else get_brain_or_none()),
+                             model=(None if why else model))
     return res
+
+
+@app.get("/api/jobs/portal/session/{key}")
+def jobs_portal_session(key: str):
+    """Where a running application has got to — including waiting for you.
+
+    The work finishes on its own thread, so the role is recorded here, when
+    the outcome is known — the request that started it returned long before.
+    """
+    ses = portal.session(key) or {"state": ""}
+    if ses.get("done") and not ses.get("recorded"):
+        if ses.get("state") == portal.SUBMITTED:
+            jobscout.set_stage(key, "applied", "submitted via portal")
+        elif ses.get("state") == portal.FILLED:
+            jobscout.update_role(key, portal_filled_at=ses.get("at", ""))
+        portal._set_session(key, recorded=True)
+    return ses
+
+
+@app.post("/api/jobs/portal/continue")
+def jobs_portal_continue(body: PortalApplyBody):
+    """You've signed in or solved the captcha; carry on."""
+    return portal.session_continue(body.key)
+
+
+@app.post("/api/jobs/portal/cancel")
+def jobs_portal_cancel(body: PortalApplyBody):
+    return portal.session_cancel(body.key)
 
 
 @app.get("/api/jobs/portal/history")
