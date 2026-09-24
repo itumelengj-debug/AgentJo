@@ -253,7 +253,18 @@
         <!-- Empty state -->
         <div class="empty" id="emptyState">
           <aside class="task-feed" id="taskFeed" aria-label="Task feed">
-            <div class="tf-head">Task Feed</div>
+            <div class="tf-head" id="taskFeedHead" title="Drag to move">
+              <span class="tf-grip" aria-hidden="true">
+                <svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.1"/><circle cx="9" cy="3" r="1.1"/><circle cx="3" cy="9" r="1.1"/><circle cx="9" cy="9" r="1.1"/><circle cx="3" cy="6" r="1.1"/><circle cx="9" cy="6" r="1.1"/></svg>
+              </span>
+              <span class="tf-name">Task Feed</span>
+              <span class="tf-count" id="taskFeedCount"></span>
+              <button class="tf-min" id="taskFeedMin" type="button"
+                      title="Minimise" aria-label="Minimise the task feed"
+                      aria-expanded="true">
+                <svg viewBox="0 0 12 12"><path d="M2.5 6h7" /></svg>
+              </button>
+            </div>
             <div class="tf-list" id="taskFeedList"></div>
           </aside>
           <div class="empty-mark"><img src="/avatar" alt="" /></div>

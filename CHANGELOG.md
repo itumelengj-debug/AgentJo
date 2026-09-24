@@ -4424,3 +4424,369 @@ left alone. The older themes stay selectable in Settings.
 > `requestAnimationFrame` (both now fall back gracefully, as an old browser
 > should); and the Glass rules had been appended after `[hidden] { display:
 > none !important; }`, which must stay last.
+
+
+### 121. Motion
+
+Both apps move between states now instead of snapping, on one easing curve so
+they feel like one system.
+
+**Panels** fade their backdrop in and the card rises and settles. **Closing**
+was the careful part: the app hides panels instantly in 25 places, and its
+logic relies on "closed" meaning closed at that moment. So closing is never
+delayed — a copy of the panel, stripped of every id so nothing can find it,
+fades and sinks on top while the real one is already gone. One observer
+handles all 25; none of them changed.
+
+**Conversations** ease in when you switch — only then. The thread is rebuilt
+on every update, so animating each message would have replayed the whole
+conversation's entrance on every reply. **Sidebar groups** fold and unfold,
+and a folded group leaves the tab order. The welcome cards arrive one after
+another.
+
+In **Agent Jo Jobs**, each view eases up as it opens, and the role or draft
+on the right settles in when you pick another one; onboarding steps and the
+pipeline rings arrive in sequence.
+
+Anyone whose system asks for reduced motion gets none of it. Verified in a
+browser: the panel is hidden at the instant it's closed, one id-less copy
+fades, and none remains after 580 ms.
+
+
+### 122. Glass panels without hard edges
+
+Reported with a screenshot of Health: square boxes around the title, the
+summary line and the list, square status bars, and a sideways scrollbar.
+
+**Most of it was one rule of mine.** Glass styled `.modal > div` — meant for
+the panel card, it gave every direct child of every panel its own square frame.
+It targets the card alone now, and all eight panels were scanned in a browser
+afterwards for any bordered square box or sideways scrolling: none.
+
+The summary line is a soft pill; the list is one rounded surface; rows are
+rounded tiles whose status bar is an inset shadow, which bends with the corner
+where a border can't; section headings are separated by space rather than a
+rule; long lines wrap instead of scrolling the list sideways; scrollbars are
+thin and sit inside the curve.
+
+> **And a colour that lied.** In Health, warnings use the "gold" tier — which
+> Glass had made the same teal as a pass. A warning drawn in the "everything's
+> fine" colour contradicts its own text. Health now maps its tiers explicitly:
+> teal ok, amber warning, red failing. Elsewhere gold stays amber, because
+> there the tiers rank quality, and a red bronze would read as a failure.
+
+
+### 123. A task feed you can move and put away
+
+Reported with a screenshot: the Task Feed sat on the greeting. Its placement
+rule assumed the welcome cards were narrower than they are on a wide window.
+Rather than a better guess, it's yours to place now:
+
+- **Drag it** anywhere by the header. It can't be dragged off-screen, and it
+  comes back inside the window if the window shrinks.
+- **Minimise it** to a pill showing the count; a click on the pill opens it.
+  The click that ends a drag doesn't count as one.
+- **Double-click the header** to send it back to its corner.
+- Position and minimised state are **remembered** across reloads, and a narrow
+  window starts it minimised so it can't cover anything by default.
+
+It lives on the page now rather than inside the chat area, whose own
+animations and layout would have moved a floating panel with them. It still
+shows only on the welcome screen — verified in a browser: shown there,
+hidden when a conversation opens, back for a new one.
+
+
+### 124. Agent Jo Jobs, restyled to the supplied screens
+
+Four views rebuilt to a supplied design — **What You Can Claim**, **Sources
+Manager**, **Auto-apply Rules & Applications** and **Find Roles Search** — with
+large serif titles, glass surfaces and a green accent, plus an auto-apply switch
+and a profile completeness bar in the sidebar.
+
+**The design showed things the app didn't know; it shows them only where
+something real stands behind them.**
+
+- *Verified / Pending* on sources needed a source of truth. Every search now
+  records what each source returned, so a board is **Verified** because it
+  returned roles on its last check, **Failing** if it errored or came back empty
+  (hover for the reason — "403 Forbidden"), **Pending** if never checked, and
+  "Last checked" is when that really happened.
+- *"98% Match"* was on every card in the design. Search results aren't scored
+  until you score them, so a tracked role shows its real score and a new one
+  says **Not scored** — never a number nobody computed.
+- The profile percentage is the share of the fields a draft relies on that are
+  filled in, with the missing ones named on hover.
+- The sidebar switch changes only *enabled*, and reads **Test** rather than
+  **On** while rehearsal means nothing is actually sent.
+
+The design's garbled placeholder text ("Symbuht Synapse", "draft bot mever
+cend") is replaced with the app's real wording throughout.
+
+> Caught while matching: an older `.nav span { flex: 1 }` also caught the
+> switch, which stretched and cut "Auto-apply" to "Auto…" even with the rail
+> widened. And the Jobs harness found that a missing piece of the switch would
+> have thrown in the function that refreshes the sidebar on nearly every view.
+
+
+### 125. No brackets on the claim rows
+
+Reported as messy: each row in Verifiable Claims Coverage had a green bar on
+its left edge — an inset shadow, which on a row this short bends round both
+rounded corners and reads as a bracket. The rows are a soft surface now, and a
+check keeps the bar from coming back.
+
+
+### 126. Auto-apply: why it never sent
+
+Reported: auto-apply has never sent an application on its own — the app's
+whole point.
+
+**The sending code was never broken.** Proven end to end with the mail sender
+stubbed: with everything set, it calls the sender for real, the role moves to
+*applied*, and the follow-up clock starts. What was wrong is that sending is
+guarded by half a dozen separate conditions, and when one was off **nothing
+said so** — the run reported "0 sent", which reads as a broken feature rather
+than a setting.
+
+**`auto_readiness()` now states every condition and which one isn't met**, each
+with what to do: auto-apply off, rehearsal on, no email account, observe mode,
+a thin profile, no role clearing the gates (with the top reasons counted), the
+daily cap used up. It shows at the top of the Auto-apply view, and after any
+run that sent nothing.
+
+**Four real faults found on the way:**
+
+- **The standalone Jobs app ran no scheduler at all.** The daily job only ever
+  happened if the main Agent Jo app was open at the time. The Jobs app runs it
+  now, and an atomic claim in the shared store means the two apps can never run
+  the same job twice — proven with two stores over one database.
+- **A draft flagged for rewriting could be sent.** The app marks a draft
+  `needs_redraft` when it no longer matches your profile; the gate never
+  checked, so an unattended run would have sent exactly that draft.
+- **The preview and the run disagreed.** The preview classified by bucket while
+  the run decides by the gate, so it could say "nothing clears the gates" about
+  a role the run would have sent. Both ask the gate now.
+- **Two results were read from keys that were never returned** — the run's
+  `summary` and the preview's `sentence`. Every run reported "Ran once."
+  whatever it did, and the preview printed "Auto-apply is off." while it was
+  on. Both are returned by the server now, and a run reports what it sent,
+  what it held and why.
+
+The daily schedule's own description said *"Do not send anything"*, which was
+never what it does — it runs the full cycle and sends whatever clears the
+gates. It now says so, and that nothing goes while rehearsal is on.
+
+> **To actually send:** turn auto-apply on, untick **Rehearsal**, and set up an
+> email account in Agent Jo's Outreach panel. The readiness panel lists exactly
+> what's still missing.
+
+
+### 127. Portal applications from a chat
+
+Reported: applying via the portal failed with *"It looks like you are using
+Playwright Sync API inside the asyncio loop."*
+
+Reproduced exactly. The synchronous browser API refuses to start on a thread
+that has a running event loop. An HTTP route is safe — those run on a worker
+thread — but a **tool call inside a chat turn runs on the loop**, so every
+portal application driven from a conversation failed. The message reads like a
+coding fault in the app, which is what makes it useless: it says nothing about
+where it was called from.
+
+The browser is now started off the loop whichever way it's reached: if a loop
+is running on the calling thread, the work goes to one without. Ordinary
+callers are untouched.
+
+> **And the failures now say what to do.** A missing browser printed a wall of
+> Playwright output with the answer buried in it; it now reads: *"Playwright is
+> installed but its browser isn't. In the app folder run: .venv\\Scripts\\python
+> -m playwright install chromium"*. Same for a missing driver, a timeout, and
+> an unreachable advert.
+
+
+### 128. Setup installs the browser
+
+Asked whether the extra packages can be installed at first setup. They can, and
+the browser now is: portal applications are a headline feature, and setup only
+ever printed the two commands to run — leaving the feature one undocumented
+step from working on every fresh machine.
+
+Both installers now install Playwright and download Chromium, say it's about
+150 MB, and can be declined (`--skip-extras`, or answering no; an unattended
+run never waits more than 30 seconds for an answer). A blocked download says
+what it means — "the download server wasn't reachable… set HTTPS_PROXY and
+run: …" — instead of printing a JavaScript stack trace, and setup still
+finishes.
+
+> **The old readiness test could pass with no browser on disk.**
+> `playwright install --dry-run` exits 0 whether or not the browser exists, so
+> setup reported "Playwright ready" on machines that had none — and portal
+> applications then failed at the moment they were used. Readiness is now
+> whether the executable is actually there, and Health reports it too.
+
+Ollama is still offered rather than installed: it's a separate application with
+its own installer, and pulling a model is a choice about disk and bandwidth
+that shouldn't be made for you.
+
+
+### 129. An engine pointing at the wrong kind of endpoint
+
+Reported: connecting directly to the DeepSeek API answered *"`deepseek-v4-pro`
+isn't installed. This machine has: command-r:latest, ..."* — which is the
+**local runner's** reply. The call never reached DeepSeek.
+
+Routing by engine name was correct; the engine itself pointed at
+`localhost:11434`. An engine with a cloud model id and a local base URL saved
+without a word of warning, so every call went to Ollama — and the message named
+the model rather than the fact that **the request never left the machine**.
+That is what made it hard to see.
+
+- **Saving says so.** A cloud model id against a local runner, or an Ollama
+  tag against a cloud API, is named at save and at edit, with the provider's
+  real base URL given (DeepSeek's is `https://api.deepseek.com/v1`). It still
+  saves — you may know better than the check.
+- **Health lists it** under Engine setup.
+- **Test connection** explains it before you ever send a message.
+- **The old message now names the endpoint**: "isn't installed on the runner at
+  http://localhost:11434/v1 … this engine points at that runner, so the request
+  never left this machine — if `deepseek-v4-pro` is a cloud model, this
+  engine's base URL is wrong."
+
+**To fix yours:** open Engines, edit the DeepSeek one, and set the base URL to
+`https://api.deepseek.com/v1` with a model the API knows, such as
+`deepseek-chat`. Press Test connection — it now reaches the provider and says
+what came back.
+
+
+### 130. Engines in Agent Jo Jobs
+
+Agent Jo Jobs could only pick from engines defined in Agent Jo, which is what
+made the DeepSeek base-URL mistake so awkward: the app reporting the fault
+wasn't the app that could fix it.
+
+It has an **Engines** view now — add, edit, test and remove, with the engine
+picker updating as you go. It writes to the same store Agent Jo reads, using
+the same module rather than a second copy, so an engine added in either app
+appears in both.
+
+**Presets spell out the real base URLs** — DeepSeek, OpenAI, Groq, Together,
+OpenRouter, Ollama, LM Studio — because a base URL typed from memory is exactly
+how a cloud engine ends up pointing at a local runner. A mismatch is still
+named when you save, and **Test connection** contacts the provider and reports
+what came back.
+
+The rest of the app was brought up to the standard of the redesigned screens:
+the same corner radii, serif headings and spacing across Overview, Roles,
+Drafts, Results and Archive.
+
+> **Found by the test that checks every call reaches a real route:** the Jobs
+> app's own `/api/engines/test` had been lost, and `/api/engines/{name}` was
+> matching that path instead — a POST answered 405. Whichever is declared
+> first wins, so the test route is declared first. And `agent/engines.py`
+> wasn't in the standalone app's sync list, so it failed to start outright;
+> the list is now what the app imports.
+
+
+### 131. A stale process must not look like a failed fix
+
+Reported again, with the identical message — and the wording was the giveaway:
+that exact sentence was replaced two builds ago. The process was running code
+from before the update.
+
+A running app holds whatever was on disk when it started, so an update that
+isn't restarted keeps answering with the old behaviour — which reads as "the
+fix didn't work" rather than "this isn't the fix". Health now compares the
+build the process is running with the build in the files and **fails** when
+they differ: "Running build X, but the files on disk are Y — you updated the
+app but it wasn't restarted."
+
+
+### 132. Picking an engine now reaches that engine
+
+Two screenshots settled it: a DeepSeek engine whose **Test connection said
+"Connected and answered in 1.1s"**, and every chat answering *"Could not reach
+Command-r:latest at http://localhost:11434/v1"* — with the DeepSeek engine's
+**name** shown in the model column.
+
+**`OpenAIBrain` was the only brain that never asked the dispatcher.** Anthropic,
+Ollama and Hybrid all did. So whenever the current engine was an
+OpenAI-compatible one — and an Ollama server on its OpenAI port is exactly that
+— a per-call engine choice was handed to *that* endpoint as a model id. The
+chosen engine was never called. The engine was always fine; it simply wasn't
+being used.
+
+Reproduced with the reported engine names, fixed, and checked both ways: the
+choice now reaches the chosen engine, and an engine's own model still goes to
+its own endpoint.
+
+> **And a loop the fix would have introduced.** One of the reported engines is
+> named after its own model ("command-r:latest" pointing at command-r:latest).
+> Dispatching on that name sent it to itself for ever — a hang, not an error.
+> A brain asked to dispatch to itself now handles the call directly. A check
+> holds both, and another asserts every brain consults the dispatcher, so a
+> fifth one can't quietly skip it.
+
+
+### 133. Agent Jo Jobs — the window says one thing, once
+
+Rendered every view with realistic data and fixed what the screenshots showed.
+
+**The overview used a third of the screen and left the rest blank.** It now
+carries three panels, built only from what the app already knows:
+
+- **Needs you** — held drafts, roles scored but not drafted, roles not scored,
+  portal-only roles, a profile too thin to draft from. Each row opens the view
+  that fixes it.
+- **Where they came from** — tracked roles by source, and any source that
+  returned nothing on its last check.
+- **Lately** — real events from the roles themselves: applied, drafted, held,
+  replied, with when.
+
+An empty panel says so rather than showing rows that look like activity.
+
+**And the same role was described two ways.** The list showed the raw stage
+("drafted") beside a detail showing the real state ("held"), and the
+highlighted action told a held draft to mark itself applied. All three read
+the state now. A role's page also shows **why it scored**, **what the draft
+says** — with the exact claim that held it — and its **history**, instead of
+empty space below the buttons.
+
+Cards size to their content: a grid stretches its children by default, which
+left half-empty boxes above a page that still had room.
+
+> Worth recording: the pipeline counts looked wrong while testing, and weren't.
+> The seed data set a draft without the stage that drafting sets. The app was
+> right; the fixture was.
+
+
+### 134. Applying beyond email
+
+Reported: auto-apply "only works for email application", and the portal
+rehearsal left you to retype everything. Most adverts are portals, so
+auto-apply that only emails is auto-apply that mostly does nothing.
+
+**The engine answers the form.** Portal forms ask what no field table can
+cover — "why this role", "years with Power BI", "notice period". Those were
+left blank and the application stopped there. The engine now answers them
+**from your profile and nothing else**, and every answer goes through the same
+claims check a drafted email does:
+
+- supported by your profile → typed in;
+- claims more than your profile → **held**, shown with the reason, never typed;
+- not answerable → left blank, and it says so.
+
+**And it hands the work over.** Automation gets some way into most forms and
+stops — an upload it can't reach, a question inside a widget. Retyping what the
+app already worked out is where people give up, so a rehearsal now produces a
+**paste pack**: every field and answer as plain text, with a Copy button per
+answer and *Copy everything*, beside a button that opens the form.
+
+**Auto-apply covers portal-only roles.** A new setting decides what happens to
+adverts with no email address: **prepare** (default — fill the form, answer
+what it can, leave it to you), **submit**, or **off**. A run reports them
+separately: "2 portal form(s) filled for you to finish", each with the
+questions left for you.
+
+> Submitting on its own stays **off** unless you ask for it. A form filled by a
+> machine and sent without being read is the one thing worse than a form not
+> filled at all.

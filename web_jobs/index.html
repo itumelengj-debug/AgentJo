@@ -29,12 +29,14 @@
       <button class="nav" data-view="roles"><i class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18"/></svg></i><span>Roles</span><b id="nRoles"></b></button>
       <button class="nav" data-view="search"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></i><span>Search</span></button>
       <button class="nav" data-view="drafts"><i class="ic"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg></i><span>Drafts</span><b id="nDrafts" class="warn"></b></button>
-      <button class="nav" data-view="auto"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18h5a4 4 0 0 0 4-4V8.5"/></svg></i><span>Auto-apply</span><b id="nAuto"></b></button>
+      <button class="nav" data-view="auto"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18h5a4 4 0 0 0 4-4V8.5"/></svg></i><span>Auto-apply</span><span class="pill-toggle" id="railAuto" role="switch" aria-checked="false" title="Auto-apply on/off"><span class="pt-knob"></span><span class="pt-txt">Off</span></span></button>
       <div class="rail-rule"></div>
       <button class="nav" data-view="sources"><i class="ic"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></i><span>Sources</span><b id="nSources"></b></button>
+      <button class="nav" data-view="engines"><i class="ic"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1.5v2.5M15 1.5v2.5M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5"/></svg></i><span>Engines</span><b id="nEngines"></b></button>
       <button class="nav" data-view="results"><i class="ic"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg></i><span>Results</span></button>
       <button class="nav" data-view="archive"><i class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></svg></i><span>Archive</span><b id="nArchive"></b></button>
       <button class="nav" data-view="profile"><i class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></i><span>Your profile</span><b id="nProfile" class="warn"></b></button>
+      <div class="profile-meter" id="profileMeter" title=""><div class="pm-fill" id="profileFill"></div></div>
     </nav>
 
     <div class="rail-foot">
@@ -76,6 +78,21 @@
         </article>
       </div>
 
+      <div class="grid-3">
+        <article class="card">
+          <h3>Needs you</h3>
+          <div id="ovNeeds"></div>
+        </article>
+        <article class="card">
+          <h3>Where they came from</h3>
+          <div id="ovSources"></div>
+        </article>
+        <article class="card">
+          <h3>Lately</h3>
+          <div id="ovActivity"></div>
+        </article>
+      </div>
+
       <article class="card" id="ovFollowCard" hidden>
         <h3>Follow-ups due</h3>
         <div id="ovFollow"></div>
@@ -108,17 +125,15 @@
 
     <!-- SEARCH ------------------------------------------------------------ -->
     <section class="view" id="v-search">
-      <header class="hero compact">
-        <h1>Find roles</h1>
-        <p class="lede">Search your sources by keyword, or paste a single posting's
-          address and it will read the page.</p>
+      <header class="page-head">
+        <h1>Find Roles Search</h1>
+        <div class="page-tools">
+          <input id="q" class="input" placeholder="data engineer, remote — or paste a posting's https://…" />
+          <label class="check"><input type="checkbox" id="qBrowser" /> browser</label>
+          <button class="btn primary" id="qGo">Search</button>
+        </div>
       </header>
-      <div class="bar">
-        <input id="q" class="input grow" placeholder="data engineer, remote — or https://…" />
-        <label class="check"><input type="checkbox" id="qBrowser" /> use browser</label>
-        <button class="btn primary" id="qGo">Search</button>
-      </div>
-      <div class="list" id="results"></div>
+      <div id="results"></div>
     </section>
 
     <!-- DRAFTS ------------------------------------------------------------ -->
@@ -143,25 +158,32 @@
     <!-- AUTO-APPLY -------------------------------------------------------- -->
     <section class="view" id="v-auto">
       <header class="hero compact">
-        <h1>Auto-apply</h1>
+        <h1>Auto-apply Rules &amp; Applications</h1>
         <p class="lede">What runs without you. Rehearsal keeps everything local
           until you're sure.</p>
       </header>
+      <div id="autoReady"></div>
       <div class="grid-2">
         <article class="card">
-          <h3>Rules</h3>
+          <h3>Rules &amp; Signature Configuration</h3>
           <div class="form" id="autoForm">
             <label class="toggle"><input type="checkbox" id="aOn" /><span>Auto-apply on</span></label>
             <label class="toggle"><input type="checkbox" id="aDry" /><span>Rehearsal — draft but never send</span></label>
             <label class="toggle"><input type="checkbox" id="aClean" /><span>Only send drafts that pass the claims check</span></label>
+            <div class="field"><label>Adverts with no email address — most of them</label>
+              <select id="aPortal" class="select">
+                <option value="prepare">Fill the form and answer what it can — you finish it</option>
+                <option value="submit">Fill it and submit it too</option>
+                <option value="off">Skip them</option>
+              </select></div>
             <div class="field"><label>Minimum fit</label><input id="aMin" class="input" type="number" min="0" max="100" /></div>
             <div class="field"><label>Most per day</label><input id="aCap" class="input" type="number" min="0" max="50" /></div>
             <div class="field"><label>Signature</label><textarea id="aSig" class="input" rows="3"></textarea></div>
-            <button class="btn primary" id="aSave">Save rules</button>
+            <button class="btn primary wide" id="aSave">Save rules</button>
           </div>
         </article>
         <article class="card">
-          <h3>If it ran now</h3>
+          <h3>Application History &amp; Summary</h3>
           <div id="autoPreview"></div>
           <div class="actions">
             <button class="btn" id="aRun">Run once now</button>
@@ -178,20 +200,28 @@
 
     <!-- SOURCES ----------------------------------------------------------- -->
     <section class="view" id="v-sources">
-      <header class="hero compact">
-        <h1>Where roles come from</h1>
-        <p class="lede">A board is checked before it's added — one that returns
+      <header class="page-head stacked">
+        <h1>Sources Manager</h1>
+        <p class="lede">A board is checked before it's trusted — one that returns
           nothing is worse than none, because it looks like it's working.</p>
       </header>
-      <div class="bar">
-        <input id="srcName" class="input" placeholder="Name" style="max-width:180px" />
-        <input id="srcUrl" class="input grow" placeholder="https://… a board, a careers page, an RSS feed" />
+      <div class="bar src-add">
+        <input id="srcName" class="input" placeholder="Name" style="max-width:190px" />
+        <input id="srcUrl" class="input grow" placeholder="https://… a board, a careers page, or an RSS feed" />
         <button class="btn" id="srcAdd">Add</button>
         <button class="btn primary" id="srcAuto">Find some for me</button>
       </div>
-      <div class="list" id="srcList"></div>
+      <div class="src-meta">
+        <span id="srcFresh" class="muted"></span>
+        <span class="src-legend">
+          <span class="badge verified">Verified</span> returned roles last check
+          <span class="badge pending">Pending</span> not checked yet
+          <span class="badge failing">Failing</span> errored or empty
+        </span>
+      </div>
+      <div class="src-list" id="srcList"></div>
 
-      <div class="grid-2" style="margin-top:26px">
+      <div class="grid-2" style="margin-top:22px">
         <article class="card">
           <h3>Suggested for your profile</h3>
           <div id="srcSuggested"></div>
@@ -214,6 +244,36 @@
     </section>
 
     <!-- RESULTS ----------------------------------------------------------- -->
+    <section class="view" id="v-engines">
+      <header class="page-head stacked">
+        <h1>Engines</h1>
+        <p class="lede">Which model does the scoring and drafting. Add your own
+          provider — a key and a base URL — or point at a model on this machine,
+          which costs nothing and sends nothing out.</p>
+      </header>
+
+      <article class="card">
+        <h3>Add an engine</h3>
+        <div class="form eng-form">
+          <div class="eng-row">
+            <div class="field"><label>Name</label><input id="eName" class="input" placeholder="DeepSeek" /></div>
+            <div class="field"><label>Model</label><input id="eModel" class="input" placeholder="deepseek-chat" /></div>
+          </div>
+          <div class="field"><label>Base URL</label><input id="eUrl" class="input" placeholder="https://api.deepseek.com/v1" /></div>
+          <div class="field"><label>API key <span class="muted">— left blank for a local model</span></label><input id="eKey" class="input" type="password" placeholder="sk-…" /></div>
+          <div class="eng-presets" id="engPresets"></div>
+          <div class="actions">
+            <button class="btn" id="eTest">Test connection</button>
+            <button class="btn primary" id="eSave">Save engine</button>
+          </div>
+          <div id="eOut" class="eng-out"></div>
+        </div>
+      </article>
+
+      <h3 class="eng-h">Your engines</h3>
+      <div class="src-list" id="engList"></div>
+    </section>
+
     <section class="view" id="v-results">
       <header class="hero compact">
         <h1 id="resHead">Results</h1>
@@ -244,16 +304,26 @@
     </section>
 
     <!-- PROFILE ----------------------------------------------------------- -->
-    <section class="view view-split" id="v-profile">
-      <div class="pane-list">
-        <div class="pane-intro">
-          <h2>What you can claim</h2>
-          <p>Everything here is what a draft is allowed to say about you. A thin
-            profile means held drafts, not bad ones.</p>
+    <section class="view" id="v-profile">
+      <div class="claim-layout">
+        <div class="claim-main">
+          <header class="page-head stacked">
+            <h1>What You Can Claim</h1>
+            <p class="lede">Everything here is what a draft is allowed to say about you.</p>
+          </header>
+          <article class="card form-card">
+            <div class="form" id="profileForm"></div>
+          </article>
         </div>
-        <div class="form" id="profileForm"></div>
+        <aside class="claim-side">
+          <header class="page-head stacked">
+            <h2 class="side-title">Verifiable Claims Coverage</h2>
+            <p class="lede">What a draft may state, and nothing else. Anything outside
+              this list holds the draft.</p>
+          </header>
+          <article class="card" id="profileSide"></article>
+        </aside>
       </div>
-      <div class="pane-detail" id="profileSide"></div>
     </section>
 
   </main>

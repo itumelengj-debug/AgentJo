@@ -41,8 +41,10 @@ def main() -> int:
         print("uvicorn isn't installed. Run install.bat (or ./install.sh).")
         return 1
 
-    from jobs.server import app, get_memory
+    from jobs.server import app, get_memory, start_scheduler
     get_memory()                       # same store the main app uses
+    start_scheduler()                  # its own daily run, claimed so it
+                                       # never doubles with the main app
 
     port = _free_port(args.port)
     url = f"http://127.0.0.1:{port}"

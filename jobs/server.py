@@ -17,6 +17,8 @@ Shared data, shared engines, shared audit trail. Different window.
 """
 from __future__ import annotations
 
+import os
+
 import sys
 from pathlib import Path
 
@@ -38,6 +40,7 @@ import agent.portal as portal                                 # noqa: E402
 import agent.outcomes as outcomes                             # noqa: E402
 import agent.brain as brainmod                                # noqa: E402
 from agent.brain import make_brain, EngineNotConfigured       # noqa: E402
+import agent.engines as engines                               # noqa: E402
 from agent.memory import MemoryStore                          # noqa: E402
 import agent.scheduler as scheduler                           # noqa: E402
 
@@ -99,11 +102,79 @@ def get_memory():
     return memory
 
 
+def get_brain_or_none():
+    """The brain if one can be built, else None — for code that only wants to
+    describe the engines, which must not fail because none is configured."""
+    try:
+        return get_brain()
+    except Exception:
+        return None
+
+
 def get_brain():
     global _brain
     if _brain is None:
         _brain = make_brain()
     return _brain
+
+
+def _run_due_schedules() -> None:
+    """Run this app's own daily job.
+
+    The scheduled run is the whole point of auto-apply, and the standalone
+    Jobs app had no scheduler at all — the job only ever ran if the main
+    Agent Jo app happened to be open at the time. Now either app runs it,
+    and a claim in the shared store means never both.
+    """
+    import time as _t
+    while True:
+        tick_schedules()
+        _t.sleep(30)
+
+
+def tick_schedules() -> dict:
+    """One pass. Separate from the loop so it can be run and checked."""
+    import time as _t
+    ran = []
+    if True:
+        try:
+            mem = get_memory()
+            for s2 in mem.due_schedules(_t.time()):
+                if (s2.get("action") or "") != "jobscout":
+                    continue                   # the main app owns the rest
+                if not mem.claim_schedule(s2["id"], _t.time()):
+                    continue                   # the other app got there first
+                started = _t.time()
+                try:
+                    r = jobscout.auto_cycle(get_brain())
+                    summary = (f"found {r.get('discovered', 0)} new role(s); "
+                               f"{len(r.get('sent') or [])} sent"
+                               + (" (rehearsal)" if r.get("dry_run") else "")
+                               + f", {len(r.get('held') or [])} held")
+                    status = "ok" if r.get("ok") else "error"
+                    if not r.get("ok"):
+                        summary = str(r.get("error", ""))[:300]
+                except EngineNotConfigured as exc:
+                    status, summary = "error", f"{exc.message} {exc.fix}"
+                except Exception as exc:
+                    status, summary = "error", f"{type(exc).__name__}: {exc}"
+                try:
+                    spec = scheduler.parse_spec(s2.get("spec") or "{}")
+                    nxt = scheduler.next_run(spec)
+                except Exception:
+                    nxt = started + 86400
+                mem.schedule_ran(s2["id"], started, nxt, status, summary)
+                ran.append({"id": s2["id"], "status": status,
+                            "summary": summary})
+        except Exception as exc:
+            return {"ran": ran, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ran": ran}
+
+
+def start_scheduler() -> None:
+    import threading
+    t = threading.Thread(target=_run_due_schedules, daemon=True)
+    t.start()
 
 
 @app.exception_handler(EngineNotConfigured)
@@ -173,6 +244,7 @@ def _trend_model(choice: str):
 
 class JobsAutoBody(BaseModel):
     enabled: bool | None = None
+    portal_mode: str | None = None
     dry_run: bool | None = None
     min_score: int | None = None
     daily_cap: int | None = None
@@ -190,6 +262,13 @@ class JobsCycleBody(BaseModel):
     engine: str = ""
 
 
+@app.get("/api/jobs/auto/readiness")
+def jobs_auto_readiness():
+    """Everything that must be true before an application can leave, and
+    which of them isn't. Nothing here changes anything."""
+    return jobscout.auto_readiness()
+
+
 @app.post("/api/jobs/auto/run")
 def jobs_auto_run(body: JobsCycleBody | None = None):
     # This took no engine at all, so every scoring and drafting call went to
@@ -201,12 +280,30 @@ def jobs_auto_run(body: JobsCycleBody | None = None):
     r = jobscout.auto_apply(get_brain(), model=model)
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r["error"][:300])
+    # say what happened in one line. The window read a "summary" key that was
+    # never returned, so every run reported "Ran once." whatever it did.
+    n_sent, n_held = len(r.get("sent") or []), len(r.get("held") or [])
+    n_err = len(r.get("errors") or [])
+    n_prep = len(r.get("prepared") or [])
+    bits = [f"{n_sent} sent" + (" (rehearsal — nothing left this machine)"
+                                if r.get("dry_run") else "")]
+    if n_prep:
+        bits.append(f"{n_prep} portal form(s) filled for you to finish")
+    if n_held:
+        bits.append(f"{n_held} held for you")
+    if n_err:
+        bits.append(f"{n_err} error(s)")
+    r["summary"] = "; ".join(bits)
+    if not n_sent:
+        # a run that sends nothing should say what stopped it
+        r["why_nothing"] = jobscout.auto_readiness()
     return r
 
 
 class PortalApplyBody(BaseModel):
     key: str
     submit: bool = False
+    engine: str = ""
 
 
 @app.post("/api/jobs/portal")
@@ -219,8 +316,13 @@ def jobs_portal(body: PortalApplyBody):
     role = jobscout.get_role(body.key)
     if role is None:
         raise HTTPException(status_code=404, detail="no such role")
+    # the engine answers the questions a field table can't — and every answer
+    # is checked against the profile, as a drafted email is
+    model, why = _trend_model(getattr(body, "engine", "") or "")
     res = portal.apply_to_portal(role, jobscout.profile(),
-                                 submit=bool(body.submit))
+                                 submit=bool(body.submit),
+                                 brain=(None if why else get_brain_or_none()),
+                                 model=(None if why else model))
     if res.get("state") == portal.SUBMITTED:
         jobscout.set_stage(body.key, "applied", "submitted via portal")
     elif res.get("state") == portal.FILLED:
@@ -311,8 +413,11 @@ def jobs_search_cfg():
     # quietly fix sources saved without a scheme, so an old mistake doesn't
     # keep failing every run
     fixed = jobscout.repair_sources()
+    st = jobscout.source_status()
+    # sources carry their standing — verified, pending or failing — from
+    # their last real check, and when that was
     return {"repaired": fixed, "search": jobscout.search_config(),
-            "sources": jobscout.job_sources()}
+            "sources": st["sources"], "checked_at": st["checked_at"]}
 
 
 @app.post("/api/jobs/search/config")
@@ -768,6 +873,191 @@ def jobs_schedule(body: JobsDailyBody):
                                            bool(body.enabled))}
 
 
+
+
+
+
+def _engine_list() -> list:
+    """Selectable engines, in display order, with a 'kind' for the UI and the
+    price (USD per million tokens) used for cost estimates."""
+    def _withprice(item):
+        p_in, p_out = brainmod.engine_price(item["id"])
+        item["price_in"], item["price_out"] = p_in, p_out
+        return item
+    items = [
+        {"id": "Auto", "label": "Auto", "model": "smart routing + failover",
+         "kind": "router"},
+    ]
+    # Claude was a permanent built-in: an engine you could neither edit nor
+    # remove, so a wrong key or model id had nowhere to be corrected — and a
+    # hardcoded fall-through turned any unrecognised engine name into a 404
+    # from Anthropic. It's a seed now: shown only until you define your own,
+    # and yours wins the moment you do.
+    if not any(e["name"].lower() == "claude"
+               for e in brainmod.load_custom_engines(refresh=True)):
+        # Offer it, but say plainly that it can't run without a key. It used
+        # to look identical to a working engine, so a fresh install without a
+        # key showed Claude selected and every message failed — with nothing
+        # in the list suggesting why.
+        _has_key = bool(os.environ.get("ANTHROPIC_API_KEY")
+                        or os.environ.get("AGENT_API_KEY"))
+        items.append({"id": "Claude", "label": "Claude",
+                      "model": config.MODEL, "kind": "cloud",
+                      "seed": True, "needs_key": not _has_key,
+                      "hint": ("Built in. Add an engine called Claude with "
+                               "your own key and model to take it over."
+                               if _has_key else
+                               "No API key set, so this can't run. Add one in "
+                               "Settings, or add a local engine — those need "
+                               "no key.")})
+    # The preloaded "Ollama" engine only works when the running brain actually
+    # has a live local model (hybrid/ollama backend with Ollama up). On the
+    # anthropic backend it can't run and would just refuse — so hide it there
+    # and let the user's own custom local engines (Make local models selectable)
+    # be the local path instead.
+    try:
+        # Describing the engines must never depend on HAVING a working one.
+        # This ran on first load, and with no API key `get_brain()` called
+        # sys.exit — which inside a request meant /api/meta returned 500 and
+        # the window never finished loading. Without a brain we simply can't
+        # say whether a local model is live; the rest of the list stands.
+        # `return items` here was wrong and mine: it left the function before
+        # the user's own custom engines were added, so every engine they saved
+        # was stored correctly and never appeared. Skip the bit that needs a
+        # brain; carry on with the rest.
+        _b = get_brain_or_none()
+        if _b is not None and getattr(_b, "local", None) is not None:
+            items.append({"id": "Ollama", "label": "Ollama",
+                          "model": config.OLLAMA_MODEL, "kind": "local"})
+    except Exception:
+        pass
+    # The two DeepSeek entries were built in when they were the only
+    # alternative worth wiring by hand. They are not special any more — one of
+    # them was quietly retired by the provider in August and kept failing
+    # daily — and an engine you cannot edit or remove is worse than one you
+    # add yourself. Add them as custom engines like anything else.
+    for e in brainmod.load_custom_engines(refresh=True):
+        # "custom" described where it came from, not what it is. Routing needs
+        # to know whether a call leaves this machine — and a local model
+        # mislabelled as cloud gets counted against a spend cap it never hit.
+        items.append({"id": e["name"], "label": e["name"],
+                      "model": e["model"],
+                      "kind": engines.classify(e["name"])["kind"],
+                      "custom": True, "removable": True, "editable": True,
+                      "base_url": e.get("base_url", ""),
+                      "price_in": float(e.get("price_in", 0) or 0),
+                      "price_out": float(e.get("price_out", 0) or 0)})
+    return [_withprice(it) if "price_in" not in it else it for it in items]
+
+
+# --------------------------------------------------------------------------- #
+#  Engines — added here so a job search can stand alone. Same store as Agent
+#  Jo's (AGENT_HOME/engines.json), so an engine added in either app appears in
+#  both; the code is the shared agent.brain module, not a second copy.
+# --------------------------------------------------------------------------- #
+class EngineBody(BaseModel):
+    name: str
+    base_url: str
+    model: str
+    api_key: str = ""
+    tools: bool = True
+    stream: bool = True
+    price_in: float = 0.0
+    price_out: float = 0.0
+
+
+class EngineEditBody(BaseModel):
+    name: str
+    new_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    tools: bool | None = None
+    stream: bool | None = None
+    price_in: float | None = None
+    price_out: float | None = None
+
+
+class ProbeBody(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    name: str = ""
+
+
+# Registered before "/api/engines/{name}": that pattern also matches
+# "/api/engines/test", and whichever is declared first wins.
+@app.post("/api/engines/test")
+def engines_test(body: ProbeBody):
+    """Actually connect, and say what came back."""
+    key = body.api_key
+    if not key and body.name:
+        entry = brainmod.get_custom_engine(body.name) or {}
+        key = entry.get("_api_key") or entry.get("api_key") or ""
+    return brainmod.probe_engine(body.base_url, key, body.model)
+
+
+@app.get("/api/engines")
+def list_engines():
+    return {"engines": _engine_list()}
+
+
+@app.post("/api/engines")
+def add_engine(body: EngineBody):
+    ok, msg = brainmod.add_custom_engine(
+        body.name, body.base_url, body.api_key, body.model,
+        tools=body.tools, stream=body.stream,
+        price_in=body.price_in, price_out=body.price_out)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg, "engines": _engine_list()}
+
+
+@app.post("/api/engines/edit")
+def engine_edit(body: EngineEditBody):
+    ok, msg = brainmod.update_custom_engine(
+        body.name, base_url=body.base_url, api_key=body.api_key,
+        model=body.model, tools=body.tools, stream=body.stream,
+        price_in=body.price_in, price_out=body.price_out,
+        new_name=body.new_name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    # a rename must not leave the default pointing at an engine that's gone
+    if body.new_name and config.DEFAULT_ENGINE == body.name:
+        config.save_settings({"DEFAULT_ENGINE": body.new_name})
+    return {"ok": True, "message": msg, "engines": _engine_list()}
+
+
+@app.delete("/api/engines/{name}")
+def remove_engine(name: str):
+    ok, msg = brainmod.remove_custom_engine(name)
+    if not ok:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"ok": True, "message": msg, "engines": _engine_list()}
+
+
+# --- settings (same managed keys + settings.json as the desktop app) -------- #
+
+
+@app.get("/api/engines/{name}")
+def engine_get(name: str):
+    """One engine's settings, for the edit form. The key is never returned."""
+    e = brainmod.get_custom_engine(name)
+    if e is None:
+        raise HTTPException(status_code=404, detail="no such engine")
+    return e
+
+
+class EngineEditBody(BaseModel):
+    name: str
+    new_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    tools: bool | None = None
+    stream: bool | None = None
+    price_in: float | None = None
+    price_out: float | None = None
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

@@ -194,6 +194,51 @@ def make_venv(check_only: bool = False) -> bool:
     return True
 
 
+def _pip_hint(out: str) -> str:
+    """Name the actual cause rather than dumping pip's output."""
+    low = (out or "").lower()
+    if "proxy" in low or "timed out" in low or "retries exceeded" in low:
+        return ("pip couldn't reach the internet. Behind a corporate proxy, "
+                "set HTTPS_PROXY and run this again.")
+    if "microsoft visual c++" in low or "build wheel" in low:
+        return ("A package needs a compiler. Install the Microsoft C++ Build "
+                "Tools, or tell me which package failed and I'll find a "
+                "wheel-only alternative.")
+    if "no space" in low:
+        return "The disk filled up."
+    if "permission" in low or "access is denied" in low:
+        return ("Windows blocked a file — usually antivirus. Allow the folder "
+                "in your antivirus and run this again.")
+    return f"See install.log. Last of the output: {(out or '').strip()[-300:]}"
+
+
+def say(line: str) -> None:
+    print(line)
+    log(line)
+
+
+def ask(question: str, default: bool = True) -> bool:
+    """Ask, but never hang an unattended install.
+
+    No terminal, or no answer in 30 seconds, means the default — a setup run
+    from a script must finish on its own.
+    """
+    log(f"ask: {question}")
+    if not sys.stdin or not sys.stdin.isatty():
+        return default
+    try:
+        import select
+        print(f"{question} [{'Y/n' if default else 'y/N'}] ", end="", flush=True)
+        if IS_WIN:
+            ans = input().strip().lower()
+        else:
+            r, _, _ = select.select([sys.stdin], [], [], 30)
+            ans = (sys.stdin.readline().strip().lower() if r else "")
+        return default if not ans else ans.startswith("y")
+    except Exception:
+        return default
+
+
 def install_packages(check_only: bool = False) -> bool:
     py = venv_python()
     if not py.exists():
@@ -221,23 +266,7 @@ def install_packages(check_only: bool = False) -> bool:
         step("Packages", OK, "installed")
         return True
 
-    # name the actual cause rather than dumping pip's output
-    low = out.lower()
-    if "proxy" in low or "timed out" in low or "retries exceeded" in low:
-        fix = ("pip couldn't reach the internet. Behind a corporate proxy, "
-               "set HTTPS_PROXY and run this again.")
-    elif "microsoft visual c++" in low or "build wheel" in low:
-        fix = ("A package needs a compiler. Install the Microsoft C++ Build "
-               "Tools, or tell me which package failed and I'll find a "
-               "wheel-only alternative.")
-    elif "no space" in low:
-        fix = "The disk filled up."
-    elif "permission" in low or "access is denied" in low:
-        fix = ("Windows blocked a file — usually antivirus. Allow the folder "
-               "in your antivirus and run this again.")
-    else:
-        fix = f"See install.log. Last of the output: {out.strip()[-300:]}"
-    step("Packages", FAIL, "pip failed", fix)
+    step("Packages", FAIL, "pip failed", _pip_hint(out))
     return False
 
 
@@ -284,25 +313,85 @@ def check_ollama(offer: bool = True) -> None:
          "Get it from ollama.com, then: ollama pull qwen3:8b")
 
 
-def check_playwright(check_only: bool = False) -> None:
+def browser_ready() -> tuple:
+    """Is the browser actually there? Returns (driver_ok, browser_ok, path).
+
+    `playwright install --dry-run` exits 0 whether or not the browser exists,
+    so the old check reported "Playwright ready" on a machine with no browser
+    — and portal applications then failed at the moment they were used. The
+    only honest test is whether the executable is on disk.
+    """
+    py = venv_python()
+    if not py.exists():
+        return (False, False, "")
+    code, _ = run([str(py), "-c", "import playwright"], timeout=60)
+    if code != 0:
+        return (False, False, "")
+    code2, out2 = run([str(py), "-c",
+                       "from playwright.sync_api import sync_playwright as s;"
+                       "import pathlib;"
+                       "p=s().start();e=p.chromium.executable_path;p.stop();"
+                       "print(e);print(pathlib.Path(e).exists())"], timeout=90)
+    lines = [l.strip() for l in (out2 or "").splitlines() if l.strip()]
+    ok = len(lines) >= 2 and lines[-1] == "True"
+    return (True, ok, lines[0] if lines else "")
+
+
+def check_playwright(check_only: bool = False, install: bool = True) -> None:
+    """Portal applications need a real browser, so setup installs one.
+
+    It used to only print the two commands to run, which meant the app's
+    flagship feature was one undocumented step away from working on every
+    fresh machine. It's about 150 MB, so we say so and ask.
+    """
     py = venv_python()
     if not py.exists():
         return
-    code, _ = run([str(py), "-c", "import playwright; print('y')"],
-                  timeout=60)
-    if code != 0:
-        step("Browser control", WARN, "Playwright not installed",
-             f"Only needed for portal applications and JavaScript-heavy "
-             f"pages. To add it:  {venv_python()} -m pip install playwright "
-             f"&& {venv_python()} -m playwright install chromium")
+    driver, browser, _ = browser_ready()
+    if driver and browser:
+        step("Browser control", OK, "Playwright and its browser are ready")
         return
-    code2, out2 = run([str(py), "-m", "playwright", "install", "--dry-run",
-                       "chromium"], timeout=60)
-    if "is already installed" in out2 or code2 == 0:
-        step("Browser control", OK, "Playwright ready")
+    if check_only or not install:
+        step("Browser control", WARN,
+             "Playwright ready" if driver else "not installed",
+             f"Needed for portal applications. To add it:  {py} -m pip "
+             f"install playwright && {py} -m playwright install chromium")
+        return
+    if not ask("  Install the browser for portal applications? "
+               "(about 150 MB)", default=True):
+        step("Browser control", WARN, "skipped",
+             f"Portal applications won't work until you run:  {py} -m pip "
+             f"install playwright && {py} -m playwright install chromium")
+        return
+    if not driver:
+        say("  Installing Playwright...")
+        code, out = run([str(py), "-m", "pip", "install", "playwright"],
+                        timeout=900)
+        if code != 0:
+            step("Browser control", WARN, "couldn't install Playwright",
+                 _pip_hint(out))
+            return
+    say("  Downloading the browser (this is the slow part)...")
+    code, out = run([str(py), "-m", "playwright", "install", "chromium"],
+                    timeout=1800)
+    driver, browser, _ = browser_ready()
+    if browser:
+        step("Browser control", OK, "Playwright and its browser are ready")
+        return
+    # the download prints a JavaScript stack on failure; say what it means
+    low = (out or "").lower()
+    if ("econnreset" in low or "getaddrinfo" in low or "etimedout" in low
+            or "download failed" in low or "403" in low or "proxy" in low):
+        why = ("couldn't download the browser — the download server wasn't "
+               "reachable")
+        fix = (f"Often a proxy or a blocked network. Set HTTPS_PROXY if you "
+               f"have one, then run:  {py} -m playwright install chromium")
+    elif "no space" in low:
+        why, fix = "the disk filled up", "Free about 200 MB and run it again."
     else:
-        step("Browser control", WARN, "Playwright installed, no browser",
-             f"{venv_python()} -m playwright install chromium")
+        why = "the browser didn't install"
+        fix = f"Run it by hand:  {py} -m playwright install chromium"
+    step("Browser control", WARN, why, fix)
 
 
 def check_port(port: int = 8765) -> None:
@@ -352,6 +441,9 @@ def make_shortcut() -> None:
 def main(argv: list = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     check_only = "--check" in argv
+    # the browser is installed by default because portal applications need it;
+    # --skip-extras is for anyone who'd rather not pull 150 MB
+    skip_extras = "--skip-extras" in argv
     quiet = "--quiet" in argv
     _results.clear()
 
@@ -376,7 +468,7 @@ def main(argv: list = None) -> int:
         if make_venv(check_only):
             install_packages(check_only)
             check_app()
-            check_playwright(check_only)
+            check_playwright(check_only, install=not skip_extras)
     check_ollama()
     check_port()
     if not check_only and venv_python().exists():

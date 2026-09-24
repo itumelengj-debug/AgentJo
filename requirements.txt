@@ -27,5 +27,6 @@ cryptography>=42.0
 
 # optional, and it says so when they're missing:
 #   playwright        - portal applications and reading JavaScript pages
+#                       (installed by setup, along with its browser)
 #   faster-whisper    - voice input
 #   pytesseract       - text out of images

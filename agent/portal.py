@@ -179,6 +179,95 @@ def answer_for(kind: str, profile: dict, role: dict) -> str:
     return str(table.get(kind, "") or "").strip()
 
 
+_ANSWER_SYSTEM = (
+    "You are filling in a job application form on behalf of a candidate.\n"
+    "You are given the candidate's PROFILE, the ROLE, and the form's "
+    "QUESTIONS.\n\n"
+    "Answer each question using ONLY what is in the PROFILE. If the profile "
+    "does not support an answer, return an empty string for that question — "
+    "an unanswered question is fine; an invented one is not. Never state a "
+    "tool, an employer, a qualification or a number of years that is not in "
+    "the profile.\n\n"
+    "Write plainly, in the first person, no buzzwords. A few sentences at "
+    "most unless the question asks for more. For yes/no questions answer "
+    "'Yes' or 'No' only when the profile settles it.\n\n"
+    "Return JSON only: {\"answers\": [{\"question\": \"...\", "
+    "\"answer\": \"...\"}]}"
+)
+
+
+def answer_questions(role: dict, profile: dict, questions: list,
+                     brain, model=None) -> list:
+    """Answer a form's free-text questions from the profile, and nothing else.
+
+    Portal forms ask things no field table can cover — "why this role", "how
+    many years with Power BI", "notice period". Those were left blank and the
+    application stalled there. The engine answers them, and every answer goes
+    through the same claims check a drafted email does, so a form can't claim
+    what a covering letter wouldn't be allowed to.
+    """
+    questions = [q for q in (questions or []) if str(q).strip()]
+    if not questions or brain is None:
+        return [{"question": q, "answer": "", "source": "blank",
+                 "why": "no engine available to answer it"} for q in questions]
+    from . import jobscout
+    payload = json.dumps({"PROFILE": profile or {}, "ROLE": role or {},
+                          "QUESTIONS": questions}, default=str)[:12000]
+    try:
+        kw = {"model": model} if model else {}
+        raw = brain.chat([{"role": "user", "content": payload}],
+                         [_ANSWER_SYSTEM + jobscout._banned_clause()],
+                         None, **kw)
+        text = "".join(b.text for b in getattr(raw, "content", [])
+                       if getattr(b, "type", "") == "text")
+        data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+    except Exception as exc:
+        return [{"question": q, "answer": "", "source": "blank",
+                 "why": f"couldn't answer: {type(exc).__name__}"}
+                for q in questions]
+
+    by_q = {str(a.get("question", "")).strip().lower():
+            str(a.get("answer", "")).strip()
+            for a in (data.get("answers") or []) if isinstance(a, dict)}
+    out = []
+    for q in questions:
+        ans = by_q.get(str(q).strip().lower(), "")
+        if not ans:
+            out.append({"question": q, "answer": "", "source": "blank",
+                        "why": "your profile doesn't answer this — type it "
+                               "yourself"})
+            continue
+        check = jobscout.check_draft(ans, role or {})
+        if check.get("ok") is False:
+            out.append({"question": q, "answer": ans, "source": "held",
+                        "why": "; ".join(p.get("detail", "")
+                                         for p in check.get("problems", []))
+                               or "claims something your profile can't support"})
+        else:
+            out.append({"question": q, "answer": ans, "source": "engine",
+                        "why": ""})
+    return out
+
+
+def paste_pack(answers: list, filled: list) -> str:
+    """Everything the form needs, as text you can paste by hand.
+
+    Automation gets some way into most forms and stops — a file upload it
+    can't reach, a question in a widget, a captcha. Having to retype what the
+    app already worked out is the moment people give up, so it hands the
+    answers over in a form you can paste.
+    """
+    lines = []
+    for f in filled or []:
+        if f.get("value"):
+            lines.append(f"{f.get('label') or f.get('kind')}:\n{f['value']}\n")
+    for a in answers or []:
+        if a.get("answer"):
+            mark = "  [held — check this]" if a.get("source") == "held" else ""
+            lines.append(f"{a['question']}{mark}:\n{a['answer']}\n")
+    return "\n".join(lines).strip()
+
+
 def plan(role: dict, profile: dict, fields: list) -> dict:
     """Given the form's fields, work out what can be filled and what can't —
     before touching anything, so a form that can't be completed doesn't get
@@ -402,9 +491,64 @@ class PlaywrightDriver:
             pass
 
 
+def _explain_portal_error(exc: Exception) -> str:
+    """Say what to do, not what the library printed.
+
+    A portal failure is nearly always one of two set-up steps missing, and
+    both were reported as a wall of Playwright output with the answer buried
+    in it.
+    """
+    s = f"{type(exc).__name__}: {exc}"
+    low = s.lower()
+    if isinstance(exc, ImportError) or "no module named 'playwright'" in low:
+        return ("The browser driver isn't installed. In the app folder run:  "
+                ".venv\\Scripts\\python -m pip install playwright  "
+                "(macOS/Linux: .venv/bin/python -m pip install playwright)")
+    if "executable doesn't exist" in low or "please run the following command" in low:
+        return ("Playwright is installed but its browser isn't. In the app "
+                "folder run:  .venv\\Scripts\\python -m playwright install "
+                "chromium  (macOS/Linux: .venv/bin/python -m playwright "
+                "install chromium)")
+    if "async api" in low:
+        return ("The browser was started from the wrong thread — this is a "
+                "fault in the app, not your setup. Please report it.")
+    if "timeout" in low:
+        return ("The page didn't finish loading in time. The advert may be "
+                "slow, behind a login, or blocking automated browsers.")
+    if "net::" in low or "name_not_resolved" in low:
+        return "Couldn't reach the advert — check the link and your connection."
+    return s[:300]
+
+
 def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
-                    headless: bool = False) -> dict:
-    """Open the advert, fill what we can, and either submit or hand over."""
+                    headless: bool = False, brain=None, model=None) -> dict:
+    """Open the advert, fill what we can, and either submit or hand over.
+
+    Runs the browser off the event loop. Playwright's synchronous API refuses
+    to start on a thread that has a running loop, and reports it as "use the
+    Async API instead" — which reads as a coding mistake in the app rather
+    than a place it was called from. A plain HTTP route is fine (those run on
+    a worker thread), but a tool call inside a chat turn runs on the loop, and
+    every portal application from a conversation failed with that message.
+    """
+    import asyncio as _asyncio
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        pass                                   # no loop here: drive it directly
+    else:
+        # a loop is running on this thread — do the work on one without
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=1, thread_name_prefix="portal") as _ex:
+            return _ex.submit(_apply_to_portal, role, profile_data,
+                              submit=submit, headless=headless,
+                              brain=brain, model=model).result()
+    return _apply_to_portal(role, profile_data, submit=submit,
+                            headless=headless, brain=brain, model=model)
+
+
+def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
+                     headless: bool = False, brain=None, model=None) -> dict:
     url = str((role or {}).get("url") or "").strip()
     if not url:
         return {"ok": False, "state": FAILED,
@@ -440,7 +584,35 @@ def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
         result["plan"] = {"fill": len(p["fill"]), "missing": p["missing"],
                           "sensitive": p["sensitive"],
                           "unknown_required": p["unknown_required"]}
+        # the questions no field table can cover — "why this role", "years
+        # with X". These used to stop the application dead; the engine
+        # answers them from the profile, and each answer is checked exactly
+        # as a drafted email is.
+        answers = []
+        if p["unknown_required"]:
+            answers = answer_questions(role, profile_data,
+                                       p["unknown_required"], brain, model)
+            result["answers"] = answers
+            by_label = {a["question"]: a for a in answers}
+            still = []
+            for f in fields or []:
+                label = f.get("label") or f.get("name") or f.get("id") or ""
+                a = by_label.get(label)
+                if a and a["answer"] and a["source"] == "engine":
+                    p["fill"].append({"kind": "answer", "label": label,
+                                      "selector": f.get("selector", ""),
+                                      "type": f.get("type", "text"),
+                                      "value": a["answer"]})
+            for a in answers:
+                if not a["answer"] or a["source"] != "engine":
+                    still.append(a["question"])
+            p["unknown_required"] = still
+            p["can_complete"] = not still and not p["missing"]
+            result["plan"]["unknown_required"] = still
+
         if not p["can_complete"]:
+            # even when it can't finish, hand over what it worked out
+            result["paste_pack"] = paste_pack(answers, p["fill"])
             detail = ", ".join(
                 [m["label"] for m in p["missing"]] + p["unknown_required"])
             state = NEEDS_ANSWER if p["missing"] else UNKNOWN_FORM
@@ -458,6 +630,8 @@ def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                 failed.append(item["label"])
         result["filled"] = filled
         result["could_not_fill"] = failed
+        # what was typed, in a form you can paste if anything is left by hand
+        result["paste_pack"] = paste_pack(result.get("answers") or [], p["fill"])
         if failed:
             result.update({"state": UNKNOWN_FORM,
                            "message": handover_message(
@@ -490,8 +664,7 @@ def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
         log(result)
         return result
     except Exception as exc:
-        result.update({"state": FAILED,
-                       "message": f"{type(exc).__name__}: {exc}"})
+        result.update({"state": FAILED, "message": _explain_portal_error(exc)})
         log(result)
         return result
     finally:

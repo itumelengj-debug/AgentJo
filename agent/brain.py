@@ -870,6 +870,17 @@ class OpenAIBrain(_PerThreadEngine):
 
     def chat(self, messages: list, system, tools: list | None = None,
              on_text=None, model: str | None = None):
+        # Ask the dispatcher first, like every other brain. Without this, a
+        # per-call engine choice was passed to THIS endpoint as a model id:
+        # with an OpenAI-compatible engine current (an Ollama server on its
+        # OpenAI port is one), picking a DeepSeek engine sent the name
+        # "deepseek-v4-proe" to localhost:11434 — "Could not reach
+        # Command-r:latest". The engine tested fine; it was never called.
+        _ds = _external_response(model, messages, system, tools, on_text,
+                                 caller=self)
+        if _ds is not None:
+            resp, self.last_engine, self.last_usage = _ds
+            return resp
         self.last_engine = self._label
         self.last_usage = None
         try:
@@ -1042,12 +1053,18 @@ class OpenAIBrain(_PerThreadEngine):
                 if have:
                     near = self._closest(model, have)
                     listed = ", ".join(f"`{h}`" for h in have[:8])
-                    return (f"_`{model}` isn't installed. This machine has: "
+                    hint = ("" if looks_local_tag(model) else
+                            f" This engine points at {self.base_url}, so the "
+                            f"request never left this machine — if `{model}` "
+                            f"is a cloud model, this engine's base URL is "
+                            f"wrong.")
+                    return (f"_`{model}` isn't installed on the runner at "
+                            f"{self.base_url}. This machine has: "
                             + listed
                             + (f". Did you mean `{near}`? Set it as the "
-                               f"model for this engine."
+                               f"model for this engine.{hint}"
                                if near else
-                               f". Set one of those as the model for this "
+                               f".{hint} Set one of those as the model for this "
                                f"engine, or run `ollama pull {model}` to "
                                f"fetch it.")
                             + "_")
@@ -1280,6 +1297,11 @@ def check_engines() -> dict:
             problems.append({
                 "engine": name, "what": "has no model id",
                 "fix": "Set the id the provider expects, e.g. qwen3:8b."})
+        mism = engine_mismatch(base, model)
+        if mism:
+            problems.append({
+                "engine": name, "what": "points at the wrong kind of endpoint",
+                "fix": mism})
         if base and not is_local_endpoint(base) and not e.get("api_key"):
             problems.append({
                 "engine": name,
@@ -1384,7 +1406,11 @@ def add_custom_engine(name, base_url, api_key, model, tools=True, stream=True,
                     "price_in": _price(price_in), "price_out": _price(price_out)})
     _save_custom_engines(engines)
     _custom_brains.pop(name, None)            # rebuild on next use
-    return True, f"Engine '{name}' saved."
+    # saved either way — you may know better than the check — but an endpoint
+    # and a model id that disagree are said out loud rather than discovered
+    # later as "that model isn't installed"
+    warn = engine_mismatch(base_url, model)
+    return True, (f"Engine '{name}' saved." + (" " + warn if warn else ""))
 
 
 def register_ollama_engine(name: str, model: str):
@@ -1466,6 +1492,9 @@ def update_custom_engine(name, base_url=None, api_key=None, model=None,
     _custom_brains.pop(name, None)
     _custom_brains.pop(target, None)
     renamed = target != name
+    _warn = engine_mismatch(url, mdl)
+    if _warn:
+        return True, (f"Saved. {_warn}")
     return True, (f"Renamed to '{target}' and saved." if renamed
                   else f"'{target}' updated.")
 
@@ -1508,6 +1537,32 @@ def _get_custom_brain(entry):
 
 
 ANTHROPIC_PREFIXES = ("claude-", "claude.", "anthropic.")
+
+
+def engine_mismatch(base_url: str, model: str) -> str:
+    """Does this model id belong to this endpoint? Returns a warning or "".
+
+    A cloud model id saved against a local runner is the quiet version of
+    this bug: it saves without complaint, every call goes to Ollama, and the
+    reply is "`deepseek-v4-pro` isn't installed" — which names the model, not
+    the fact that the request never left the machine.
+    """
+    base, m = (base_url or "").strip(), (model or "").strip()
+    if not base or not m:
+        return ""
+    local = is_local_endpoint(base)
+    tag = looks_local_tag(m)
+    if local and not tag:
+        return (f"'{m}' looks like a cloud model id, but this engine points at "
+                f"a local runner ({base}). Calls will go to that runner, which "
+                f"will say the model isn't installed. If you meant the "
+                f"provider's own API, set the base URL to theirs — DeepSeek's "
+                f"is https://api.deepseek.com/v1.")
+    if not local and tag:
+        return (f"'{m}' looks like an Ollama tag, but this engine points at a "
+                f"cloud API ({base}). That provider has never heard of it and "
+                f"will answer with a 404.")
+    return ""
 
 
 def looks_local_tag(model: str) -> bool:
@@ -1632,6 +1687,11 @@ def _external_response(model, messages, system, tools, on_text,
                                                          text=note)],
                                 stop_reason="end_turn"), "unknown", None)
     if entry is not None:
+        # An engine named after its own model — "command-r:latest" pointing at
+        # command-r:latest — would dispatch to itself for ever. If the caller
+        # IS that engine, it handles the call directly.
+        if caller is not None and getattr(caller, "_label", None) == entry["name"]:
+            return None
         cb = _get_custom_brain(entry)
         if cb is None:
             note = (f"Engine '{entry['name']}' isn't usable. Check its base URL "
@@ -1861,6 +1921,11 @@ def _probe_failure(exc, base: str, model: str, took: float) -> dict:
                 "error": "The key was accepted but isn't allowed to use this.",
                 "fix": "Usually a plan or region restriction on that model."}
     if "404" in s or ("model" in low and "not" in low and "found" in low):
+        mism = engine_mismatch(base, model)
+        if mism:
+            return {"ok": False, "stage": "model", "seconds": took,
+                    "error": f"'{model}' isn't a model {base} knows.",
+                    "fix": mism}
         return {"ok": False, "stage": "model", "seconds": took,
                 "error": f"'{model}' isn't a model this endpoint knows.",
                 "fix": ("Run `ollama list` and use one of those exactly."

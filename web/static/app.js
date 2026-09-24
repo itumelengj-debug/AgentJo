@@ -497,6 +497,13 @@ async function deleteConversation(conv) {
 
 function renderActive() {
   const conv = activeConv();
+  // ease the view in when the conversation shown actually changes — this
+  // runs on every update too, and animating those would flash each reply
+  const shownId = conv ? conv.id : "";
+  if (shownId !== state._shownConvId) {
+    state._shownConvId = shownId;
+    enterView($("#thread"));
+  }
   $("#convTitle").textContent = conv ? conv.title : "New conversation";
   const wrap = $("#messages");
   wrap.innerHTML = "";
@@ -505,8 +512,10 @@ function renderActive() {
   if (!conv || conv.messages.length === 0) {
     empty.classList.remove("hidden");
     loadTaskFeed();
+    showTaskFeed(true);
   } else {
     empty.classList.add("hidden");
+    showTaskFeed(false);
     conv.messages.forEach(m => {
       const r = renderMessage(m);
       // a conversation still streaming in the background: re-bind its live row
@@ -652,6 +661,7 @@ async function send(text) {
     $("#convTitle").textContent = conv.title;
   }
   $("#emptyState").classList.add("hidden");
+  showTaskFeed(false);                         // it leaves with the welcome
 
   const userMsg = { role: "user", text, files: files.map(f => f.name) };
   conv.messages.push(userMsg);
@@ -3657,6 +3667,59 @@ function applyTheme(choice) {
   }
 }
 
+/* -------------------------------- motion -------------------------------- */
+// Opening is eased by CSS the moment a panel becomes visible. Closing is the
+// hard part: the app hides panels instantly in 25 places, and its logic —
+// and its tests — rely on "closed" meaning closed right now. So closing is
+// never delayed. Instead a copy of the panel, stripped of ids so nothing can
+// find it, fades out on top while the real one is already gone.
+function enterView(node) {
+  if (!node || !node.classList) return;
+  node.classList.remove("view-enter");
+  void node.offsetWidth;                       // restart the animation
+  node.classList.add("view-enter");
+}
+function _reducedMotion() {
+  try { return matchMedia("(prefers-reduced-motion: reduce)").matches; }
+  catch (e) { return false; }
+}
+function ghostOut(panel) {
+  if (_reducedMotion() || !panel || !panel.cloneNode) return;
+  const g = panel.cloneNode(true);
+  g.removeAttribute("id");
+  g.querySelectorAll("[id]").forEach(n => n.removeAttribute("id"));
+  g.hidden = false;                            // same rule as every other show
+  g.style.display = "flex";
+  g.setAttribute("aria-hidden", "true");
+  g.classList.add("vt-ghost");
+  document.body.appendChild(g);
+  let done = false;
+  const clear = () => { if (!done) { done = true; g.remove(); } };
+  g.addEventListener("animationend", (e) => { if (e.target === g) clear(); });
+  setTimeout(clear, 450);                      // never leave one behind
+}
+function watchPanels() {
+  if (typeof MutationObserver !== "function") return;
+  const obs = new MutationObserver((muts) => {
+    muts.forEach((m) => {
+      const t = m.target;
+      if (!t.classList || !t.classList.contains("modal-backdrop")) return;
+      if (t.classList.contains("vt-ghost")) return;
+      const nowHidden = t.hidden || t.style.display === "none";
+      const wasVisible = m.attributeName === "hidden"
+        ? m.oldValue === null : !/display:\s*none/.test(m.oldValue || "");
+      if (nowHidden && wasVisible && !t._ghosted) {
+        t._ghosted = true;                     // style and hidden both change
+        ghostOut(t);
+        setTimeout(() => { t._ghosted = false; }, 60);
+      }
+    });
+  });
+  document.querySelectorAll(".modal-backdrop").forEach((p) =>
+    obs.observe(p, { attributes: true, attributeOldValue: true,
+                     attributeFilter: ["hidden", "style"] }));
+}
+
 /* ------------------------------- task feed ------------------------------- */
 // What's coming up and what just ran, beside the welcome screen. Built only
 // from real schedules and tasks — an empty feed says so rather than showing
@@ -3684,7 +3747,109 @@ function labelSwitches() {
     if (l && !a.title) a.title = l.textContent.trim();
   });
 }
+// ---- a floating, minimisable feed -----------------------------------------
+// It floated inside the chat area first, and on a wider window the welcome
+// cards spread further than its placement rule allowed — it sat on the
+// greeting. So it's the user's to place: drag it by the header, minimise it
+// to a pill with a count, and both are remembered. It lives on the page, not
+// inside the chat, because the chat's own animations and layout would move a
+// floating panel around with them.
+const TF_KEY = "agentjo-taskfeed";
+function _tfState() {
+  try { return JSON.parse(localStorage.getItem(TF_KEY) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function _tfSave(patch) {
+  try { localStorage.setItem(TF_KEY, JSON.stringify(Object.assign(_tfState(), patch))); }
+  catch (e) {}
+}
+function _tfClamp(feed) {
+  if (!feed.style.left) return;               // still in its default corner
+  const r = feed.getBoundingClientRect();
+  const x = Math.min(Math.max(8, r.left), Math.max(8, innerWidth - r.width - 8));
+  const y = Math.min(Math.max(8, r.top), Math.max(8, innerHeight - r.height - 8));
+  feed.style.left = x + "px"; feed.style.top = y + "px";
+}
+function setFeedMin(min) {
+  const feed = document.getElementById("taskFeed");
+  if (!feed) return;
+  feed.classList.toggle("min", !!min);
+  const b = document.getElementById("taskFeedMin");
+  if (b) {
+    b.title = min ? "Expand" : "Minimise";
+    b.setAttribute("aria-expanded", min ? "false" : "true");
+    b.setAttribute("aria-label", (min ? "Expand" : "Minimise") + " the task feed");
+  }
+  _tfSave({ min: !!min });
+  requestAnimationFrame(() => _tfClamp(feed));
+}
+function showTaskFeed(on) {
+  const feed = document.getElementById("taskFeed");
+  if (feed) feed.classList.toggle("tf-off", !on);
+}
+function initTaskFeed() {
+  const feed = document.getElementById("taskFeed");
+  if (!feed || feed._ready) return;
+  feed._ready = true;
+  document.body.appendChild(feed);            // out of the chat area
+  const st = _tfState();
+  // narrow windows start minimised, so the feed can't cover anything
+  setFeedMin(st.min !== undefined ? st.min : innerWidth < 1200);
+  if (typeof st.x === "number" && typeof st.y === "number") {
+    feed.style.left = st.x + "px"; feed.style.top = st.y + "px";
+    feed.style.right = "auto";
+    requestAnimationFrame(() => _tfClamp(feed));
+  }
+  const head = document.getElementById("taskFeedHead");
+  const minBtn = document.getElementById("taskFeedMin");
+  minBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setFeedMin(!feed.classList.contains("min"));
+  });
+  // a click on the minimised pill opens it — but not the click that ends a drag
+  let drag = null, moved = false;
+  head.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest(".tf-min")) return;
+    const r = feed.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
+    moved = false;
+    head.setPointerCapture(e.pointerId);
+    feed.classList.add("dragging");
+  });
+  head.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const r = feed.getBoundingClientRect();
+    const x = Math.min(Math.max(8, e.clientX - drag.dx), innerWidth - r.width - 8);
+    const y = Math.min(Math.max(8, e.clientY - drag.dy), innerHeight - r.height - 8);
+    if (!moved && Math.abs(e.clientX - drag.dx - r.left) + Math.abs(e.clientY - drag.dy - r.top) < 3) return;
+    moved = true;
+    feed.style.left = x + "px"; feed.style.top = y + "px"; feed.style.right = "auto";
+  });
+  const end = (e) => {
+    if (!drag) return;
+    try { head.releasePointerCapture(drag.id); } catch (err) {}
+    drag = null;
+    feed.classList.remove("dragging");
+    if (moved) {
+      const r = feed.getBoundingClientRect();
+      _tfSave({ x: Math.round(r.left), y: Math.round(r.top) });
+    } else if (feed.classList.contains("min")) {
+      setFeedMin(false);                       // a plain click opens the pill
+    }
+  };
+  head.addEventListener("pointerup", end);
+  head.addEventListener("pointercancel", end);
+  // double-click the header to send it back to its corner
+  head.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".tf-min")) return;
+    feed.style.left = ""; feed.style.top = ""; feed.style.right = "";
+    _tfSave({ x: null, y: null });
+  });
+  addEventListener("resize", () => _tfClamp(feed));
+}
+
 async function loadTaskFeed() {
+  initTaskFeed();
   labelSwitches();
   const host = document.getElementById("taskFeedList");
   if (!host) return;
@@ -3716,6 +3881,8 @@ async function loadTaskFeed() {
     ? (a.kind === "upcoming" ? -1 : 1)
     : a.kind === "upcoming" ? a.when - b.when : b.when - a.when);
   host.innerHTML = "";
+  const cnt = document.getElementById("taskFeedCount");
+  if (cnt) cnt.textContent = rows.length ? String(Math.min(rows.length, 6)) : "";
   if (!rows.length) {
     const e = el("div", "tf-empty");
     e.textContent = "Nothing scheduled and no tasks yet. Schedules and multi-step work appear here.";
@@ -6111,6 +6278,7 @@ function initKpiToggle() {
 
 /* ----------------------------- events ----------------------------- */
 function wireEvents() {
+  watchPanels();
   const input = $("#input");
   const autosize = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; };
   input.addEventListener("input", autosize);

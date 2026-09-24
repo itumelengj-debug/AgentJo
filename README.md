@@ -9,10 +9,6 @@ installed on. Point it at a local model and nothing leaves at all.
 
 *by Symbolic Synapse*
 
-## Demo
-
-![Agent Jo screenshot](docs/demo.png)
-
 ---
 
 ## What it actually does

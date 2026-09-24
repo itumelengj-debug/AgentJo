@@ -947,6 +947,24 @@ class MemoryStore:
             "SELECT * FROM schedules WHERE enabled = 1 AND next_run IS NOT NULL "
             "AND next_run <= ?", (now_ts,)).fetchall()]
 
+    def claim_schedule(self, sched_id: int, now_ts: float,
+                       hold_s: float = 900.0) -> bool:
+        """Take a due schedule so nobody else runs it.
+
+        Agent Jo and Agent Jo Jobs can both be open on the same data, and a
+        job that ran twice would send an application twice. One UPDATE
+        decides it: whoever moves next_run first has the job, and the loser's
+        UPDATE matches no row. The hold is released when the run reports back
+        through schedule_ran; if the process dies first, the job returns on
+        its own a quarter of an hour later rather than being lost.
+        """
+        cur = self.conn.execute(
+            "UPDATE schedules SET next_run = ? WHERE id = ? AND enabled = 1 "
+            "AND next_run IS NOT NULL AND next_run <= ?",
+            (now_ts + hold_s, sched_id, now_ts))
+        self.conn.commit()
+        return cur.rowcount == 1
+
     def schedule_ran(self, sched_id: int, last_run: float,
                      next_run: float | None, status: str, summary: str) -> None:
         self.conn.execute(

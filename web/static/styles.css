@@ -2844,9 +2844,13 @@ body.presenting .composer { opacity: .35; pointer-events: none; }
 [data-theme="glass"] input, [data-theme="glass"] select, [data-theme="glass"] textarea {
   background-color: rgba(10, 20, 22, .55);
 }
-[data-theme="glass"] .modal-card, [data-theme="glass"] .modal > div {
-  background: rgba(18, 30, 33, .92); backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--line);
+/* the panel card itself — only the card. This once read ".modal > div",
+   which boxed every child of every panel (title, toolbar, list) in its own
+   square frame. */
+[data-theme="glass"] .modal {
+  background: rgba(16, 28, 31, .94); backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .5), var(--glass-edge);
 }
 
 /* --- glass: placement fixes from the first screenshot ------------------ */
@@ -2881,18 +2885,224 @@ body.presenting .composer { opacity: .35; pointer-events: none; }
    in the gutter without covering anything; otherwise under the suggestions.
    A container query, because what matters is the chat area's width, not the
    window's — the sidebar takes a different share at different sizes. */
-[data-theme="glass"] #thread { position: relative; container-type: inline-size; }
+
 [data-theme="glass"] .empty { position: static; }
 [data-theme="glass"] .empty:not(.hidden) .task-feed {
   position: static; width: min(620px, 100%); margin: 26px auto 0;
   max-height: none;
 }
 [data-theme="glass"] .empty:not(.hidden) .task-feed .tf-list { max-height: 260px; }
-@container (min-width: 1080px) {
-  [data-theme="glass"] .empty:not(.hidden) .task-feed {
-    position: absolute; top: 24px; right: 22px; width: 220px; margin: 0;
+
+
+/* ======================================================================= */
+/*  MOTION — every theme. Things ease in when they appear; panels leave     */
+/*  via a copy that fades out (see ghostOut in app.js), so closing is       */
+/*  never delayed. One curve throughout, so it feels like one system.       */
+/* ======================================================================= */
+:root {
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --t-fast: 160ms;
+  --t-med: 240ms;
+}
+
+/* panels: the backdrop fades, the card rises and settles */
+.modal-backdrop:not([hidden]) {
+  animation: mo-fade-in var(--t-fast) ease-out both;
+}
+.modal-backdrop:not([hidden]) > .modal {
+  animation: mo-rise-in var(--t-med) var(--ease-out) both;
+}
+/* the copy left behind by a close fades and sinks, and can't be clicked */
+.modal-backdrop.vt-ghost {
+  pointer-events: none; z-index: 9999;
+  animation: mo-fade-out var(--t-fast) ease-in both;
+}
+.modal-backdrop.vt-ghost > .modal {
+  animation: mo-sink-out var(--t-fast) ease-in both;
+}
+
+/* switching conversation: the thread eases up into place */
+#thread.view-enter > * { animation: mo-rise-soft var(--t-med) var(--ease-out) both; }
+/* the welcome screen, and its suggestion cards one after another */
+.empty:not(.hidden) { animation: mo-fade-in var(--t-med) ease-out both; }
+.empty:not(.hidden) .suggest-card { animation: mo-rise-soft var(--t-med) var(--ease-out) both; }
+.empty:not(.hidden) .suggest-card:nth-child(2) { animation-delay: 40ms; }
+.empty:not(.hidden) .suggest-card:nth-child(3) { animation-delay: 80ms; }
+.empty:not(.hidden) .suggest-card:nth-child(4) { animation-delay: 120ms; }
+/* No per-message animation: the thread is rebuilt on every update, so it
+   would replay every message's entrance on each reply. Switching
+   conversation eases the whole thread in instead. */
+
+/* sidebar groups fold and unfold instead of snapping */
+.foot-group .foot-group-items {
+  display: block; overflow: hidden; max-height: 900px;
+  transition: max-height var(--t-med) var(--ease-out),
+              opacity var(--t-fast) ease-out;
+  opacity: 1;
+}
+.foot-group.collapsed .foot-group-items {
+  display: block; max-height: 0; opacity: 0;
+  visibility: hidden;                     /* out of the tab order when folded */
+  transition: max-height var(--t-med) var(--ease-out),
+              opacity var(--t-fast) ease-out, visibility 0s linear var(--t-med);
+}
+.foot-group .fg-chev { transition: transform var(--t-med) var(--ease-out); }
+
+/* controls respond, rather than jump */
+.btn, .icon-btn, .foot-btn, .suggest-card, .dash-tile, .conv-item,
+.engine-pill, .access-track, .access-dot {
+  transition: background-color var(--t-fast) ease-out,
+              border-color var(--t-fast) ease-out,
+              color var(--t-fast) ease-out,
+              box-shadow var(--t-med) ease-out,
+              transform var(--t-fast) ease-out;
+}
+.btn:active, .icon-btn:active, .suggest-card:active { transform: scale(.98); }
+
+@keyframes mo-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes mo-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes mo-rise-in {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes mo-sink-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(6px) scale(.99); }
+}
+@keyframes mo-rise-soft {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* anyone who has asked their system for less motion gets none of it */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important; animation-delay: 0s !important;
+    transition-duration: 1ms !important;
   }
 }
+
+/* --- glass: panels without hard edges ----------------------------------- */
+/* title and toolbar are part of the card, not boxes inside it */
+[data-theme="glass"] .modal-head,
+[data-theme="glass"] .issues-toolbar {
+  border: 0; background: transparent; border-radius: 0; box-shadow: none;
+}
+[data-theme="glass"] .modal-head { padding-bottom: 6px; }
+/* the summary line becomes a soft pill */
+[data-theme="glass"] .issues-toolbar {
+  background: rgba(255, 255, 255, .035); border-radius: 12px;
+  padding: 6px 6px 6px 12px;
+}
+/* lists: one rounded surface, no frame, and long lines wrap instead of
+   scrolling the whole list sideways */
+[data-theme="glass"] .out-log {
+  border: 0; border-radius: 14px; background: rgba(0, 0, 0, .18);
+  overflow-x: hidden; padding: 6px;
+}
+[data-theme="glass"] .out-log * { overflow-wrap: anywhere; }
+[data-theme="glass"] .out-log .log-row,
+[data-theme="glass"] .out-log .log-row * { white-space: normal; text-overflow: clip; }
+/* section headings: spacing does the separating, not a rule */
+[data-theme="glass"] .out-log .foot-group-label,
+[data-theme="glass"] .modal .foot-group-label {
+  border-top: 0; margin-top: 10px; padding-top: 6px;
+}
+/* rows: rounded tiles; the status colour is a bar that follows the curve
+   (an inset shadow bends with the radius — a border can't) */
+[data-theme="glass"] .log-row {
+  --row-accent: var(--line);              /* each tier below overrides it */
+  border: 0 !important; border-radius: 11px; margin: 4px 0;
+  background: rgba(255, 255, 255, .03);
+  box-shadow: inset 3px 0 0 var(--row-accent);
+}
+[data-theme="glass"] .log-row:hover { background: rgba(255, 255, 255, .05); }
+/* tiers keep their meaning: gold is gold, never the "all fine" teal */
+[data-theme="glass"] .log-row.tier-live { --row-accent: var(--accent); }
+[data-theme="glass"] .log-row.tier-gold { --row-accent: var(--warn); }
+[data-theme="glass"] .log-row.tier-silver { --row-accent: var(--dim); }
+[data-theme="glass"] .log-row.tier-bronze { --row-accent: #c98a5a; }
+[data-theme="glass"] .log-row.tier-fail,
+[data-theme="glass"] .log-row.tier-red { --row-accent: var(--danger); }
+/* Health says what the tiers mean there: ok, warning, failing. A warning
+   drawn in the pass colour told you it was fine when the text said it
+   wasn't. */
+[data-theme="glass"] #healthList .log-row.tier-live { --row-accent: var(--accent); }
+[data-theme="glass"] #healthList .log-row.tier-gold { --row-accent: var(--warn); }
+[data-theme="glass"] #healthList .log-row.tier-bronze { --row-accent: var(--danger); }
+/* thin, rounded scrollbars that sit inside the curve */
+[data-theme="glass"] .modal ::-webkit-scrollbar { width: 8px; height: 8px; }
+[data-theme="glass"] .modal ::-webkit-scrollbar-track { background: transparent; }
+[data-theme="glass"] .modal ::-webkit-scrollbar-thumb {
+  background: rgba(160, 230, 225, .16); border-radius: 99px;
+  border: 2px solid transparent; background-clip: padding-box;
+}
+[data-theme="glass"] .modal ::-webkit-scrollbar-button { display: none; height: 0; }
+[data-theme="glass"] .modal { scrollbar-width: thin;
+  scrollbar-color: rgba(160, 230, 225, .18) transparent; }
+
+/* --- glass: the task feed floats -------------------------------------- */
+/* Supersedes the in-page placement above. It's the user's to place:
+   dragged by the header, minimised to a pill, both remembered. */
+[data-theme="glass"] .empty:not(.hidden) .task-feed,
+[data-theme="glass"] .task-feed {
+  display: block; position: fixed; top: 88px; right: 22px; left: auto;
+  width: 250px; max-height: min(420px, calc(100vh - 120px)); margin: 0;
+  z-index: 40; overflow: hidden;
+  padding: 0 0 8px; border-radius: 16px;
+  background: rgba(20, 32, 36, .78); border: 1px solid var(--line);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .45), var(--glass-edge);
+  transition: width .22s var(--ease-out), border-radius .22s var(--ease-out),
+              box-shadow .2s ease-out, opacity .18s ease-out;
+}
+/* only while the welcome screen is up */
+[data-theme="glass"] .task-feed.tf-off { display: none; }
+[data-theme="glass"] .task-feed.dragging {
+  transition: none; cursor: grabbing;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, .55), 0 0 0 1px rgba(95, 224, 207, .3);
+}
+[data-theme="glass"] .tf-head {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  padding: 11px 10px 9px 12px; cursor: grab; user-select: none;
+  touch-action: none;
+}
+[data-theme="glass"] .tf-grip svg { width: 12px; height: 12px; fill: var(--faint); display: block; }
+[data-theme="glass"] .tf-head:hover .tf-grip svg { fill: var(--dim); }
+[data-theme="glass"] .tf-name { font-weight: 600; font-size: 13.5px; flex: 1 1 auto; }
+[data-theme="glass"] .tf-count {
+  font-size: 11px; min-width: 18px; padding: 1px 6px; border-radius: 99px;
+  text-align: center; background: rgba(95, 224, 207, .16); color: var(--accent);
+}
+[data-theme="glass"] .tf-count:empty { display: none; }
+[data-theme="glass"] .tf-min {
+  appearance: none; border: 0; cursor: pointer; flex: 0 0 auto;
+  width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center;
+  background: transparent; color: var(--dim);
+}
+[data-theme="glass"] .tf-min:hover { background: rgba(95, 224, 207, .12); color: var(--text); }
+[data-theme="glass"] .tf-min svg {
+  width: 12px; height: 12px; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round;
+}
+[data-theme="glass"] .task-feed .tf-list {
+  padding: 0 8px; max-height: calc(min(420px, 100vh - 120px) - 52px);
+  overflow-y: auto; transition: opacity .16s ease-out;
+}
+/* minimised: a pill with the name and the count */
+[data-theme="glass"] .task-feed.min {
+  width: auto; padding: 0; border-radius: 999px;
+}
+[data-theme="glass"] .task-feed.min .tf-head { padding: 8px 8px 8px 12px; cursor: pointer; }
+[data-theme="glass"] .task-feed.min .tf-list { display: none; }
+[data-theme="glass"] .task-feed.min .tf-min svg path { d: path("M6 2.5v7M2.5 6h7"); }
+[data-theme="glass"] .task-feed.min:hover {
+  box-shadow: 0 0 0 1px rgba(95, 224, 207, .3), 0 12px 30px rgba(0, 0, 0, .45);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="glass"] .task-feed { transition: none; }
+}
+
 
 /* Kept last: a class that sets display must never outrank [hidden].
    The Glass theme was once appended after this and the check caught it. */

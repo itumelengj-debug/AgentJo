@@ -1,271 +1,270 @@
-"""Sign and verify Agent Jo releases.
+"""Signing a release — what it does, and what it does not.
 
-A release is a directory tree plus two artefacts, all relative to the repo
-root (the folder that *contains* this ``tools/`` directory):
+Being clear about this first, because the words invite a misunderstanding
+that costs people money:
 
-- ``MANIFEST.sha256``  — one ``<sha256>  <relpath>`` line per tracked file, sorted.
-- ``MANIFEST.sig``     — an Ed25519 signature (base64) over the manifest bytes.
-- ``signing-key.pub``  — the Ed25519 public key (PEM) anyone can verify against.
+  A signature does NOT stop anyone copying this. Anything published on
+  GitHub can be read, forked and republished. No signature, watermark or
+  obfuscation changes that, and anyone selling you one is selling comfort.
 
-The private key (``signing-key.private``, PEM) never leaves the publisher's
-machine and is gitignored.
+  What a signature DOES is prove a copy is yours and unaltered. Someone who
+  downloads a zip can check that every byte came from you and nothing was
+  added on the way — which matters most for an agent that runs commands on
+  the machine it's installed on. A tampered build of this could do real harm,
+  and the signature is how a user rules that out.
 
-Commands (see SIGNING.md / VERIFYING.md):
+  What governs whether someone may USE it is the licence, not the signature.
 
-    python tools/sign.py --make-key   # once; writes .private (gitignored) + .pub
-    python tools/sign.py --sign       # before each release; writes MANIFEST.*
-    python tools/sign.py --verify     # what a downloader runs
-
-This is deliberately dependency-light: only ``cryptography`` is required, and
-only the ``hashlib`` stdlib is used for the manifest so verification of the
-manifest itself never depends on the signing library.
+So: Ed25519 over a manifest of SHA-256 file hashes. The private key never
+enters the repository; the public key does, so anyone can verify without
+trusting a server. Verification needs no network and no account.
 """
 from __future__ import annotations
 
-import argparse
-import base64
 import hashlib
-import os
-import sys
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-        Ed25519PrivateKey,
-        Ed25519PublicKey,
-    )
-    from cryptography.exceptions import InvalidSignature
-    _HAS_CRYPTO = True
-except Exception:  # pragma: no cover - reported as a clear message
-    _HAS_CRYPTO = False
+MANIFEST = "MANIFEST.sha256"
+SIGNATURE = "MANIFEST.sig"
+PUBKEY = "signing-key.pub"
+KEYFILE = "signing-key.private"        # never committed; see .gitignore
 
-# Artefact filenames, relative to the repo root.
-MANIFEST_NAME = "MANIFEST.sha256"
-SIG_NAME = "MANIFEST.sig"
-PUB_NAME = "signing-key.pub"
-PRIV_NAME = "signing-key.private"
-
-# These are the signing artefacts themselves (and the private key): they are
-# never part of the signed content.
-_ARTEFACTS = {MANIFEST_NAME, SIG_NAME, PUB_NAME, PRIV_NAME}
-
-# Paths that are never part of the release content.
-_SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache",
-              ".mypy_cache", "node_modules", "dist", "build"}
+SKIP = {".git", ".venv", "venv", "__pycache__", "node_modules", "dist",
+        "build", ".mypy_cache", ".pytest_cache"}
+SKIP_FILES = {MANIFEST, SIGNATURE, KEYFILE}
 
 
-def _repo_root() -> Path:
-    """The directory containing this tools/ folder."""
-    here = Path(__file__).resolve()
-    return here.parent.parent
+def _iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _walk_files(root: Path):
-    """Yield every file that is part of the signed release, as (relpath, path).
-
-    Paths are normalised to forward slashes so a manifest is identical whether
-    it was produced on Windows, macOS or Linux.
-    """
-    for dirpath, dirnames, filenames in os.walk(root):
-        rel_dir = Path(dirpath).relative_to(root)
-        # prune skippable directories in place (tools/ IS part of the release)
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-        for fn in filenames:
-            if fn in _ARTEFACTS:
-                continue
-            rel = (rel_dir / fn).as_posix()
-            if rel == ".":
-                continue
-            yield rel, Path(dirpath) / fn
+def _files(root: Path) -> list:
+    out = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        if any(part in SKIP for part in p.parts):
+            continue
+        if p.name in SKIP_FILES:
+            continue
+        out.append(p)
+    return out
 
 
-def _file_sha256(path: Path) -> str:
+def _digest(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
 
 
-def build_manifest(root: Path) -> bytes:
-    """Return the canonical MANIFEST.sha256 bytes for the tree at ``root``."""
-    entries = []
-    for rel, path in _walk_files(root):
-        entries.append((rel, _file_sha256(path)))
-    entries.sort(key=lambda e: e[0])
-    lines = [f"{digest}  {rel}" for rel, digest in entries]
-    return ("\n".join(lines) + "\n").encode("utf-8")
+def build_manifest(root: str = ".") -> dict:
+    """Every file, with its hash. This is what gets signed."""
+    r = Path(root).resolve()
+    entries = {}
+    for p in _files(r):
+        entries[str(p.relative_to(r)).replace("\\", "/")] = _digest(p)
+    body = {"created": _iso(), "files": len(entries), "entries": entries}
+    text = json.dumps(body, indent=2, sort_keys=True)
+    (r / MANIFEST).write_text(text, "utf-8")
+    return {"ok": True, "files": len(entries), "path": str(r / MANIFEST)}
 
 
-def _load_pub(root: Path) -> Ed25519PublicKey:
-    if not _HAS_CRYPTO:
-        raise RuntimeError(
-            "cryptography is not installed. Run: pip install cryptography")
-    p = root / PUB_NAME
-    if not p.exists():
-        raise FileNotFoundError(
-            f"{PUB_NAME} not found — this release is unsigned (or the public "
-            f"key was not committed).")
-    return serialization.load_pem_public_key(p.read_bytes())
+def make_key(path: str = KEYFILE) -> dict:
+    """Create a signing key. Run once, then keep the private half safe.
 
-
-def _load_priv(root: Path) -> Ed25519PrivateKey:
-    if not _HAS_CRYPTO:
-        raise RuntimeError(
-            "cryptography is not installed. Run: pip install cryptography")
-    p = root / PRIV_NAME
-    if not p.exists():
-        raise FileNotFoundError(
-            f"{PRIV_NAME} not found. Run `python tools/sign.py --make-key` "
-            f"first (see SIGNING.md).")
-    return serialization.load_pem_private_key(p.read_bytes(), password=None)
-
-
-def cmd_make_key(root: Path) -> int:
-    if not _HAS_CRYPTO:
-        print("error: cryptography is not installed. Run: pip install cryptography")
-        return 1
-    priv_path = root / PRIV_NAME
-    pub_path = root / PUB_NAME
-    if priv_path.exists() or pub_path.exists():
-        print(f"error: a key already exists ({PRIV_NAME} / {PUB_NAME}).")
-        print("       Refusing to overwrite — a new key invalidates every "
-              "published release.")
-        return 1
-
-    key = Ed25519PrivateKey.generate()
-    priv_bytes = key.private_bytes(
+    If it leaks, someone can sign a build as you — which is the one thing
+    this is meant to prevent."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        return {"ok": False,
+                "error": "pip install cryptography — signing needs it."}
+    p = Path(path)
+    if p.exists():
+        return {"ok": False,
+                "error": f"{p} already exists. Signing again with the same "
+                         f"key is fine; making a NEW one invalidates every "
+                         f"release you've already published."}
+    key = ed25519.Ed25519PrivateKey.generate()
+    p.write_bytes(key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    priv_path.write_bytes(priv_bytes)
-    pub_path.write_bytes(pub_bytes)
-    # best-effort: keep the private half unreadable by others where the OS allows
+        encryption_algorithm=serialization.NoEncryption()))
     try:
-        os.chmod(priv_path, 0o600)
+        p.chmod(0o600)
     except Exception:
         pass
-
-    print(f"wrote {PRIV_NAME} (keep secret, never commit — it is gitignored)")
-    print(f"wrote {PUB_NAME}  (commit this)")
-    print()
-    print("Back up the private half somewhere you won't lose it.")
-    return 0
-
-
-def cmd_sign(root: Path) -> int:
-    manifest = build_manifest(root)
-    priv = _load_priv(root)
-    sig = priv.sign(manifest)
-    (root / MANIFEST_NAME).write_bytes(manifest)
-    (root / SIG_NAME).write_bytes(base64.b64encode(sig) + b"\n")
-    n = manifest.count(b"\n")
-    print(f"wrote {MANIFEST_NAME} ({n} files)")
-    print(f"wrote {SIG_NAME}")
-    print()
-    print("Commit these files:")
-    print(f"  git add {MANIFEST_NAME} {SIG_NAME} {PUB_NAME}")
-    return 0
+    pub = Path(PUBKEY)
+    pub.write_bytes(key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo))
+    return {"ok": True, "private": str(p), "public": str(pub),
+            "warning": ("Keep the private key out of the repository — it's "
+                        "in .gitignore. Anyone holding it can sign a build "
+                        "as you, which is the one thing this prevents.")}
 
 
-def cmd_verify(root: Path) -> int:
-    manifest_path = root / MANIFEST_NAME
-    sig_path = root / SIG_NAME
-    pub_path = root / PUB_NAME
-
-    if not pub_path.exists():
-        print("ok: False")
-        print("verdict: Unsigned — no signing-key.pub present.")
-        return 1
-    if not manifest_path.exists() or not sig_path.exists():
-        print("ok: False")
-        print("verdict: Unsigned — MANIFEST.sha256 / MANIFEST.sig missing.")
-        return 1
-
-    pub = _load_pub(root)
-    expected_manifest = manifest_path.read_bytes()
+def sign(root: str = ".", key_path: str = KEYFILE) -> dict:
     try:
-        sig = base64.b64decode(sig_path.read_bytes().strip())
-    except Exception:
-        print("ok: False")
-        print("verdict: Corrupt — MANIFEST.sig is not valid base64.")
-        return 1
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        return {"ok": False, "error": "pip install cryptography"}
+    r = Path(root).resolve()
+    k = Path(key_path)
+    if not k.exists():
+        return {"ok": False,
+                "error": f"No signing key at {k}. Run: python tools/sign.py "
+                         f"--make-key"}
+    build_manifest(root)
+    data = (r / MANIFEST).read_bytes()
+    key = serialization.load_pem_private_key(k.read_bytes(), password=None)
+    (r / SIGNATURE).write_bytes(key.sign(data))
+    return {"ok": True, "manifest": MANIFEST, "signature": SIGNATURE,
+            "note": ("Commit the manifest, the signature and the public key. "
+                     "Never the private key.")}
 
+
+def verify(root: str = ".") -> dict:
+    """Check a copy is unaltered and came from the holder of the key.
+
+    Deliberately reports WHICH files differ. "Verification failed" tells you
+    something is wrong; naming the file tells you whether it's tampering or
+    an editor that rewrote line endings."""
+    r = Path(root).resolve()
+    man, sig, pub = r / MANIFEST, r / SIGNATURE, r / PUBKEY
+    for f, what in ((man, "manifest"), (sig, "signature"), (pub, "public key")):
+        if not f.exists():
+            return {"ok": False, "error": f"No {what} here ({f.name}), so "
+                                          f"this copy can't be checked."}
     try:
-        pub.verify(sig, expected_manifest)
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.exceptions import InvalidSignature
+    except ImportError:
+        return {"ok": False, "error": "pip install cryptography to verify."}
+
+    key = serialization.load_pem_public_key(pub.read_bytes())
+    try:
+        key.verify(sig.read_bytes(), man.read_bytes())
     except InvalidSignature:
-        print("ok: False")
-        print("verdict: Invalid signature — the manifest was not signed by "
-              "the holder of signing-key.pub.")
-        return 1
+        return {"ok": False, "signed": False,
+                "error": ("The signature doesn't match the manifest. Either "
+                          "the manifest was edited, or this build wasn't "
+                          "signed by the holder of that key.")}
 
-    # signature is valid; now check the actual files match the manifest
-    actual = build_manifest(root)
-    expected_map = {}
-    for line in expected_manifest.decode("utf-8").splitlines():
-        if not line.strip():
+    body = json.loads(man.read_text("utf-8"))
+    changed, missing, extra = [], [], []
+    listed = body.get("entries", {})
+    for rel, want in listed.items():
+        p = r / rel
+        if not p.exists():
+            missing.append(rel)
+        elif _digest(p) != want:
+            changed.append(rel)
+    on_disk = {str(p.relative_to(r)).replace("\\", "/") for p in _files(r)}
+    extra = sorted(on_disk - set(listed) - {PUBKEY})
+
+    ok = not (changed or missing)
+    return {"ok": ok, "signed": True, "files": len(listed),
+            "changed": changed[:40], "missing": missing[:40],
+            "added": extra[:40], "created": body.get("created", ""),
+            "verdict": ("Signed and unaltered — every one of "
+                        f"{len(listed)} files matches."
+                        if ok else
+                        f"Signature is valid, but {len(changed)} file(s) "
+                        f"differ and {len(missing)} are missing. Someone has "
+                        f"changed this copy since it was signed."),
+            "note": ("A valid signature proves the copy is unaltered and came "
+                     "from the key holder. It does not stop anyone copying "
+                     "the code — the licence governs that.")}
+
+
+HEADER_TEMPLATE = """{c} {product} — {tagline}
+{c} Copyright (c) {year} {holder}. All rights reserved.
+{c}
+{c} Licensed under the PolyForm Noncommercial License 1.0.0.
+{c} Free for personal, research and non-commercial use.
+{c} Commercial use requires a licence: see COMMERCIAL.md
+{c} Provenance: MANIFEST.sha256 + MANIFEST.sig (see VERIFYING.md)
+"""
+
+
+def add_headers(root: str = ".", holder: str = "Itumeleng Nthite",
+                product: str = "Agent Jo", tagline: str = "by Symbolic Synapse",
+                year: int = None) -> dict:
+    """Put attribution in every source file.
+
+    Not protection — anyone can delete a comment. It's so a file that ends up
+    somewhere else still says where it came from, which is what makes a claim
+    provable rather than assertable."""
+    r = Path(root).resolve()
+    year = year or datetime.now(timezone.utc).year
+    done, skipped = 0, 0
+    for p in _files(r):
+        if p.suffix not in (".py", ".js", ".css"):
+            skipped += 1
             continue
-        digest, rel = line.split("  ", 1)
-        expected_map[rel] = digest
-    actual_map = {}
-    for line in actual.decode("utf-8").splitlines():
-        if not line.strip():
+        text = p.read_text("utf-8", "replace")
+        if "PolyForm Noncommercial" in text[:1200]:
+            skipped += 1
             continue
-        digest, rel = line.split("  ", 1)
-        actual_map[rel] = digest
-
-    missing = sorted(set(expected_map) - set(actual_map))
-    added = sorted(set(actual_map) - set(expected_map))
-    changed = sorted(
-        rel for rel in set(expected_map) & set(actual_map)
-        if expected_map[rel] != actual_map[rel]
-    )
-
-    if missing or added or changed:
-        print("ok: False")
-        print("verdict: Altered — this copy does not match the signed manifest.")
-        for rel in missing:
-            print(f"  removed:  {rel}")
-        for rel in added:
-            print(f"  added:    {rel}")
-        for rel in changed:
-            print(f"  changed:  {rel}")
-        if any("agent/tools.py" in r for r in changed):
-            print()
-            print("  NOTE: agent/tools.py was modified — this is a reason to "
-                  "stop before running anything.")
-        return 1
-
-    n = len(expected_map)
-    print("ok: True")
-    print(f"verdict: Signed and unaltered — every one of {n} files matches.")
-    return 0
+        comment = "#" if p.suffix == ".py" else "//"
+        head = HEADER_TEMPLATE.format(c=comment, product=product,
+                                      tagline=tagline, year=year,
+                                      holder=holder)
+        if p.suffix == ".css":
+            head = ("/*\n" + head.replace("// ", " ").replace("//", " ")
+                    + "*/\n")
+        # a shebang and an encoding line must stay on the first lines
+        lines = text.splitlines(keepends=True)
+        at = 0
+        while at < len(lines) and (lines[at].startswith("#!")
+                                   or "coding" in lines[at][:30]):
+            at += 1
+        p.write_text("".join(lines[:at]) + head + "\n" + "".join(lines[at:]),
+                     "utf-8")
+        done += 1
+    return {"ok": True, "headers_added": done, "skipped": skipped,
+            "note": ("A header doesn't stop anyone removing it. It means a "
+                     "file found elsewhere still names its origin, which is "
+                     "the difference between claiming authorship and showing "
+                     "it.")}
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Sign and verify Agent Jo releases.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--make-key", action="store_true",
-                       help="generate signing-key.private + signing-key.pub")
-    group.add_argument("--sign", action="store_true",
-                       help="write MANIFEST.sha256 + MANIFEST.sig")
-    group.add_argument("--verify", action="store_true",
-                       help="check this copy against the published signature")
-    args = parser.parse_args(argv)
-
-    root = _repo_root()
-    if args.make_key:
-        return cmd_make_key(root)
-    if args.sign:
-        return cmd_sign(root)
-    return cmd_verify(root)
+def _cli():
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Sign or verify an Agent Jo release.")
+    ap.add_argument("--make-key", action="store_true",
+                    help="create a signing key (run once)")
+    ap.add_argument("--sign", action="store_true", help="sign this folder")
+    ap.add_argument("--verify", action="store_true",
+                    help="check this folder is unaltered")
+    ap.add_argument("--headers", action="store_true",
+                    help="add copyright headers to source files")
+    ap.add_argument("--root", default=".")
+    a = ap.parse_args()
+    if a.make_key:
+        r = make_key()
+    elif a.sign:
+        r = sign(a.root)
+    elif a.headers:
+        r = add_headers(a.root)
+    elif a.verify:
+        r = verify(a.root)
+    else:
+        ap.print_help()
+        return 0
+    for k, v in r.items():
+        if isinstance(v, list) and not v:
+            continue
+        print(f"{k}: {v}")
+    return 0 if r.get("ok") else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(_cli())

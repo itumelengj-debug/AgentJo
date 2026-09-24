@@ -1,23 +1,4 @@
-# Signing keys — the private half must NEVER be committed.
+
+# signing key — never commit this
 signing-key.private
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Local agent runtime state (not part of the source release)
-.agent/
-secret.key
-engines.json
-*.db
-*.sqlite3
-
-# OS / editor
-.DS_Store
-Thumbs.db
+*.private
