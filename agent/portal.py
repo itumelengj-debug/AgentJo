@@ -29,6 +29,7 @@ reason: a wrong application can't be recalled.
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
 import time
@@ -251,6 +252,44 @@ def answer_questions(role: dict, profile: dict, questions: list,
     return out
 
 
+def _offer_companion(driver, page, hints: list) -> bool:
+    """Put the companion in the page if this driver can.
+
+    Help inside the form is a nicety; failing to offer it must never fail an
+    application. A driver without the method — or a page that refuses the
+    script — simply doesn't get one.
+    """
+    fn = getattr(driver, "companion", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn(page, hints))
+    except Exception:
+        return False
+
+
+def companion_hints(fill: list, answers: list, fields: list) -> list:
+    """What to offer for each field on the page, in the page's own words."""
+    hints = []
+    for f in fill or []:
+        if f.get("value"):
+            hints.append({"label": f.get("label") or f.get("kind"),
+                          "value": f["value"], "source": "profile"})
+    for a in answers or []:
+        hints.append({"label": a.get("question", ""),
+                      "value": a.get("answer", ""),
+                      "source": a.get("source", ""),
+                      "why": a.get("why", "")})
+    # fields nothing was worked out for still get an honest answer
+    known = {str(h["label"]).strip().lower() for h in hints}
+    for f in fields or []:
+        label = (f.get("label") or f.get("name") or "").strip()
+        if label and label.lower() not in known:
+            hints.append({"label": label, "value": "",
+                          "why": "Not in your profile — type it yourself."})
+    return hints
+
+
 def paste_pack(answers: list, filled: list) -> str:
     """Everything the form needs, as text you can paste by hand.
 
@@ -366,6 +405,100 @@ def history(n: int = 30) -> list:
     return out
 
 
+def _site_of(url: str) -> str:
+    """The host, which is what a form belongs to — not the advert's path."""
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url or "").netloc or "").lower().replace("www.", "")
+    except Exception:
+        return ""
+
+
+def _recipes_path() -> Path:
+    return _dir() / "site_recipes.json"
+
+
+def recipes() -> dict:
+    try:
+        return json.loads(_recipes_path().read_text("utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def recipe_for(url: str) -> dict:
+    """What this site asked for last time.
+
+    Every application teaches the app something about the site: which system
+    runs the form, whether it wanted a sign-in, whether a captcha appeared,
+    which fields it asks for and which questions it repeats. The next
+    application to the same host starts knowing all of that instead of
+    discovering it again.
+    """
+    return recipes().get(_site_of(url)) or {}
+
+
+def remember_site(url: str, *, ats: str = "", state: str = "",
+                  fields: list | None = None, questions: list | None = None,
+                  filled: list | None = None, blocked: str = "") -> dict:
+    """Record what this application taught us about the site."""
+    site = _site_of(url)
+    if not site:
+        return {}
+    all_r = recipes()
+    r = all_r.get(site) or {"site": site, "seen": 0, "questions": {},
+                            "fields": {}, "steps": []}
+    r["seen"] = int(r.get("seen", 0)) + 1
+    r["ats"] = ats or r.get("ats", "")
+    r["last_state"] = state
+    r["last_at"] = _iso()
+    if blocked:
+        r["blocks"] = sorted(set((r.get("blocks") or []) + [blocked]))
+    for f in fields or []:
+        label = (f.get("label") or f.get("name") or "").strip()
+        if label:
+            known = r["fields"].setdefault(label, {"seen": 0, "kind": ""})
+            known["seen"] += 1
+            known["kind"] = classify_field(label) or known.get("kind", "")
+            if f.get("required"):
+                known["required"] = True
+    for q in questions or []:
+        if str(q).strip():
+            r["questions"][str(q).strip()] = \
+                int(r["questions"].get(str(q).strip(), 0)) + 1
+    # the shortest honest description of what it takes to apply here
+    steps = []
+    if "needs_login" in (r.get("blocks") or []):
+        steps.append("sign in")
+    if "needs_captcha" in (r.get("blocks") or []):
+        steps.append("solve a captcha")
+    if any(k.get("kind") == "resume" for k in r["fields"].values()):
+        steps.append("attach your CV")
+    if r["questions"]:
+        steps.append(f"answer {len(r['questions'])} question(s)")
+    steps.append("submit")
+    r["steps"] = steps
+    all_r[site] = r
+    try:
+        _recipes_path().parent.mkdir(parents=True, exist_ok=True)
+        _recipes_path().write_text(json.dumps(all_r, indent=2), "utf-8")
+    except Exception:
+        pass
+    return r
+
+
+def site_brief(url: str) -> str:
+    """One line about what applying here takes, for before you start."""
+    r = recipe_for(url)
+    if not r or not r.get("seen"):
+        return ""
+    bits = [f"You've applied through {r['site']} {r['seen']} time(s)"]
+    if r.get("ats"):
+        bits.append(f"it runs {r['ats']}")
+    if r.get("steps"):
+        bits.append("it takes: " + ", ".join(r["steps"]))
+    return " — ".join(bits) + "."
+
+
 def readiness(profile: dict) -> dict:
     """Portal forms ask for things an email application never did. Better to
     find that out once here than to abandon twenty half-filled forms."""
@@ -392,6 +525,140 @@ def readiness(profile: dict) -> dict:
 DRIVER = None          # tests substitute this
 
 
+# A small companion inside the form itself. Hover a field and it shows what
+# it would type there and why — click to fill it, or copy it. It exists
+# because automation never finishes every form: the moment it stops, you are
+# on your own in a page full of boxes, holding answers the app already
+# worked out.
+_COMPANION_JS = r"""
+(hints) => {
+  if (window.__agentJoCompanion) { window.__agentJoCompanion.update(hints); return true; }
+  const norm = (s) => (s || "").toLowerCase().replace(/[\s:*]+/g, " ").trim();
+  let table = {};
+  const load = (h) => {
+    table = {};
+    (h || []).forEach((x) => { if (x && x.label) table[norm(x.label)] = x; });
+  };
+  load(hints);
+
+  const box = document.createElement("div");
+  box.style.cssText = [
+    "position:fixed", "z-index:2147483647", "max-width:320px",
+    "font:13px/1.45 -apple-system,Segoe UI,system-ui,sans-serif",
+    "background:rgba(18,26,29,.97)", "color:#eef4f2",
+    "border:1px solid rgba(70,211,154,.45)", "border-radius:12px",
+    "box-shadow:0 12px 34px rgba(0,0,0,.45)", "padding:10px 12px",
+    "pointer-events:auto", "display:none", "transition:opacity .12s",
+  ].join(";");
+  document.documentElement.appendChild(box);
+
+  const dot = document.createElement("div");
+  dot.style.cssText = [
+    "position:fixed", "z-index:2147483646", "width:14px", "height:14px",
+    "border-radius:50%", "background:#46d39a",
+    "box-shadow:0 0 0 4px rgba(70,211,154,.25)", "pointer-events:none",
+    "transform:translate(-50%,-50%)", "transition:opacity .15s", "opacity:0",
+  ].join(";");
+  document.documentElement.appendChild(dot);
+
+  let current = null;
+  const labelFor = (el) => {
+    let t = "";
+    if (el.labels && el.labels[0]) t = el.labels[0].innerText;
+    if (!t && el.id) {
+      const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (l) t = l.innerText;
+    }
+    if (!t) t = el.getAttribute("aria-label") || el.placeholder || el.name || "";
+    return t;
+  };
+  const show = (el, x, y) => {
+    const hit = table[norm(labelFor(el))];
+    box.innerHTML = "";
+    const head = document.createElement("div");
+    head.style.cssText = "font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7f9a92;margin-bottom:5px";
+    head.textContent = "Agent Jo";
+    box.appendChild(head);
+    if (!hit || !hit.value) {
+      const p = document.createElement("div");
+      p.style.color = "#c6cfcb";
+      p.textContent = hit && hit.why
+        ? hit.why
+        : "Your profile doesn't answer this one — type it yourself.";
+      box.appendChild(p);
+    } else {
+      const v = document.createElement("div");
+      v.style.cssText = "white-space:pre-wrap;max-height:160px;overflow:auto";
+      v.textContent = hit.value;
+      box.appendChild(v);
+      if (hit.source === "held") {
+        const w = document.createElement("div");
+        w.style.cssText = "margin-top:6px;color:#f3c46d;font-size:12px";
+        w.textContent = "Held: " + (hit.why || "claims more than your profile");
+        box.appendChild(w);
+      }
+      const bar = document.createElement("div");
+      bar.style.cssText = "display:flex;gap:6px;margin-top:8px";
+      const mk = (text, fn) => {
+        const b = document.createElement("button");
+        b.textContent = text;
+        b.style.cssText = "cursor:pointer;border:0;border-radius:7px;padding:5px 10px;font:inherit;font-size:12px;background:#46d39a;color:#04200f";
+        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); };
+        return b;
+      };
+      bar.appendChild(mk("Fill this", () => {
+        const setter = Object.getOwnPropertyDescriptor(
+          el.constructor.prototype, "value");
+        if (setter && setter.set) setter.set.call(el, hit.value);
+        else el.value = hit.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }));
+      const copy = mk("Copy", (b) => {
+        navigator.clipboard.writeText(hit.value).then(() => {
+          b.textContent = "Copied";
+          setTimeout(() => { b.textContent = "Copy"; }, 1200);
+        }).catch(() => {});
+      });
+      copy.style.background = "rgba(255,255,255,.1)";
+      copy.style.color = "#eef4f2";
+      bar.appendChild(copy);
+      box.appendChild(bar);
+    }
+    box.style.display = "block";
+    const w = box.getBoundingClientRect();
+    box.style.left = Math.min(x + 16, innerWidth - w.width - 12) + "px";
+    box.style.top = Math.min(y + 16, innerHeight - w.height - 12) + "px";
+  };
+
+  const isField = (el) => el && /^(input|textarea|select)$/i.test(el.tagName)
+    && !/^(hidden|submit|button)$/i.test(el.type || "");
+
+  document.addEventListener("mousemove", (e) => {
+    dot.style.left = e.clientX + "px";
+    dot.style.top = e.clientY + "px";
+    const el = e.target;
+    if (isField(el)) {
+      dot.style.opacity = "1";
+      if (el !== current) { current = el; show(el, e.clientX, e.clientY); }
+      else {
+        const w = box.getBoundingClientRect();
+        box.style.left = Math.min(e.clientX + 16, innerWidth - w.width - 12) + "px";
+        box.style.top = Math.min(e.clientY + 16, innerHeight - w.height - 12) + "px";
+      }
+    } else if (!box.contains(el)) {
+      dot.style.opacity = "0";
+      current = null;
+      box.style.display = "none";
+    }
+  }, true);
+
+  window.__agentJoCompanion = { update: load };
+  return true;
+}
+"""
+
+
 class PlaywrightDriver:
     """A visible Chromium with a persistent profile, so logins survive."""
 
@@ -401,15 +668,37 @@ class PlaywrightDriver:
         self._ctx = None
 
     def open(self, url: str):
+        """Open a page, launching the browser only the first time.
+
+        This launched a whole browser on every call. A cycle fetches every
+        source in turn, so ten sources meant ten browsers against one profile
+        — which Chromium turns into a heap of blank tabs, one real page among
+        them. The browser is launched once per driver and the pages are
+        reused.
+        """
         from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        self._ctx = self._pw.chromium.launch_persistent_context(
-            str(profile_dir()), headless=self.headless,
-            viewport={"width": 1280, "height": 900},
-            accept_downloads=True)
-        page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        if self._ctx is None:
+            self._pw = sync_playwright().start()
+            self._ctx = self._pw.chromium.launch_persistent_context(
+                str(profile_dir()), headless=self.headless,
+                viewport={"width": 1280, "height": 900},
+                accept_downloads=True)
+        # the context always starts with one blank page — use it rather than
+        # leaving it behind and adding another
+        blank = [p for p in self._ctx.pages if p.url in ("", "about:blank")]
+        page = blank[0] if blank else self._ctx.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         return page
+
+    def close_page(self, page) -> None:
+        """Done with one page; the browser stays for the next URL."""
+        try:
+            if page and len(self._ctx.pages) > 1:
+                page.close()
+            elif page:
+                page.goto("about:blank")       # keep one, so nothing reopens
+        except Exception:
+            pass
 
     def fields(self, page) -> list:
         """Every visible control, with its label — matching on meaning needs
@@ -470,6 +759,14 @@ class PlaywrightDriver:
             except Exception:
                 continue
         return False
+
+    def companion(self, page, hints: list) -> bool:
+        """Put the companion in the page. Never fatal: a form you can't be
+        helped on is still a form you can fill."""
+        try:
+            return bool(page.evaluate(_COMPANION_JS, hints))
+        except Exception:
+            return False
 
     def shot(self, page, name: str) -> str:
         path = _dir() / f"{name}.png"
@@ -560,6 +857,120 @@ def _wait_for_person(key: str, driver, page, state: str,
     return False
 
 
+def start_sign_in(url: str, label: str = "") -> dict:
+    """Open a site so you can sign in once, and keep the session.
+
+    Expert marketplaces publish nothing until you're signed in. The browser
+    runs on a profile that persists, so signing in here is remembered for
+    every later fetch and application — this is the difference between a
+    source that can never return anything and one that works.
+    """
+    key = "signin:" + _site_of(url)
+    with _sessions_lock:
+        if (_sessions.get(key) or {}).get("state") in (RUNNING, WAITING):
+            return dict(_sessions[key])
+        _sessions[key] = {"state": RUNNING, "at": _iso(), "key": key,
+                          "title": label or _site_of(url)}
+
+    def _run():
+        driver = acquire_driver(headless=False)
+        try:
+            page = driver.open(normalise_url_safe(url))
+            _set_session(key, state=WAITING, blocked_by=NEEDS_LOGIN,
+                         message=("Sign in on the window that just opened. "
+                                  "Press Done when you're in — the session is "
+                                  "kept for later fetches."),
+                         resume=False, cancel=False)
+            deadline = time.time() + 900
+            while time.time() < deadline:
+                s = session(key)
+                if s.get("cancel"):
+                    _set_session(key, state=CANCELLED, done=True,
+                                 message="Left as it was.")
+                    return
+                if s.get("resume"):
+                    break
+                time.sleep(2)
+            _set_session(key, state=FILLED, done=True,
+                         message=(f"Signed in to {_site_of(url)}. The browser "
+                                  f"keeps it, so fetches and applications "
+                                  f"will use it."))
+        except Exception as exc:
+            _set_session(key, state=FAILED, done=True,
+                         message=_explain_portal_error(exc))
+        finally:
+            # give the browser back rather than closing it: a fetch or an
+            # application may be using the same one, and closing the profile
+            # from under them is what produced "already in use"
+            release_driver(close=False)
+
+    threading.Thread(target=_run, daemon=True, name=f"signin-{key}").start()
+    return session(key)
+
+
+def normalise_url_safe(url: str) -> str:
+    u = (url or "").strip()
+    return u if u.startswith(("http://", "https://")) else "https://" + u
+
+
+def _open_with_help(role: dict, profile_data: dict, key: str,
+                    brain=None, model=None) -> dict:
+    driver = acquire_driver(headless=False)
+    url = normalise_url_safe(str((role or {}).get("url") or ""))
+    try:
+        page = driver.open(url)
+        fields = driver.fields(page)
+        p = plan(role, profile_data, fields)
+        answers = []
+        if p["unknown_required"]:
+            answers = answer_questions(role, profile_data,
+                                       p["unknown_required"], brain, model)
+        hints = companion_hints(p["fill"], answers, fields)
+        ok = _offer_companion(driver, page, hints)
+        _set_session(key, state=FILLED, done=True, url=url,
+                     answers=answers, companion=ok,
+                     paste_pack=paste_pack(answers, p["fill"]),
+                     site=site_brief(url),
+                     message=("The form is open with the helper in it — hover "
+                              "any field to see what to put there. Nothing "
+                              "was filled in or sent."
+                              if ok else
+                              "The form is open. The helper couldn't load in "
+                              "this page, so use the answers below."))
+        remember_site(url, ats=detect_ats(url, driver.html(page)),
+                      state="helper", fields=fields,
+                      questions=p["unknown_required"])
+    except Exception as exc:
+        _set_session(key, state=FAILED, done=True,
+                     message=_explain_portal_error(exc))
+    # the window stays open — you are about to work in it — but the browser
+    # is handed back so nothing else has to launch a second one
+    release_driver(close=False)
+    return session(key)
+
+
+def start_helper(role: dict, profile_data: dict, *, brain=None,
+                 model=None) -> dict:
+    """Open a role's form with the companion in it, and fill in nothing.
+
+    The companion only exists in a window this app opened — it is injected
+    into that page. Browsing a form in your own browser will never show it,
+    which is the commonest reason for "I can't see it". This opens the form
+    the way the app can help with.
+    """
+    key = "help:" + str((role or {}).get("key") or "role")
+    with _sessions_lock:
+        if (_sessions.get(key) or {}).get("state") == RUNNING:
+            return dict(_sessions[key])
+        _sessions[key] = {"state": RUNNING, "at": _iso(), "key": key,
+                          "title": (role or {}).get("title", "")}
+    threading.Thread(
+        target=_open_with_help, daemon=True, name=f"help-{key}",
+        args=(role, profile_data, key), kwargs={"brain": brain,
+                                                "model": model}).start()
+    return session(key)
+
+
 def start_apply(role: dict, profile_data: dict, *, submit: bool = False,
                 brain=None, model=None) -> dict:
     """Begin a portal application in the background and return at once.
@@ -592,6 +1003,153 @@ def start_apply(role: dict, profile_data: dict, *, submit: bool = False,
     return session(key)
 
 
+class ThreadBoundDriver:
+    """The browser, owned by one thread and driven from any.
+
+    Playwright's synchronous objects belong to the thread that created them —
+    touching them from another gives "cannot switch to a different thread
+    (which happens to have exited)". Sharing one browser across the app was
+    right; sharing it across threads is not. So the browser lives on a thread
+    of its own and every call is posted to it, which keeps one browser and
+    one profile while fetching, applying and the helper each run where they
+    like.
+    """
+
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+        self._real = None
+        self._jobs: "queue.Queue" = queue.Queue()
+        self._thread = threading.Thread(target=self._serve, daemon=True,
+                                        name="browser")
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            fn, box = job
+            try:
+                box["value"] = fn()
+            except BaseException as exc:        # noqa: BLE001 — relayed below
+                box["error"] = exc
+            finally:
+                box["done"].set()
+
+    def _call(self, fn, timeout: float = 180.0):
+        if threading.current_thread() is self._thread:
+            return fn()                        # already on the owner thread
+        box = {"done": threading.Event()}
+        self._jobs.put((fn, box))
+        if not box["done"].wait(timeout):
+            raise TimeoutError("the browser didn't answer in time")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def _ensure(self):
+        if self._real is None:
+            self._real = PlaywrightDriver(headless=self.headless)
+        return self._real
+
+    # every method the app uses, posted to the owner thread
+    def open(self, url):
+        return self._call(lambda: self._ensure().open(url))
+
+    def fields(self, page):
+        return self._call(lambda: self._ensure().fields(page))
+
+    def html(self, page):
+        return self._call(lambda: self._ensure().html(page))
+
+    def fill(self, page, item):
+        return self._call(lambda: self._ensure().fill(page, item))
+
+    def submit(self, page):
+        return self._call(lambda: self._ensure().submit(page))
+
+    def shot(self, page, name):
+        return self._call(lambda: self._ensure().shot(page, name))
+
+    def companion(self, page, hints):
+        return self._call(lambda: self._ensure().companion(page, hints))
+
+    def close_page(self, page):
+        return self._call(lambda: self._ensure().close_page(page))
+
+    def close(self, keep_open: bool = True):
+        def _shut():
+            if self._real is not None:
+                self._real.close(keep_open=keep_open)
+                if not keep_open:
+                    self._real = None
+        try:
+            self._call(_shut, timeout=60)
+        finally:
+            if not keep_open:
+                self._jobs.put(None)           # let the owner thread finish
+
+    @property
+    def _ctx(self):
+        return getattr(self._real, "_ctx", None)
+
+
+# One browser for the whole application, borrowed and returned.
+#
+# Chromium allows a profile to be open once. Fetching a source, applying to a
+# role and opening a form with help each launched their own against the same
+# profile, so the second was refused — "Opening in existing browser session…
+# the profile is already in use" — and the page it wanted ended up as a blank
+# tab in the first browser. Logins live in that profile, so separate profiles
+# are not an answer: one instance is.
+_SHARED: dict = {"driver": None, "uses": 0, "headless": True}
+_SHARED_LOCK = threading.RLock()
+
+
+def acquire_driver(headless: bool | None = None):
+    """Borrow the browser. Launches it if nobody has it yet."""
+    with _SHARED_LOCK:
+        if DRIVER is not None:
+            return DRIVER                      # a test supplied its own
+        if _SHARED["driver"] is None:
+            _SHARED["driver"] = ThreadBoundDriver(
+                headless=bool(_SHARED["headless"] if headless is None
+                              else headless))
+            _SHARED["uses"] = 0
+        elif headless is False and _SHARED["headless"]:
+            # somebody now needs to see it; the window is already there, so
+            # it stays as it is rather than fighting over the profile
+            pass
+        _SHARED["uses"] += 1
+        return _SHARED["driver"]
+
+
+def release_driver(close: bool = False) -> None:
+    """Give it back. Closes only when nobody else is using it."""
+    with _SHARED_LOCK:
+        if DRIVER is not None:
+            # a supplied driver still hears that the session ended — it owns
+            # its own lifecycle, and silently skipping this left it open
+            try:
+                DRIVER.close(keep_open=not close)
+            except Exception:
+                pass
+            return
+        _SHARED["uses"] = max(0, _SHARED["uses"] - 1)
+        if close and _SHARED["uses"] == 0 and _SHARED["driver"] is not None:
+            try:
+                _SHARED["driver"].close(keep_open=False)
+            except Exception:
+                pass
+            _SHARED["driver"] = None
+
+
+def set_browser_visible(visible: bool) -> None:
+    """Applications need a window you can see; fetching doesn't."""
+    with _SHARED_LOCK:
+        _SHARED["headless"] = not visible
+
+
 def _explain_portal_error(exc: Exception) -> str:
     """Say what to do, not what the library printed.
 
@@ -610,6 +1168,10 @@ def _explain_portal_error(exc: Exception) -> str:
                 "folder run:  .venv\\Scripts\\python -m playwright install "
                 "chromium  (macOS/Linux: .venv/bin/python -m playwright "
                 "install chromium)")
+    if "already in use" in low or "existing browser session" in low:
+        return ("Another browser is already using Agent Jo's profile. Close "
+                "any Chromium window the app opened and try again — if it "
+                "keeps happening, restart the app.")
     if "async api" in low:
         return ("The browser was started from the wrong thread — this is a "
                 "fault in the app, not your setup. Please report it.")
@@ -666,7 +1228,7 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                             " — portal forms ask for these every time."),
                 "missing": ready["missing"]}
 
-    driver = DRIVER or PlaywrightDriver(headless=headless)
+    driver = acquire_driver(headless=headless)
     result = {"ok": False, "state": FAILED, "url": url,
               "role": role.get("title", "")}
     page = None
@@ -681,6 +1243,9 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
             # A sign-in or a captcha used to end it. The browser is open on
             # this machine, so it asks for you and carries on afterwards.
             if wait and session_key:
+                # you are about to work in this page yourself
+                _offer_companion(driver, page, companion_hints(
+                    [], [], driver.fields(page)))
                 if not _wait_for_person(session_key, driver, page, blocked):
                     result.update({"state": blocked,
                                    "message": handover_message(blocked),
@@ -699,6 +1264,11 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                 return result
 
         fields = driver.fields(page)
+        result["site"] = site_brief(url)       # what this site took last time
+        # in the page from the start: it was only injected at hand-over, so
+        # it appeared at the end of a session or not at all. If you are ever
+        # looking at this window, it should be there.
+        _offer_companion(driver, page, companion_hints([], [], fields))
         p = plan(role, profile_data, fields)
         result["plan"] = {"fill": len(p["fill"]), "missing": p["missing"],
                           "sensitive": p["sensitive"],
@@ -732,6 +1302,9 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
         if not p["can_complete"]:
             # even when it can't finish, hand over what it worked out
             result["paste_pack"] = paste_pack(answers, p["fill"])
+            # it can't finish, so it helps you finish: hover any field
+            result["companion"] = _offer_companion(
+                driver, page, companion_hints(p["fill"], answers, fields))
             detail = ", ".join(
                 [m["label"] for m in p["missing"]] + p["unknown_required"])
             state = NEEDS_ANSWER if p["missing"] else UNKNOWN_FORM
@@ -761,6 +1334,8 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
             return result
 
         if not submit:
+            result["companion"] = _offer_companion(driver, page, companion_hints(
+                p["fill"], result.get("answers") or [], fields))
             result.update({"ok": True, "state": FILLED,
                            "message": ("Filled in and left for you to read. "
                                        "Press submit in the browser when "
@@ -806,5 +1381,22 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
         log(result)
         return result
     finally:
-        # keep the window open unless it actually submitted
-        driver.close(keep_open=result.get("state") != SUBMITTED)
+        # every attempt teaches the app something about this site, however it
+        # ended — which system runs the form, whether it wanted a sign-in,
+        # what it asks. The next application starts knowing it.
+        try:
+            remember_site(url, ats=result.get("ats", ""),
+                          state=result.get("state", ""),
+                          fields=locals().get("fields") or [],
+                          questions=[a["question"] for a
+                                     in (result.get("answers") or [])],
+                          filled=(locals().get("p") or {}).get("fill"),
+                          blocked=result.get("waited_for_you")
+                                  or (result.get("state") if
+                                      result.get("state") in
+                                      (NEEDS_LOGIN, NEEDS_CAPTCHA) else ""))
+        except Exception:
+            pass
+        # hand it back; it closes when nobody else is using it and the
+        # application actually went through
+        release_driver(close=(result.get("state") == SUBMITTED))

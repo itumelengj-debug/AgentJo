@@ -4817,3 +4817,215 @@ you and moves on; only a session you started yourself will sit and wait.
 > a browser request is never held open for minutes. That moved where the
 > outcome is recorded: the request that starts it returns immediately, so the
 > role is marked applied when the session actually finishes.
+
+
+### 136. It learns each site, and helps you inside the form
+
+**Every application teaches it the site.** Which system runs the form, whether
+it wanted a sign-in or threw a captcha, which fields it asks for, and which
+questions come up again — recorded per host, however the attempt ended. The
+next application to the same site starts knowing it, and the Auto-apply view
+lists what each one takes:
+
+> jobs.acme.com — 2× — greenhouse — sign in → attach your CV → answer 2
+> question(s) → submit
+
+**And a companion inside the form.** Automation never finishes every form, and
+the moment it stops you are alone in a page of boxes holding answers the app
+already worked out. So it puts a small companion in the page: hover any field
+and it shows what to type there, with **Fill this** and **Copy**.
+
+- an answer from your profile is offered plainly;
+- one that was **held** says so, so you can't paste it without noticing;
+- a field it can't answer says "not in your profile — type it yourself"
+  rather than guessing.
+
+It appears wherever you are left to finish: a form it couldn't complete, a
+rehearsal left for you to check, and while it waits for you at a sign-in.
+Verified in a real browser against a real form — hovering showed the answer,
+**Fill this** typed it, and an unknown field admitted it.
+
+> Caught by an older test: a driver without the companion method made the
+> whole application fail. Help inside a form is a nicety; failing to offer it
+> must never fail an application. It's offered defensively now, and the result
+> says whether it was actually there.
+
+
+### 137. "Nothing has really changed"
+
+Reported twice, the second time with "the engines tab is gone" — which was the
+clue. A missing tab isn't a stale script; it's a stale **page**.
+
+Agent Jo Jobs served its page with an ordinary cacheable response and linked
+its stylesheet and script by plain name. So a browser kept yesterday's HTML —
+no Engines tab, because that tab is in the HTML — and yesterday's script.
+Agent Jo has stamped its assets with the build for months; the Jobs app never
+did. Two builds of work were sitting on the machine, unused.
+
+- the page is served **no-store**, so it is never a cached copy;
+- each build asks for **its own files**: `jobs.css?v=<build>`;
+- and if a page from an older build is somehow still open, it says so rather
+  than looking merely broken.
+
+Verified in a browser: a new build changed the stylesheet, and an **ordinary
+reload** picked it up — no Ctrl+F5.
+
+> Worth saying plainly: I asked you to press Ctrl+F5 three times across this
+> work. That was treating a symptom, and it hid finished features behind a
+> cache.
+
+
+### 138. Sites that publish nothing machine-readable
+
+A source stuck on "pending" for ever — an HTML page saved as an RSS feed. The
+feed parser threw, returned an empty list, and said nothing; and nothing
+recorded a check, so it never even became "failing". Three silent failures in
+a row, and micro1 is only the example: expert marketplaces publish no feed at
+all, drawing their listings with JavaScript, often only once you're signed in.
+
+- **A page handed to a feed parser now says so**: "that address returns a web
+  page, not a rss feed. Change this source to 'browser'…"
+- **Every fetch records a check.** It was recorded only by a keyword search,
+  so a source touched only by the daily run stayed "pending" whatever
+  happened to it.
+- **A `browser` source kind**: the page is rendered in the real browser, so
+  JavaScript-drawn listings are read like a real visit. Proved against a page
+  whose jobs only exist after its script runs.
+- **Sign in once, and it's kept.** The browser runs on a profile that
+  persists — the same one portal applications use — so a marketplace that
+  shows nothing until you're signed in works from then on, for fetching and
+  for applying. The Sources view offers **Use a browser** and **Sign in** on
+  the row.
+
+> And the switch itself was reporting a lie: "use a browser" called
+> `add_job_source`, which doesn't change an existing source. It said it had
+> switched and changed nothing. It changes it in place now, and an unknown
+> source fails rather than succeeding quietly.
+
+
+### 139. One browser, not one per source
+
+Reported with a screenshot: running a cycle opened a row of browser tabs, all
+blank but the first.
+
+`open()` launched a whole browser on **every call**, and every source fetch
+called it. Ten sources meant ten browsers against one profile — which
+Chromium turns into a heap of tabs, one real page among them. It also threw
+away the blank page a persistent context always starts with and opened
+another beside it.
+
+- the browser launches **once per driver** and pages are reused;
+- the blank first tab is used rather than left behind;
+- a pass over the sources opens **one** browser, and only if a source actually
+  needs one;
+- each page is closed when its fetch is done, and the browser when the pass
+  ends.
+
+Measured: four browser sources, **one** browser launched, every role still
+found, and nothing left open.
+
+> Twice while fixing this an edit landed in a look-alike loop in another
+> function — same three lines, different job — and the "fix" changed nothing.
+> The third attempt located the function by line range and inserted inside it.
+> Worth remembering: a search-and-replace across a large file is a guess
+> unless the match is unique.
+
+
+### 140. The cycle had its own copy of the loop
+
+Still opening a browser per source after the last fix — because **`discover`,
+which is what "Run a full cycle" calls, had its own copy of the fetch loop**.
+The search path was fixed; the cycle kept its old behaviour.
+
+That copy was worse than a duplicate: it fetched every source over plain HTTP
+whatever its kind, so a **browser** source never rendered there at all, and it
+left the browser it opened running.
+
+`discover` now uses the one fetch. A pass over six browser sources launches
+**one** browser, opens six pages, and closes it — measured.
+
+> **A check now fails the build if a second fetch loop appears.** This is the
+> third time an edit has gone into a look-alike loop, and twice the "fix"
+> changed nothing while looking correct. The duplicate was the bug; removing
+> it is the fix, and the check keeps it removed.
+>
+> Counts also followed the roles' own source labels rather than the sources
+> you added, so six sources could report seven. They follow the configured
+> sources now.
+
+
+### 141. Reaching the companion
+
+Reported: "I browse forms without that feature appearing."
+
+It never could. The companion is **injected into a page**, so it exists only
+in a window this app opened — a form you open in your own Chrome or Edge is
+beyond its reach. Worse, even in the app's own window it was injected only at
+hand-over, so it appeared at the end of a session or not at all.
+
+- **It's in the page from the moment the form is read**, not at the end.
+- **"Open the form with help"** on any role: opens the advert in the app's
+  browser with the companion in it, works out the answers, and **fills in
+  nothing and sends nothing**. That is the way to browse a form with help.
+- The window stays open — you're about to work in it.
+
+Verified end to end: the session reports the companion present, with nothing
+filled and nothing sent.
+
+> "Open the posting" still opens your own browser, and never has help in it —
+> two buttons, two different things, and the difference is which browser opens.
+
+
+### 142. One browser for the whole app
+
+Reported with the error itself: *"Opening in existing browser session… the
+profile is already in use by another instance of Chromium."*
+
+Chromium allows a profile to be open **once**. Fetching a source, applying to
+a role, signing in and opening a form with help each launched their own
+against the same profile — so the second was refused, its page arrived as a
+blank tab in the first browser, and the form failed. Sharing one browser
+within a fetch pass, as the last build did, was not enough: the cycle and the
+application are different callers.
+
+Logins live in that profile, so separate profiles are no answer. There is now
+**one browser for the whole application**, borrowed and returned:
+
+- nothing creates its own any more — five places did;
+- it launches on first use and closes when the last user lets go;
+- a caller that finishes hands it back rather than closing it under whoever
+  else is mid-page;
+- and that error, if it ever appears again, says what it means: another
+  window is using Agent Jo's profile — close it, or restart the app.
+
+Measured: four callers at once, **one** browser, closed only when the last
+released it.
+
+> Two older checks had been passing for the wrong reason — a browser left
+> standing by an earlier block meant "no new launch" was true without the fix.
+> Both now start from none. And a test that called the portal from inside an
+> event loop broke once the suite happened to have one running; it makes its
+> own loop on its own thread, which is what a chat turn does anyway.
+
+
+### 143. The browser belongs to one thread
+
+Reported: *"cannot switch to a different thread (which happens to have
+exited)"* when opening some jobs.
+
+Playwright's synchronous objects belong to the thread that created them. Last
+build gave the app **one** browser — correctly, since Chromium allows a
+profile to be open once — but it is reached from several threads: the fetch
+pass, an application, the helper, a sign-in. Sharing the browser was right;
+sharing it across threads was the bug, and it replaced one error with another.
+
+The browser now lives on a thread of its own and every call — open, read the
+fields, fill, submit, screenshot, the companion — is posted to it and waited
+for. One browser, one profile, one owner. Measured: four threads driving it
+at once, no error, and exactly one place in the code may construct it.
+
+**And the window uses the window.** Views were capped at 1240px, so a wide
+monitor showed a column of content with a dead strip beside it. The cap is
+gone; the grids add columns as the window widens, and only prose keeps a
+readable measure. At 1920px the content now reaches 1688 of 1724px, where it
+used to stop at 1240.

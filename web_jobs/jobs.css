@@ -1122,4 +1122,26 @@ body { font-size: 13px; }
 }
 @media (prefers-reduced-motion: reduce) { .portal-waiting { animation: none; } }
 
+.site-row { padding: 9px 0; border-bottom: 1px solid var(--rule-soft); }
+.site-row:last-child { border-bottom: 0; }
+.site-head { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; }
+.site-name { font-weight: 650; font-size: 13.5px; }
+.site-steps { font-size: 12.5px; color: var(--accent); margin: 3px 0 2px; }
+
+/* --- use the whole window ----------------------------------------------- */
+/* The views were capped at 1240px, so a wide monitor showed a column of
+   content and a dead strip beside it. The cap goes; the grids add columns
+   instead, and only the prose keeps a readable measure. */
+.view { max-width: none; }
+.view > .hero .lede, .page-head .lede { max-width: 72ch; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.role-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.claim-layout { grid-template-columns: minmax(0, 1.3fr) minmax(300px, 1fr); }
+/* the split views already fill; keep their list from stretching too far */
+.view-split.is-on { grid-template-columns: minmax(340px, 460px) minmax(0, 1fr); }
+/* on a very wide screen the tail of a page shouldn't float in space */
+.main { min-height: 100%; }
+
 [hidden] { display: none !important; }

@@ -542,11 +542,12 @@ async function copyText(text, btn) {
 // It can stop mid-way and ask for you — a sign-in page, a captcha. The
 // browser is open on this machine, so the useful thing is to say so and wait,
 // then carry on from where it stopped.
-function followPortal(r) {
+function followPortal(r, key) {
   if (S._portalTimer) clearInterval(S._portalTimer);
+  const id = key || r.key;
   const tick = async () => {
     let s;
-    try { s = await api(`/api/jobs/portal/session/${encodeURIComponent(r.key)}`); }
+    try { s = await api(`/api/jobs/portal/session/${encodeURIComponent(id)}`); }
     catch (e) { return; }
     if (s.state === "waiting_for_you") {
       showPortalWaiting(s, r);
@@ -792,6 +793,14 @@ function openRole(r) {
   ]);
 
   group("Apply", [
+    // the companion lives in a window this app opens — it can't appear in
+    // your own browser, which is the usual reason for "I can't see it"
+    ["Open the form with help", async (btn) => busy(btn, "Opening…", async () => {
+      const x = await api("/api/jobs/portal/helper",
+                          withEngine({ key: r.key }));
+      followPortal(r, "help:" + r.key);
+      toast("Opening the form with the helper in it — hover any field.");
+    })],
     ["Apply via the portal (rehearse)", async (btn) => busy(btn, "Opening…", async () => {
       await api("/api/jobs/portal", withEngine({ key: r.key, submit: false }));
       followPortal(r);
@@ -1217,6 +1226,28 @@ LOADERS.sources = async function () {
       : "Not checked yet";
     row.appendChild(badge);
     const acts = el("div", "src-acts");
+    // sites that draw their listings with JavaScript, or only show them once
+    // you're signed in, need a real browser — and a session
+    if (s.kind !== "browser") {
+      const conv = el("button", "btn sm", "Use a browser");
+      conv.title = "Render this page like a real visit — needed when the "
+        + "listings are drawn by JavaScript or only appear once you're signed in";
+      conv.addEventListener("click", () => busy(conv, "Switching…", async () => {
+        await api("/api/jobs/sources/kind", { name: s.name });
+        toast(`${s.name} will be fetched with a real browser.`);
+        LOADERS.sources();
+      }));
+      acts.appendChild(conv);
+    } else {
+      const si = el("button", "btn sm", "Sign in");
+      si.title = "Open this site so you can sign in once — the browser keeps "
+        + "the session for later fetches and applications";
+      si.addEventListener("click", () => busy(si, "Opening…", async () => {
+        await api("/api/jobs/sources/signin", { name: s.name });
+        followSignIn(s);
+      }));
+      acts.appendChild(si);
+    }
     const tog = el("button", "btn sm", s.on === false ? "Resume" : "Pause");
     tog.addEventListener("click", () => busy(tog, "…", async () => {
       await api("/api/jobs/sources", { name: s.name, on: s.on === false });
@@ -1367,6 +1398,32 @@ async function refreshEnginePicker() {
     sel.value = (m.engines || []).includes(was) ? was : (m.default_engine || "Auto");
     S.engine = sel.value;
   } catch (e) { /* the picker keeps what it had */ }
+}
+
+// signing in is the same shape as a captcha: it opens, waits for you, and
+// keeps what you did
+function followSignIn(s) {
+  const host = $("#srcList");
+  const box = el("div", "ready is-blocked signin-box");
+  box.appendChild(el("div", "ready-head", `Sign in to ${s.name}`));
+  const msg = el("p", "", "A window is opening. Sign in there, then press Done.");
+  box.appendChild(msg);
+  const bar = el("div", "actions");
+  const done = el("button", "btn primary sm", "Done — I'm signed in");
+  const stop = el("button", "btn sm ghost", "Cancel");
+  bar.append(done, stop);
+  box.appendChild(bar);
+  host.parentNode.insertBefore(box, host);
+  const key = "signin:" + (s.url || "").replace(/^https?:\/\//, "")
+    .replace("www.", "").split("/")[0];
+  const finish = async (what) => {
+    await api(`/api/jobs/portal/${what}`, { key });
+    box.remove();
+    if (what === "continue") toast(`Signed in to ${s.name} — the browser keeps it.`);
+    LOADERS.sources();
+  };
+  done.addEventListener("click", () => busy(done, "Saving…", () => finish("continue")));
+  stop.addEventListener("click", () => busy(stop, "…", () => finish("cancel")));
 }
 
 /* --- results ----------------------------------------------------------- */
@@ -1683,7 +1740,19 @@ async function boot() {
     const m = await api("/api/meta", undefined, "GET");
     $("#railSub").textContent = `by ${m.brand || "Symbolic Synapse"}`;
     S.profileReady = !!m.profile_ready;
+    // the build the SERVER is running, beside the one this page was built
+    // from — when they differ, the page is a cached copy and says so
     $("#build").textContent = m.build ? `build ${m.build}` : "";
+    const stamped = (document.querySelector("link[rel=stylesheet]")
+      || {}).getAttribute
+      ? (document.querySelector("link[rel=stylesheet]").getAttribute("href") || "")
+      : "";
+    const v = (stamped.split("v=")[1] || "").trim();
+    const live = String(m.build || "").replace(/[ :]/g, "");
+    if (v && live && v !== live) {
+      toast("This page is an old copy — reload it (Ctrl+F5) to get "
+            + `build ${m.build}.`, "warn");
+    }
     const sel = $("#engine");
     sel.innerHTML = "";
     ["Auto"].concat(m.engines || []).forEach((n) => {
@@ -1739,9 +1808,39 @@ function wireRemaining() {
   }));
 }
 
+async function drawSites() {
+  const host = $("#portalSites");
+  if (!host) return;
+  host.innerHTML = "";
+  let sites = [];
+  try { sites = (await api("/api/jobs/portal/sites")).sites || []; }
+  catch (e) { return; }
+  if (!sites.length) {
+    host.appendChild(el("p", "muted",
+      "Nothing yet — it learns a site the first time you apply through it."));
+    return;
+  }
+  sites.slice(0, 6).forEach((s) => {
+    const row = el("div", "site-row");
+    const head = el("div", "site-head");
+    head.append(el("span", "site-name", s.site),
+                el("span", "muted", `${s.seen}×${s.ats ? " · " + s.ats : ""}`));
+    row.appendChild(head);
+    if (s.steps && s.steps.length) {
+      row.appendChild(el("div", "site-steps", s.steps.join("  →  ")));
+    }
+    if (s.questions && s.questions.length) {
+      row.appendChild(el("div", "muted",
+        "asks: " + s.questions.slice(0, 3).join("; ")));
+    }
+    host.appendChild(row);
+  });
+}
+
 const _prevAuto = LOADERS.auto;
 LOADERS.auto = async function () {
   await _prevAuto();
+  drawSites();
   const host = $("#portalHistory");
   host.innerHTML = "";
   try {

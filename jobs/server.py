@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fastapi import FastAPI, HTTPException, Request           # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse      # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse      # noqa: E402
 from fastapi.staticfiles import StaticFiles                   # noqa: E402
 from pydantic import BaseModel                                # noqa: E402
 
@@ -185,7 +185,20 @@ async def _no_engine(request: Request, exc: EngineNotConfigured):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    """The page, with its own build stamped onto the asset links.
+
+    Twice now an update looked like "nothing changed": the server had the new
+    files and the browser kept serving yesterday's stylesheet and script from
+    its cache. Asking someone to press Ctrl+F5 is not a fix. Each build asks
+    for its own files by name, so a stale copy can't be used, and the page
+    itself is never cached.
+    """
+    html = (STATIC / "index.html").read_text("utf-8")
+    v = str(config.BUILD_ID).replace(" ", "").replace(":", "")
+    html = html.replace("/static/jobs.css", f"/static/jobs.css?v={v}")
+    html = html.replace("/static/jobs.js", f"/static/jobs.js?v={v}")
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/api/meta")
@@ -328,6 +341,22 @@ def jobs_portal(body: PortalApplyBody):
     return res
 
 
+@app.post("/api/jobs/portal/helper")
+def jobs_portal_helper(body: PortalApplyBody):
+    """Open this role's form with the companion in it. Fills nothing, sends
+    nothing — it is there to help you fill it yourself."""
+    role = jobscout.get_role(body.key)
+    if role is None:
+        raise HTTPException(status_code=404, detail="no such role")
+    if not str(role.get("url") or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="that role has no advert link to open")
+    model, why = _trend_model(getattr(body, "engine", "") or "")
+    return portal.start_helper(role, jobscout.profile(),
+                               brain=(None if why else get_brain_or_none()),
+                               model=(None if why else model))
+
+
 @app.get("/api/jobs/portal/session/{key}")
 def jobs_portal_session(key: str):
     """Where a running application has got to — including waiting for you.
@@ -354,6 +383,22 @@ def jobs_portal_continue(body: PortalApplyBody):
 @app.post("/api/jobs/portal/cancel")
 def jobs_portal_cancel(body: PortalApplyBody):
     return portal.session_cancel(body.key)
+
+
+@app.get("/api/jobs/portal/sites")
+def jobs_portal_sites():
+    """What applying through each site has taken — learned by doing it."""
+    rec = portal.recipes()
+    out = []
+    for site, r in sorted(rec.items(), key=lambda kv: -kv[1].get("seen", 0)):
+        qs = sorted((r.get("questions") or {}).items(), key=lambda kv: -kv[1])
+        out.append({"site": site, "seen": r.get("seen", 0),
+                    "ats": r.get("ats", ""), "steps": r.get("steps", []),
+                    "blocks": r.get("blocks", []),
+                    "questions": [q for q, _ in qs[:8]],
+                    "last_state": r.get("last_state", ""),
+                    "last_at": r.get("last_at", "")})
+    return {"sites": out}
 
 
 @app.get("/api/jobs/portal/history")
@@ -474,6 +519,36 @@ def jobs_sources_add(body: JobsSourceBody):
 class JobsSourceRemoveBody(BaseModel):
     name: str = ""
     url: str = ""
+
+
+class SourceSignInBody(BaseModel):
+    name: str = ""
+    url: str = ""
+
+
+@app.post("/api/jobs/sources/signin")
+def jobs_source_signin(body: SourceSignInBody):
+    """Open a site so you can sign in once; the browser keeps the session."""
+    url = body.url
+    if not url and body.name:
+        for s2 in jobscout.job_sources():
+            if s2.get("name") == body.name:
+                url = s2.get("url", "")
+                break
+    if not url:
+        raise HTTPException(status_code=400, detail="no address for that source")
+    return portal.start_sign_in(url, body.name)
+
+
+@app.post("/api/jobs/sources/kind")
+def jobs_source_kind(body: SourceSignInBody):
+    """Switch a source to the real-browser fetch — what a JavaScript page or a
+    signed-in marketplace needs."""
+    r = jobscout.set_source_kind(body.name, "browser")
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r.get("error", "no such source"))
+    return {"ok": True, "detail": r,
+            "sources": jobscout.source_status()["sources"]}
 
 
 @app.post("/api/jobs/sources/remove")

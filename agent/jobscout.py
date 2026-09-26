@@ -976,6 +976,26 @@ def _fetch_source(url: str) -> str:
     raise last
 
 
+_BATCH: dict = {}
+
+
+def open_fetch_batch() -> None:
+    """Use one browser for a whole pass over the sources."""
+    from . import portal
+    if _BATCH.get("driver") is None and portal.DRIVER is None:
+        _BATCH["driver"] = portal.acquire_driver(headless=True)
+
+
+def close_fetch_batch() -> None:
+    from . import portal
+    d = _BATCH.pop("driver", None)
+    if d is not None:
+        # returned, not closed: an application or a sign-in may still be in
+        # the same browser, and closing its profile is what made Chromium
+        # refuse the next launch
+        portal.release_driver(close=False)
+
+
 def fetch_with_browser(url: str) -> str:
     """Load the page in the real browser and take what it renders.
 
@@ -984,7 +1004,15 @@ def fetch_with_browser(url: str) -> str:
     run — which is most modern job boards, PNet and Careers24 included."""
     from . import portal
     url = normalise_url(url)
-    driver = portal.DRIVER or portal.PlaywrightDriver(headless=True)
+    # One browser for the whole run, not one per source. Each fetch used to
+    # start and stop its own, which is what filled the screen with windows.
+    driver, ours = portal.DRIVER, False
+    if driver is None:
+        driver = _BATCH.get("driver")
+    if driver is None:
+        driver = portal.acquire_driver(headless=True)
+        ours = True
+    page = None
     try:
         page = driver.open(url)
         try:
@@ -994,9 +1022,11 @@ def fetch_with_browser(url: str) -> str:
         return driver.html(page)
     finally:
         try:
-            driver.close(keep_open=False)
+            driver.close_page(page)
         except Exception:
             pass
+        if ours:
+            portal.release_driver(close=False)
 
 
 def _explain_fetch_error(err: str, url: str = "") -> str:
@@ -1121,8 +1151,29 @@ def _parse_html_kind(text: str) -> list:
 
 _CURRENT_SOURCE_URL = {"url": ""}
 
+def _parse_browser_kind(text: str) -> list:
+    """A page as the browser rendered it, using your own signed-in session.
+
+    Most expert marketplaces — micro1, Outsized, Toptal — publish nothing
+    machine-readable: the listings are drawn by JavaScript, often only after
+    you sign in. Fetching the HTML gets a shell with no jobs in it, and an
+    RSS parser handed that page returns an empty list without complaint,
+    which is how a source sits on "pending" for ever. The same browser
+    profile the portal applications use holds those sessions, so this sees
+    what you would see.
+    """
+    return _parse_html_kind(text)
+
+
 _PARSERS = {"remotive": _parse_remotive, "remoteok": _parse_remoteok,
-            "rss": _parse_jobs_rss, "html": _parse_html_kind}
+            "rss": _parse_jobs_rss, "html": _parse_html_kind,
+            "browser": _parse_browser_kind}
+
+
+def looks_like_html(text: str) -> bool:
+    head = (text or "")[:400].lstrip().lower()
+    return head.startswith("<!doctype html") or head.startswith("<html") \
+        or ("<head" in head and "<title" in head)
 
 
 def _matches_profile(job: dict, p: dict) -> bool:
@@ -1142,15 +1193,19 @@ def _matches_profile(job: dict, p: dict) -> bool:
 def discover(limit: int = 40) -> dict:
     """Pull fresh roles from the configured boards and record the new ones."""
     p = profile()
-    found, errors, per_source = [], [], {}
-    for src in job_sources():
-        if not src.get("on", True):
-            continue
-        name = src.get("name", "?")
+    # One pass over the sources, done by one function. This had its own copy
+    # of the loop — which fetched every source over plain HTTP whatever its
+    # kind, so a "browser" source never rendered here, and it left the
+    # browser it opened running. Two loops doing one job is how a fix lands
+    # in the wrong one: the cycle kept its old behaviour after the search
+    # path was fixed.
+    raw, errors, _raw_per = _fetch_all()
+    found, per_source = [], {}
+    by_source = {}
+    for j in raw:
+        by_source.setdefault(j.get("source", "?"), []).append(j)
+    for name, jobs in by_source.items():
         try:
-            parser = _PARSERS.get(src.get("kind", "rss"), _parse_jobs_rss)
-            _CURRENT_SOURCE_URL["url"] = src["url"]
-            jobs = parser(_fetch_source(src["url"]))
             cfg = {**search_config(), "_use_profile_targets": True}
             # search terms, when set, are a deliberate instruction and beat
             # the looser profile guess
@@ -1170,6 +1225,10 @@ def discover(limit: int = 40) -> dict:
         except Exception as exc:
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
             per_source[name] = 0
+    # the configured sources are the ones to report on: a role can carry a
+    # source label of its own, which would otherwise appear as a seventh
+    # "source" that nobody added
+    per_source = {name: per_source.get(name, 0) for name in _raw_per}
     found = found[:limit]
     res = add_roles(found)
     emails = sum(1 for j in found if j.get("apply_email"))
@@ -1471,6 +1530,12 @@ def _fetch_all(query: str = "") -> tuple[list, list, dict]:
     board supports it, so the filtering happens at their end rather than ours
     where it can."""
     found, errors, per_source = [], [], {}
+    # one browser for the whole pass, and only if a source needs it. Each
+    # fetch used to start its own, so a cycle opened a browser per source —
+    # a screen of blank tabs with one real page among them.
+    if any(s.get("kind") == "browser" and s.get("on", True)
+           for s in job_sources()):
+        open_fetch_batch()
     for src in job_sources():
         if not src.get("on", True):
             continue
@@ -1480,9 +1545,30 @@ def _fetch_all(query: str = "") -> tuple[list, list, dict]:
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}search={query.replace(' ', '+')}"
         try:
-            parser = _PARSERS.get(src.get("kind", "rss"), _parse_jobs_rss)
+            kind = src.get("kind", "rss")
+            parser = _PARSERS.get(kind, _parse_jobs_rss)
             _CURRENT_SOURCE_URL["url"] = url
-            jobs = [j for j in parser(_fetch_source(url)) if j.get("title")]
+            text = (fetch_with_browser(url) if kind == "browser"
+                    else _fetch_source(url))
+            jobs = [j for j in parser(text) if j.get("title")]
+            # A feed parser handed a web page returns nothing and says
+            # nothing — the source then sits on "pending" for ever. Say what
+            # actually arrived, and what to do about it.
+            if not jobs and kind in ("rss", "remotive", "remoteok") \
+                    and looks_like_html(text):
+                errors.append(
+                    f"{name}: that address returns a web page, not a "
+                    f"{kind} feed. Change this source to 'browser' so it is "
+                    f"rendered like a real visit — sites that draw their "
+                    f"listings with JavaScript, or only after you sign in, "
+                    f"need that.")
+                per_source[name] = 0
+                continue
+            if not jobs and kind == "browser":
+                errors.append(
+                    f"{name}: the page rendered but no roles were found in "
+                    f"it. If this site needs a sign-in, use 'Sign in to this "
+                    f"site' once — the browser keeps the session.")
             per_source[name] = len(jobs)
             found.extend(jobs)
         except Exception as exc:
@@ -1490,6 +1576,11 @@ def _fetch_all(query: str = "") -> tuple[list, list, dict]:
                           + _explain_fetch_error(f"{type(exc).__name__}: "
                                                  f"{exc}", url))
             per_source[name] = 0
+    # recorded here, where every path passes. It used to be recorded only by
+    # a keyword search, so a source only ever touched by the daily run stayed
+    # "pending" — never checked, as far as the app could tell.
+    close_fetch_batch()
+    record_source_checks(per_source, errors)
     return found, errors, per_source
 
 
@@ -1545,7 +1636,6 @@ def search(query: str = "", limit: int = 40) -> dict:
         cfg = {**cfg, "queries": [q.strip() for q in
                                   re.split(r"[,;]| OR ", query) if q.strip()]}
     found, errors, per_source = _fetch_all(query)
-    record_source_checks(per_source, errors)
     results, rejected = [], {}
     for j in found:
         keep, why = matches_search(j, cfg)
@@ -1658,6 +1748,26 @@ def repair_sources() -> int:
     if fixed:
         save_job_sources(items)
     return fixed
+
+
+def set_source_kind(name: str, kind: str) -> dict:
+    """Change how a source is fetched, in place.
+
+    Adding it again doesn't change an existing one, so a "switch to browser"
+    that called add_job_source reported success and changed nothing — the
+    worse half of that bug being the cheerful message.
+    """
+    srcs = job_sources()
+    for s in srcs:
+        if s.get("name") == name:
+            s["kind"] = kind
+            try:
+                (_dir() / "sources.json").write_text(
+                    json.dumps(srcs, indent=2), "utf-8")
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)[:200]}
+            return {"ok": True, "name": name, "kind": kind}
+    return {"ok": False, "error": f"no source called {name!r}"}
 
 
 def add_job_source(name: str, url: str, kind: str = "rss") -> dict:
