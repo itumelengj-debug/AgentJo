@@ -1,7 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-look="new">
 <head>
 <meta charset="utf-8" />
+<script>
+  /* the look, chosen in the sidebar: "new" from build 152 on, or "previous".
+     Set before the first paint, so the page never flashes the other one. */
+  try {
+    document.documentElement.setAttribute("data-look",
+      localStorage.getItem("agentjo-look") === "previous" ? "previous" : "new");
+  } catch (e) {}
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Agent Jo Jobs</title>
 <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png" />
@@ -42,6 +50,11 @@
     <div class="rail-foot">
       <label class="rail-label" for="engine">Engine for scoring &amp; drafting</label>
       <select id="engine" class="select"></select>
+      <label class="rail-label" for="lookSel">Look</label>
+      <select id="lookSel" class="select">
+        <option value="new">New</option>
+        <option value="previous">Previous</option>
+      </select>
       <div class="rail-build" id="build"></div>
     </div>
   </aside>

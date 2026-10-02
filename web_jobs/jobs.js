@@ -80,6 +80,46 @@ async function busy(btn, label, fn) {
   }
 }
 
+/* A run scores, drafts and fills forms — minutes of work. It runs on the
+   server now and this follows it, showing where it has got to. Held open as
+   one request, the window gave up first and reported an error while the run
+   carried on: that was much of "hit and miss". */
+async function followRun(btn, path) {
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("is-busy");
+  try {
+    // if a run is already going (the daily one, or another click), this
+    // follows that one rather than starting a second
+    let s = await api(path, withEngine({ background: true }));
+    for (;;) {
+      if (s.state === "done") return s.result || {};
+      if (s.state === "failed") throw new Error(s.error || "The run failed.");
+      const p = s.progress || {};
+      btn.textContent = p.total ? `${p.phase} ${p.done}/${p.total}…`
+                                : `${p.phase || "Working"}…`;
+      btn.title = p.title || "";
+      await new Promise((res) => setTimeout(res, 1500));
+      s = await api("/api/jobs/auto/status", undefined, "GET");
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = was; btn.title = "";
+    btn.classList.remove("is-busy");
+  }
+}
+
+/* the same cause on twelve roles is one message, not twelve toasts */
+function toastErrors(x) {
+  if (x.common_error) { toast(String(x.common_error), "bad"); return; }
+  const groups = Object.entries(x.error_groups || {});
+  if (groups.length) {
+    groups.slice(0, 3).forEach(([why, n]) =>
+      toast(n > 1 ? `${n} roles: ${why}` : String(why), "bad"));
+    return;
+  }
+  (x.errors || []).slice(0, 3).forEach((m) => toast(String(m), "bad"));
+}
+
 // restart a pane's entrance when what it shows changes
 function enterView(node) {
   if (!node || !node.classList) return;
@@ -1080,12 +1120,16 @@ LOADERS.drafts = async function () {
     cl.appendChild(it);
   });
 
-  if (!held.length) {
-    const dd = $("#draftDetail");
+  const dd = $("#draftDetail");
+  // with drafts held and none open, the pane was simply blank
+  if (!held.length || !dd.firstChild || dd.querySelector(".placeholder")) {
     dd.innerHTML = "";
     const p = el("div", "placeholder");
     const i = el("div");
-    i.append(el("b", "", "Nothing to review"), el("div", "", "Held drafts open here."));
+    i.append(el("b", "", held.length ? "Pick a draft" : "Nothing to review"),
+             el("div", "", held.length
+               ? "Read what it claims, then redraft it or let it go."
+               : "Held drafts open here."));
     p.appendChild(i);
     dd.appendChild(p);
   }
@@ -1602,7 +1646,26 @@ LOADERS.profile = async function () {
 };
 
 /* --- wiring ------------------------------------------------------------ */
+/* The look: "new" (build 152 on) or "previous", both kept, chosen here and
+   remembered on this computer. The page applies it before the first paint. */
+function currentLook() {
+  try { return localStorage.getItem("agentjo-look") === "previous" ? "previous" : "new"; }
+  catch (e) { return "new"; }
+}
+function applyLook(choice) {
+  const look = choice === "previous" ? "previous" : "new";
+  try { localStorage.setItem("agentjo-look", look); } catch (e) { /* not saved */ }
+  if (document.documentElement) document.documentElement.setAttribute("data-look", look);
+}
+function wireLook() {
+  const sel = $("#lookSel");
+  if (!sel) return;
+  sel.value = currentLook();
+  sel.addEventListener("change", (e) => applyLook(e.target.value));
+}
+
 async function boot() {
+  wireLook();
   $$(".nav").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
 
   $("#roleFilter").addEventListener("input", (e) => { S.filter = e.target.value; drawRoleList(); });
@@ -1644,8 +1707,11 @@ async function boot() {
   $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
 
   $("#aSave").addEventListener("click", (e) => saveAuto(e.target));
-  $("#aRun").addEventListener("click", (e) => busy(e.target, "Running…", async () => {
-    const x = await api("/api/jobs/auto/run", { engine: S.engine });
+  $("#aRun").addEventListener("click", async (e) => {
+    let x;
+    try { x = await followRun(e.target, "/api/jobs/auto/run"); }
+    catch (err) { toast(err.message, "bad"); return; }
+    if (x.ok === false) { toast(x.error || "The run didn't start.", "bad"); return; }
     toast(x.summary || "Ran once.", (x.sent || []).length ? "" : "warn");
     // a run that sent nothing says why, rather than leaving you guessing
     if (x.why_nothing) await drawReadiness();
@@ -1658,9 +1724,10 @@ async function boot() {
       prepared.forEach((p) => {
         const row = el("div", "ready-row");
         row.append(el("span", "ready-what", `${p.title} — ${p.company || ""}`),
-                   el("span", "ready-fix", p.needs_you && p.needs_you.length
-                      ? "you answer: " + p.needs_you.join("; ")
-                      : `${p.answered} answer(s) filled in`));
+                   el("span", "ready-fix", (p.rehearsal ? "rehearsal, not submitted — " : "")
+                      + (p.needs_you && p.needs_you.length
+                         ? "you answer: " + p.needs_you.join("; ")
+                         : `${p.answered} answer(s) filled in`)));
         box.appendChild(row);
       });
       host.appendChild(box);
@@ -1678,9 +1745,9 @@ async function boot() {
       });
       host.appendChild(box);
     }
-    (x.errors || []).slice(0, 3).forEach((m) => toast(String(m), "bad"));
+    toastErrors(x);
     await refresh(); drawAutoPreview();
-  }));
+  });
   $("#aPilot").addEventListener("click", (e) => busy(e.target, "Setting up…", async () => {
     const x = await api("/api/jobs/autopilot", {});
     toast(x.note || "The daily loop is set up.");
@@ -1689,8 +1756,11 @@ async function boot() {
   $("#aDaily").addEventListener("change", async (e) => {
     try {
       await api("/api/jobs/schedule", { enabled: e.target.checked });
-      toast(e.target.checked ? "Daily scan on — it finds and drafts, never sends by itself."
-                             : "Daily scan off.");
+      // it said "never sends by itself", which was never true: the daily run
+      // sends whatever clears every gate, unless rehearsal is on
+      toast(e.target.checked
+        ? "Daily run on — it finds, scores and drafts, and sends only what clears every gate (nothing while Rehearsal is on)."
+        : "Daily run off.");
     } catch (err) { e.target.checked = !e.target.checked; toast(err.message, "bad"); }
   });
 
@@ -1705,7 +1775,10 @@ async function boot() {
   }));
   $("#srcAuto").addEventListener("click", (e) => busy(e.target, "Checking boards…", async () => {
     const x = await api("/api/jobs/boards/auto", {});
-    toast(`Added ${x.added ?? 0} board(s) that actually return roles.`);
+    // "added" is a list; read as a number it toasted "Added  board(s)" and
+    // never said what was tried or why nothing new appeared
+    toast(x.message || `Added ${(x.added || []).length} board(s).`,
+          (x.added || []).length ? "" : "warn");
     LOADERS.sources();
   }));
   $("#alertPaste").addEventListener("click", (e) => busy(e.target, "Reading…", async () => {
@@ -1772,11 +1845,14 @@ else boot();
 
 /* --- the last few: nothing the job search can do is left without a door */
 function wireRemaining() {
-  $("#ovCycle").addEventListener("click", (e) => busy(e.target, "Running a cycle…", async () => {
-    const x = await api("/api/jobs/cycle", { engine: S.engine });
-    toast(x.summary || x.sentence || "Cycle complete.");
+  $("#ovCycle").addEventListener("click", async (e) => {
+    let x;
+    try { x = await followRun(e.target, "/api/jobs/cycle"); }
+    catch (err) { toast(err.message, "bad"); return; }
+    toast(x.summary || "Cycle complete.", (x.sent || []).length ? "" : "warn");
+    toastErrors(x);
     LOADERS.overview();
-  }));
+  });
   $("#ovDiscover").addEventListener("click", (e) => busy(e.target, "Looking…", async () => {
     const x = await api("/api/jobs/discover", {});
     toast(`Found ${x.added ?? x.found ?? 0} new role(s).`);

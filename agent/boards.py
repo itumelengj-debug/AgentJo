@@ -62,6 +62,20 @@ CATALOGUE = [
      "url": "https://jobicy.com/?feed=job_feed&job_categories=data-science",
      "regions": [WORLD], "focus": ["data", "analytics", "ml"],
      "about": "Remote data roles"},
+    {"name": "We Work Remotely — back-end", "kind": "rss",
+     "url": "https://weworkremotely.com/categories/"
+            "remote-back-end-programming-jobs.rss",
+     "regions": [WORLD], "focus": ["software", "data"],
+     "about": "Remote back-end roles"},
+    {"name": "We Work Remotely — full-stack", "kind": "rss",
+     "url": "https://weworkremotely.com/categories/"
+            "remote-full-stack-programming-jobs.rss",
+     "regions": [WORLD], "focus": ["software"],
+     "about": "Remote full-stack roles"},
+    {"name": "We Work Remotely — everything else", "kind": "rss",
+     "url": "https://weworkremotely.com/categories/all-other-remote-jobs.rss",
+     "regions": [WORLD], "focus": ["data", "analytics", "product"],
+     "about": "Remote roles outside the main categories"},
     {"name": "Jobspresso", "kind": "rss",
      "url": "https://jobspresso.co/?feed=job_feed",
      "regions": [WORLD], "focus": ["software", "data", "marketing"],
@@ -195,6 +209,36 @@ def suggest(p: dict = None, include_added: bool = False) -> list:
     return out
 
 
+def company_boards(p: dict = None) -> list:
+    """Every role a company lists, for companies you've already tracked.
+
+    The catalogue is a fixed list. Once the boards in it that work for you
+    were added, "find more" had nothing left but the ones that had failed —
+    and tried those again on every click, adding nothing. A tracked role on
+    Greenhouse, Lever or Ashby names its company's whole board, and the
+    company publishes it as JSON for exactly this; so the more roles you
+    track, the more there is to find. Discovery still filters every role
+    against your profile, so a board brings only what suits you.
+    """
+    from . import jobscout
+    have = {str(s.get("url", "")).rstrip("/") for s in jobscout.job_sources()}
+    out = {}
+    for r in jobscout.roles():
+        hit = jobscout.ats_board_for(r.get("url", ""))
+        if not hit:
+            continue
+        kind, slug, api = hit
+        if api.rstrip("/") in have or api in out:
+            continue
+        company = str(r.get("company") or "").strip() or slug
+        out[api] = {"name": f"{company} — careers", "kind": kind, "url": api,
+                    "regions": [WORLD], "focus": [], "score": 12,
+                    "added": False, "company_board": True,
+                    "why": f"you've tracked a role at {company}; this is "
+                           f"every role they list"}
+    return list(out.values())
+
+
 # --------------------------------------------------------------------------- #
 #  proving a board works before adding it
 # --------------------------------------------------------------------------- #
@@ -225,12 +269,45 @@ def validate(url: str, kind: str) -> dict:
     real = [j for j in items
             if not jobscout._is_category_link(j.get("title", ""),
                                               j.get("company", ""))]
+    if not real and kind == "html":
+        # The list is drawn by script after the page loads. The app has a
+        # source kind for exactly that — the page rendered in the real
+        # browser — so try it that way before giving up on the board.
+        try:
+            jobscout._CURRENT_SOURCE_URL["url"] = url
+            shown = [j for j in jobscout._parse_browser_kind(
+                         jobscout.fetch_with_browser(url))
+                     if j.get("title") and not jobscout._is_category_link(
+                         j.get("title", ""), j.get("company", ""))]
+        except Exception:
+            shown = []
+        if shown:
+            return {"ok": True, "found": len(shown), "kind": "browser",
+                    "sample": [j["title"] for j in shown[:3]]}
     if not real:
         return {"ok": False, "found": len(items),
                 "why": ("nothing job-shaped came back — the list is probably "
                         "built in the browser after loading")}
     return {"ok": True, "found": len(real),
             "sample": [j["title"] for j in real[:3]]}
+
+
+# A board that failed is left alone for this long before it is tried again;
+# it was retried on every click, and with nothing new left in the catalogue
+# that was the whole of what "find more sources" did.
+RETRY_REJECTED_H = 24 * 7
+
+
+def _rejects() -> dict:
+    from . import jobscout
+    return dict(jobscout.load_config().get("board_rejects") or {})
+
+
+def _save_rejects(rej: dict) -> None:
+    from . import jobscout
+    cfg = jobscout.load_config()
+    cfg["board_rejects"] = rej
+    jobscout.save_config(cfg)
 
 
 def auto_add(p: dict = None, limit: int = 5) -> dict:
@@ -243,35 +320,74 @@ def auto_add(p: dict = None, limit: int = 5) -> dict:
                 "error": ("Your profile doesn't say what you do yet, so "
                           "there's nothing to match boards against. Ask in "
                           "chat: “build my job profile from my CV”.")}
-    added, rejected = [], []
+    added, rejected, resting = [], [], []
+    rej = _rejects()
+    candidates = sorted(suggest(p) + company_boards(p),
+                        key=lambda b: -b.get("score", 0))
+    fresh = []
+    for b in candidates:
+        last = rej.get(b["url"]) or {}
+        if last and jobscout._hours_since(last.get("at", "")) < RETRY_REJECTED_H:
+            resting.append({"name": b["name"], "why": last.get("why", "")})
+        else:
+            fresh.append(b)
     # Keep going until enough boards work, rather than stopping after a fixed
     # number of candidates: giving up at six when the seventh would have
     # worked is exactly the unhelpful behaviour this is meant to replace.
     # Bounded at 14 so a run can't take all afternoon.
     MAX_TRIED = 14
     tried = 0
-    for b in suggest(p):
+    for b in fresh:
         if len(added) >= limit or tried >= MAX_TRIED:
             break
         tried += 1
         v = validate(b["url"], b["kind"])
         if not v.get("ok"):
             rejected.append({"name": b["name"], "why": v.get("why", "")})
+            rej[b["url"]] = {"at": _iso(), "why": v.get("why", "")[:200]}
             continue
-        r = jobscout.add_job_source(b["name"], b["url"], b["kind"])
+        kind = v.get("kind") or b["kind"]
+        r = jobscout.add_job_source(b["name"], b["url"], kind)
         if r.get("ok"):
-            added.append({"name": b["name"], "why": b["why"],
+            rej.pop(b["url"], None)
+            added.append({"name": b["name"], "why": b["why"], "kind": kind,
                           "found": v.get("found"),
                           "sample": v.get("sample", [])})
         else:
             rejected.append({"name": b["name"], "why": r.get("error", "")})
+    _save_rejects(rej)
     _audit("boards", f"{len(added)} added, {len(rejected)} rejected")
     return {"ok": True, "added": added, "rejected": rejected,
-            "tried": tried, "at": _iso(),
+            "resting": resting, "tried": tried, "at": _iso(),
+            "left": max(0, len(fresh) - tried),
+            "message": _say_what_happened(added, rejected, resting,
+                                          len(fresh) - tried),
             "note": ("Only boards that actually returned roles were added. "
                      "Work authorisation isn't something this can check — "
                      "matching is on where you said you can work, plus "
                      "remote-worldwide.")}
+
+
+def _say_what_happened(added, rejected, resting, left) -> str:
+    """The toast read a list as a number and said "Added  board(s)" — nothing
+    about what was tried, or why nothing new appeared."""
+    if added:
+        msg = (f"Added {len(added)}: "
+               + ", ".join(f"{a['name']} ({a.get('found') or 0} roles)"
+                           for a in added) + ".")
+        if rejected:
+            msg += f" {len(rejected)} didn't return roles and were skipped."
+        return msg
+    if rejected:
+        return (f"Tried {len(rejected)} board(s); none returned roles — "
+                + "; ".join(f"{x['name']}: {x['why']}" for x in rejected[:2])
+                + ". They're left alone for a week.")
+    msg = "Nothing new to add: every board that suits your profile is already a source"
+    if resting:
+        msg += (f", and {len(resting)} that failed recently are being left "
+                f"alone for a week")
+    return (msg + ". Track roles from companies hiring on Greenhouse, Lever or "
+            "Ashby and their whole boards become sources you can add.")
 
 
 def _audit(name: str, summary: str) -> None:

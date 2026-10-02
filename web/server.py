@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import agent.config as config
+import agent.localguard as localguard
 import agent.main as main
 import agent.brain as brainmod
 import agent.rag as rag
@@ -107,12 +108,16 @@ else:
 
 app = FastAPI(title=f"{config.AGENT_NAME} API", version="1.0.0")
 
-# Same-origin in the bundled setup; permissive so a separately-hosted frontend
-# (e.g. a Vite dev server) can also talk to it during development.
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-    allow_headers=["*"], allow_credentials=False,
-)
+# Same-origin in the bundled setup, so CORS isn't needed at all. It allowed
+# every origin, which let any web page call these endpoints and read the
+# replies; a separately hosted front end (a Vite dev server, say) now names
+# itself instead:  AGENT_ALLOWED_ORIGINS=http://localhost:5173
+_ALLOWED_ORIGINS = localguard.allowed_origins()
+if _ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_methods=["*"],
+        allow_headers=["*"], allow_credentials=False,
+    )
 
 # Paths reachable without a session: the SPA shell + its assets, health, and the
 # auth handshake itself. Everything else requires a valid cookie once a password
@@ -142,9 +147,10 @@ _chat_rl = RateLimiter(int(os.environ.get("AGENT_CHAT_RATE", "40")), 60)      # 
 
 
 def _client_key(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:                                       # behind a reverse proxy
-        return fwd.split(",")[0].strip()
+    # The socket's address, not X-Forwarded-For: anyone can send that header,
+    # so trusting it handed every guess at the password a fresh allowance.
+    # Behind a real proxy uvicorn already applies it, and only from the
+    # proxies it trusts (FORWARDED_ALLOW_IPS).
     return request.client.host if request.client else "local"
 
 
@@ -223,6 +229,12 @@ async def _capture_server_errors(request: Request, call_next):
         issues.note_error(f"http:{request.url.path[:60]}",
                           f"{type(exc).__name__}: {exc}")
         raise
+
+
+# Added last, so it is the outermost layer: a request another website sent is
+# refused before anything else sees it. Being on 127.0.0.1 was never enough on
+# its own — see agent/localguard.py.
+app.add_middleware(localguard.LocalOnlyGuard)
 # Memory is thread-safe SQLite. The brain is created lazily so the server boots
 # even without an API key configured, and reports that state via /api/health.
 memory = MemoryStore(check_same_thread=False)
@@ -4107,6 +4119,7 @@ def index():
             ":", "")
         html = html.replace("/static/styles.css", f"/static/styles.css?v={v}")
         html = html.replace("/static/app.js", f"/static/app.js?v={v}")
+        html = html.replace("/static/prepaint.js", f"/static/prepaint.js?v={v}")
         return HTMLResponse(html)
     except Exception:
         return FileResponse(STATIC / "index.html")

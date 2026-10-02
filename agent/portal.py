@@ -252,6 +252,12 @@ def answer_questions(role: dict, profile: dict, questions: list,
     return out
 
 
+# The profile and role of the session this thread is running, so the helper
+# can answer on every screen of an application rather than only for the
+# fields of the first one. A session runs on a thread of its own.
+_HELP = threading.local()
+
+
 def _offer_companion(driver, page, hints: list) -> bool:
     """Put the companion in the page if this driver can.
 
@@ -263,9 +269,33 @@ def _offer_companion(driver, page, hints: list) -> bool:
     if not callable(fn):
         return False
     try:
-        return bool(fn(page, hints))
+        return bool(fn(page, companion_payload(
+            hints, getattr(_HELP, "profile", None), getattr(_HELP, "role", None))))
     except Exception:
         return False
+
+
+def companion_payload(hints: list, profile: dict = None, role: dict = None) -> dict:
+    """Everything the helper needs, on whichever screen it finds itself.
+
+    It was given the labels of the first page's fields, matched exactly — so
+    on the next screen "Email address" didn't match "Email", and a field it
+    had never been told about got "type it yourself" though your profile had
+    the answer. It now carries what your profile says for each kind of field,
+    and the same rules the filler uses to recognise them.
+    """
+    known = {}
+    if profile:
+        for kind, _ in FIELD_PATTERNS:
+            v = answer_for(kind, profile, role or {})
+            if v:
+                known[kind] = v
+    r = role or {}
+    return {"hints": list(hints or []), "known": known,
+            "rules": [[k, pat] for k, pat in FIELD_PATTERNS],
+            "sensitive": list(SENSITIVE),
+            "for": " @ ".join(str(x) for x in (r.get("title"), r.get("company"))
+                              if x)}
 
 
 def companion_hints(fill: list, answers: list, fields: list) -> list:
@@ -531,131 +561,313 @@ DRIVER = None          # tests substitute this
 # on your own in a page full of boxes, holding answers the app already
 # worked out.
 _COMPANION_JS = r"""
-(hints) => {
-  if (window.__agentJoCompanion) { window.__agentJoCompanion.update(hints); return true; }
-  const norm = (s) => (s || "").toLowerCase().replace(/[\s:*]+/g, " ").trim();
-  let table = {};
-  const load = (h) => {
+(() => {
+  /* Agent Jo's helper, in the page.
+
+     It used to be put into one page with page.evaluate. An application is
+     rarely one page: "Apply" loads another, opens a tab, or puts the form in
+     an iframe — and each of those is a fresh document without it, which is
+     why it showed on a landing page and then disappeared. It is registered
+     with the browser profile now, so it runs in every page, tab and frame the
+     application moves through; and it knows your profile and the field rules,
+     not just the labels from the first screen. */
+  const DATA = __AGENT_JO_DATA__;
+  if (window.__agentJoCompanion) { window.__agentJoCompanion.update(DATA); return true; }
+
+  const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const clean = (s) => flat(String(s || "").toLowerCase()
+    .replace(/\(required\)|\(optional\)/g, " ").replace(/[*:]+/g, " ")
+    .replace(/[?.]+\s*$/, ""));
+  const norm = (s) => String(s || "").toLowerCase().replace(/[\s:*]+/g, " ").trim();
+  const STOP = new Set(["the", "you", "your", "are", "and", "for", "what",
+    "how", "please", "have", "this", "with", "our", "who", "why", "would",
+    "will", "any", "can", "did", "does", "about", "tell"]);
+  const words = (s) => clean(s).split(/[^a-z0-9+#]+/)
+    .filter((w) => w.length > 2 && !STOP.has(w));
+
+  let data = {}, table = {}, rules = [], sensitive = [];
+  const load = (d) => {
+    data = d || {};
     table = {};
-    (h || []).forEach((x) => { if (x && x.label) table[norm(x.label)] = x; });
+    (data.hints || []).forEach((x) => { if (x && x.label) table[norm(x.label)] = x; });
+    rules = [];
+    (data.rules || []).forEach((r) => {
+      try { rules.push([r[0], new RegExp(r[1], "i")]); } catch (e) { /* skip */ }
+    });
+    sensitive = (data.sensitive || []).map((s) => String(s).toLowerCase());
   };
-  load(hints);
+  load(DATA);
 
-  const box = document.createElement("div");
-  box.style.cssText = [
-    "position:fixed", "z-index:2147483647", "max-width:320px",
-    "font:13px/1.45 -apple-system,Segoe UI,system-ui,sans-serif",
-    "background:rgba(18,26,29,.97)", "color:#eef4f2",
-    "border:1px solid rgba(70,211,154,.45)", "border-radius:12px",
-    "box-shadow:0 12px 34px rgba(0,0,0,.45)", "padding:10px 12px",
-    "pointer-events:auto", "display:none", "transition:opacity .12s",
-  ].join(";");
-  document.documentElement.appendChild(box);
+  const OTHER_PERSON = /\b(referee|reference|manager|recruiter|referr\w*|emergency|company|employer|school|university|college)\b/;
+  const lookup = (raw) => {
+    const label = clean(raw);
+    if (!label) return null;
+    if (sensitive.some((s) => label.includes(s))) {
+      return { why: "This one is yours to answer. Agent Jo doesn't answer it for you." };
+    }
+    const exact = table[norm(raw)];
+    if (exact && (exact.value || exact.source === "held")) return exact;
+    // the same question, worded differently from the one that was answered
+    const similar = (only) => {
+      const w = new Set(words(raw));
+      let best = null, score = 0;
+      if (!w.size) return null;
+      Object.keys(table).forEach((k) => {
+        const h = table[k];
+        if (!h || !h.value || (only && !only(h))) return;
+        const hw = new Set(words(k));
+        if (!hw.size) return;
+        let both = 0;
+        w.forEach((x) => { if (hw.has(x)) both += 1; });
+        const j = both / (w.size + hw.size - both);
+        if (j > score) { score = j; best = h; }
+      });
+      return best && score >= 0.5 ? best : null;
+    };
+    // an answer written for this question beats a rule about questions
+    // like it: "why do you want to work here" has its own answer, which the
+    // generic cover-letter rule would otherwise hide
+    const answered = similar((h) => h.source === "engine" || h.source === "held");
+    if (answered) return answered;
+    const known = data.known || {};
+    const other = OTHER_PERSON.test(label);
+    for (const [kind, re] of rules) {
+      if (!re.test(label)) continue;
+      // "Reference email" is somebody else's email
+      if (other && /^(first_name|last_name|full_name|email|phone|linkedin)$/.test(kind)) break;
+      if (known[kind]) return { value: known[kind], source: "profile", kind };
+      break;                       // the first rule that matches says what it is
+    }
+    return similar(null) || exact || null;
+  };
 
-  const dot = document.createElement("div");
-  dot.style.cssText = [
-    "position:fixed", "z-index:2147483646", "width:14px", "height:14px",
-    "border-radius:50%", "background:#46d39a",
-    "box-shadow:0 0 0 4px rgba(70,211,154,.25)", "pointer-events:none",
-    "transform:translate(-50%,-50%)", "transition:opacity .15s", "opacity:0",
-  ].join(";");
-  document.documentElement.appendChild(dot);
-
-  let current = null;
+  const txt = (n) => flat(n ? (n.innerText || n.textContent || "") : "");
   const labelFor = (el) => {
     let t = "";
-    if (el.labels && el.labels[0]) t = el.labels[0].innerText;
-    if (!t && el.id) {
-      const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (l) t = l.innerText;
+    try { if (el.labels && el.labels.length) t = txt(el.labels[0]); } catch (e) { /* none */ }
+    if (!t) {
+      const root = el.getRootNode ? el.getRootNode() : document;
+      const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+      t = flat(ids.map((id) => txt((root.getElementById ? root : document).getElementById(id))).join(" "));
     }
-    if (!t) t = el.getAttribute("aria-label") || el.placeholder || el.name || "";
-    return t;
+    if (!t) t = flat(el.getAttribute("aria-label"));
+    if (!t) { const l = el.closest && el.closest("label"); if (l) t = txt(l); }
+    if (!t) {
+      // the question written above the box, in an element of its own
+      let a = el.parentElement;
+      for (let i = 0; a && i < 4 && !t; i += 1, a = a.parentElement) {
+        const q = a.querySelector("legend, label, [class*='label' i], [class*='question' i], h2, h3, h4, p");
+        if (q && !q.contains(el)) {
+          const s = txt(q);
+          if (s.length > 1 && s.length < 220) t = s;
+        }
+      }
+    }
+    if (!t) t = flat(el.placeholder || el.getAttribute("title"));
+    if (!t) {
+      t = flat(String(el.name || el.id || "").replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/[_\-[\].]+/g, " "));
+    }
+    return t.slice(0, 240);
+  };
+
+  const SKIP = /^(hidden|submit|button|image|reset|checkbox|radio|range|color)$/i;
+  const isField = (el) => !!el && el.nodeType === 1 && !el.disabled
+    && ((/^input$/i.test(el.tagName) && !SKIP.test(el.type || ""))
+        || /^(textarea|select)$/i.test(el.tagName));
+
+  const style = (n, rules_) => { n.style.cssText = rules_.join(";"); return n; };
+  const make = (tag, rules_, text) => {
+    const n = style(document.createElement(tag), rules_);
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const BTN = ["cursor:pointer", "border:0", "border-radius:7px", "padding:5px 10px",
+    "font:inherit", "font-size:12px", "background:#46d39a", "color:#04200f"];
+  const button = (text, fn, quiet) => {
+    const b = make("button", quiet ? BTN.concat(["background:rgba(255,255,255,.1)", "color:#eef4f2"]) : BTN, text);
+    b.type = "button";
+    b.addEventListener("mousedown", (e) => e.preventDefault());   // keep the field's focus
+    b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
+    return b;
+  };
+  const copy = (text, b) => {
+    const done = () => { if (b) { const was = b.textContent; b.textContent = "Copied"; setTimeout(() => { b.textContent = was; }, 1200); } };
+    const fallback = () => {
+      const t = document.createElement("textarea");
+      t.value = text; t.style.cssText = "position:fixed;left:-9999px;top:0";
+      document.documentElement.appendChild(t); t.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* nothing */ }
+      t.remove();
+    };
+    try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+  };
+  const fill = (el, value) => {
+    if (/^select$/i.test(el.tagName)) {
+      const want = clean(value);
+      const opt = Array.from(el.options).find((o) => clean(o.text) === want)
+        || Array.from(el.options).find((o) => want && (clean(o.text).includes(want) || want.includes(clean(o.text)) && clean(o.text)));
+      if (!opt) return false;
+      el.value = opt.value;
+    } else {
+      const proto = Object.getPrototypeOf(el);
+      const desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  };
+
+  let box = null, dot = null, pill = null, current = null, hideTimer = null, dismissed = false;
+  const ensureUI = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    if (!box) {
+      box = make("div", ["position:fixed", "z-index:2147483647", "max-width:340px",
+        "font:13px/1.45 -apple-system,Segoe UI,system-ui,sans-serif",
+        "background:rgba(18,26,29,.97)", "color:#eef4f2",
+        "border:1px solid rgba(70,211,154,.45)", "border-radius:12px",
+        "box-shadow:0 12px 34px rgba(0,0,0,.45)", "padding:10px 12px",
+        "pointer-events:auto", "display:none", "text-align:left"]);
+      box.setAttribute("data-agent-jo", "box");
+      box.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+      box.addEventListener("mouseleave", () => hideSoon());
+      dot = make("div", ["position:fixed", "z-index:2147483646", "width:14px", "height:14px",
+        "border-radius:50%", "background:#46d39a", "box-shadow:0 0 0 4px rgba(70,211,154,.25)",
+        "pointer-events:none", "transform:translate(-50%,-50%)", "transition:opacity .15s",
+        "opacity:0", "left:-40px", "top:-40px"]);
+      dot.setAttribute("data-agent-jo", "cursor");
+      pill = make("div", ["position:fixed", "z-index:2147483645", "right:14px", "bottom:14px",
+        "display:none", "align-items:center", "gap:8px", "padding:7px 10px",
+        "font:12px/1.3 -apple-system,Segoe UI,system-ui,sans-serif",
+        "background:rgba(18,26,29,.95)", "color:#eef4f2",
+        "border:1px solid rgba(70,211,154,.45)", "border-radius:999px",
+        "box-shadow:0 6px 20px rgba(0,0,0,.35)"]);
+      pill.setAttribute("data-agent-jo", "badge");
+      pill.append(make("span", ["width:8px", "height:8px", "border-radius:50%", "background:#46d39a", "display:inline-block"]),
+        make("span", [], "Agent Jo is here: hover or click a field"),
+        button("Copy all", (b) => copy(everything(), b)),
+        button("\u00d7", () => { dismissed = true; pill.style.display = "none"; }, true));
+    }
+    [box, dot, pill].forEach((n) => { if (!n.isConnected) root.appendChild(n); });
+    return true;
+  };
+  const hideSoon = () => {
+    clearTimeout(hideTimer);
+    // a moment's grace, so the box is still there when the pointer reaches it
+    hideTimer = setTimeout(() => {
+      if (box) box.style.display = "none";
+      if (dot) dot.style.opacity = "0";
+      current = null;
+    }, 450);
+  };
+  const place = (x, y) => {
+    const w = box.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(x + 16, innerWidth - w.width - 12)) + "px";
+    box.style.top = Math.max(8, Math.min(y + 16, innerHeight - w.height - 12)) + "px";
+  };
+  const pretty = (k) => String(k || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  const everything = () => {
+    const out = [];
+    const known = data.known || {};
+    Object.keys(known).forEach((k) => { if (k !== "resume") out.push(pretty(k) + ": " + known[k]); });
+    (data.hints || []).forEach((h) => { if (h && h.value && h.source !== "profile") out.push(h.label + ":\n" + h.value); });
+    return out.join("\n\n");
   };
   const show = (el, x, y) => {
-    const hit = table[norm(labelFor(el))];
-    box.innerHTML = "";
-    const head = document.createElement("div");
-    head.style.cssText = "font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7f9a92;margin-bottom:5px";
-    head.textContent = "Agent Jo";
-    box.appendChild(head);
-    if (!hit || !hit.value) {
-      const p = document.createElement("div");
-      p.style.color = "#c6cfcb";
-      p.textContent = hit && hit.why
-        ? hit.why
-        : "Your profile doesn't answer this one — type it yourself.";
-      box.appendChild(p);
-    } else {
-      const v = document.createElement("div");
-      v.style.cssText = "white-space:pre-wrap;max-height:160px;overflow:auto";
-      v.textContent = hit.value;
-      box.appendChild(v);
-      if (hit.source === "held") {
-        const w = document.createElement("div");
-        w.style.cssText = "margin-top:6px;color:#f3c46d;font-size:12px";
-        w.textContent = "Held: " + (hit.why || "claims more than your profile");
-        box.appendChild(w);
+    const label = labelFor(el);
+    const hit = lookup(label);
+    box.replaceChildren();
+    box.appendChild(make("div", ["font-size:11px", "letter-spacing:.08em",
+      "text-transform:uppercase", "color:#7f9a92", "margin-bottom:3px"],
+      "Agent Jo" + (data.for ? " \u00b7 " + data.for : "")));
+    if (label) {
+      box.appendChild(make("div", ["font-size:11px", "color:#9fb5ae", "margin-bottom:6px",
+        "white-space:nowrap", "overflow:hidden", "text-overflow:ellipsis"], label));
+    }
+    const known = data.known || {};
+    if (/^file$/i.test(el.type || "")) {
+      const path = known.resume || "";
+      box.appendChild(make("div", [], path
+        ? "Attach your CV: " + path.split(/[\\/]/).pop()
+        : "Attach your CV here. It isn't in your profile yet."));
+      if (path) {
+        const bar = make("div", ["display:flex", "gap:6px", "margin-top:8px"]);
+        bar.appendChild(button("Copy file path", (b) => copy(path, b)));
+        box.appendChild(bar);
       }
-      const bar = document.createElement("div");
-      bar.style.cssText = "display:flex;gap:6px;margin-top:8px";
-      const mk = (text, fn) => {
-        const b = document.createElement("button");
-        b.textContent = text;
-        b.style.cssText = "cursor:pointer;border:0;border-radius:7px;padding:5px 10px;font:inherit;font-size:12px;background:#46d39a;color:#04200f";
-        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); };
-        return b;
-      };
-      bar.appendChild(mk("Fill this", () => {
-        const setter = Object.getOwnPropertyDescriptor(
-          el.constructor.prototype, "value");
-        if (setter && setter.set) setter.set.call(el, hit.value);
-        else el.value = hit.value;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (!hit || !hit.value) {
+      box.appendChild(make("div", ["color:#c6cfcb"], (hit && hit.why)
+        || "Your profile doesn't answer this one. Type it yourself."));
+    } else {
+      box.appendChild(make("div", ["white-space:pre-wrap", "max-height:180px", "overflow:auto"], hit.value));
+      if (hit.source === "held") {
+        box.appendChild(make("div", ["margin-top:6px", "color:#f3c46d", "font-size:12px"],
+          "Held: " + (hit.why || "claims more than your profile")));
+      }
+      const bar = make("div", ["display:flex", "gap:6px", "margin-top:8px"]);
+      bar.appendChild(button("Fill this", (b) => {
+        if (!fill(el, hit.value)) b.textContent = "No matching option";
       }));
-      const copy = mk("Copy", (b) => {
-        navigator.clipboard.writeText(hit.value).then(() => {
-          b.textContent = "Copied";
-          setTimeout(() => { b.textContent = "Copy"; }, 1200);
-        }).catch(() => {});
-      });
-      copy.style.background = "rgba(255,255,255,.1)";
-      copy.style.color = "#eef4f2";
-      bar.appendChild(copy);
+      bar.appendChild(button("Copy", (b) => copy(hit.value, b), true));
       box.appendChild(bar);
     }
     box.style.display = "block";
-    const w = box.getBoundingClientRect();
-    box.style.left = Math.min(x + 16, innerWidth - w.width - 12) + "px";
-    box.style.top = Math.min(y + 16, innerHeight - w.height - 12) + "px";
+    place(x, y);
   };
-
-  const isField = (el) => el && /^(input|textarea|select)$/i.test(el.tagName)
-    && !/^(hidden|submit|button)$/i.test(el.type || "");
+  const target = (e) => (e.composedPath && e.composedPath()[0]) || e.target;
 
   document.addEventListener("mousemove", (e) => {
+    if (!ensureUI()) return;
+    const el = target(e);
     dot.style.left = e.clientX + "px";
     dot.style.top = e.clientY + "px";
-    const el = e.target;
+    if (box.contains(el) || pill.contains(el)) { clearTimeout(hideTimer); dot.style.opacity = "0"; return; }
     if (isField(el)) {
+      clearTimeout(hideTimer);
       dot.style.opacity = "1";
       if (el !== current) { current = el; show(el, e.clientX, e.clientY); }
-      else {
-        const w = box.getBoundingClientRect();
-        box.style.left = Math.min(e.clientX + 16, innerWidth - w.width - 12) + "px";
-        box.style.top = Math.min(e.clientY + 16, innerHeight - w.height - 12) + "px";
-      }
-    } else if (!box.contains(el)) {
-      dot.style.opacity = "0";
-      current = null;
-      box.style.display = "none";
+      return;
+    }
+    dot.style.opacity = "0";
+    if (current) hideSoon();
+  }, true);
+  // a field reached with Tab, or clicked into, gets the same help
+  document.addEventListener("focusin", (e) => {
+    const el = target(e);
+    if (!isField(el) || !ensureUI()) return;
+    clearTimeout(hideTimer);
+    if (el === current && box.style.display === "block") return;
+    current = el;
+    const r = el.getBoundingClientRect();
+    show(el, r.left, r.bottom - 8);
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && box && box.style.display === "block") {
+      box.style.display = "none"; current = null;
     }
   }, true);
 
-  window.__agentJoCompanion = { update: load };
+  const FIELDS = "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea, select";
+  const tick = () => {
+    try {
+      const has = document.querySelector(FIELDS) && innerWidth > 220 && innerHeight > 140;
+      if (has && ensureUI()) pill.style.display = dismissed ? "none" : "flex";
+      else if (pill) pill.style.display = "none";
+    } catch (e) { /* the page is mid-change; next tick */ }
+  };
+  const start = () => { tick(); setInterval(tick, 1500); };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
+
+  window.__agentJoCompanion = {
+    update: load,
+    version: 2,
+    explain: (el) => ({ label: labelFor(el), hit: lookup(labelFor(el)) }),
+  };
   return true;
-}
+})()
 """
 
 
@@ -737,6 +949,16 @@ class PlaywrightDriver:
     def html(self, page) -> str:
         return page.content()
 
+    def settle(self, page, timeout_ms: int = 15000) -> bool:
+        """Wait for the page to go quiet, so a listing a script draws after
+        the document has loaded is there to be read. Never fatal: a slow
+        tracker that keeps the network busy shouldn't lose the page."""
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            return True
+        except Exception:
+            return False
+
     def fill(self, page, item) -> bool:
         try:
             if item["type"] == "file":
@@ -760,13 +982,36 @@ class PlaywrightDriver:
                 continue
         return False
 
-    def companion(self, page, hints: list) -> bool:
-        """Put the companion in the page. Never fatal: a form you can't be
-        helped on is still a form you can fill."""
+    def companion(self, page, data) -> bool:
+        """Put the helper in this page — and in every page, tab and frame the
+        application moves on to. Never fatal: a form you can't be helped on
+        is still a form you can fill.
+
+        Registered with the browser profile (add_init_script), so the next
+        page, a tab opened by "Apply", and a form inside an iframe all start
+        with it; and run now in every frame already open. The newest data
+        wins, so a later call updates what an earlier one offered.
+        """
+        payload = data if isinstance(data, dict) else {"hints": list(data or [])}
+        script = _COMPANION_JS.replace("__AGENT_JO_DATA__", json.dumps(payload))
+        ctx = getattr(page, "context", None)
         try:
-            return bool(page.evaluate(_COMPANION_JS, hints))
+            if ctx is not None:
+                ctx.add_init_script(script)
         except Exception:
-            return False
+            pass
+        ok = False
+        try:
+            ok = bool(page.evaluate(script))
+        except Exception:
+            pass
+        for pg in list(getattr(ctx, "pages", None) or [page]):
+            for fr in list(getattr(pg, "frames", None) or []):
+                try:
+                    fr.evaluate(script)
+                except Exception:
+                    pass
+        return ok
 
     def shot(self, page, name: str) -> str:
         path = _dir() / f"{name}.png"
@@ -915,6 +1160,7 @@ def normalise_url_safe(url: str) -> str:
 
 def _open_with_help(role: dict, profile_data: dict, key: str,
                     brain=None, model=None) -> dict:
+    _HELP.profile, _HELP.role = profile_data, role
     driver = acquire_driver(headless=False)
     url = normalise_url_safe(str((role or {}).get("url") or ""))
     try:
@@ -1062,6 +1308,20 @@ class ThreadBoundDriver:
     def html(self, page):
         return self._call(lambda: self._ensure().html(page))
 
+    def settle(self, page, timeout_ms: int = 15000):
+        """Wait for the page to go quiet — on the thread that owns it.
+
+        The fetch used to call page.wait_for_load_state itself, from its own
+        thread. Playwright refused ("cannot switch to a different thread"),
+        the error was swallowed as a slow tracker, and the wait for a listing
+        drawn by script never happened — so a browser source returned the
+        page before its roles were on it.
+        """
+        def _go():
+            fn = getattr(self._ensure(), "settle", None)
+            return fn(page, timeout_ms) if fn is not None else False
+        return self._call(_go, timeout=timeout_ms / 1000.0 + 30)
+
     def fill(self, page, item):
         return self._call(lambda: self._ensure().fill(page, item))
 
@@ -1089,6 +1349,28 @@ class ThreadBoundDriver:
             if not keep_open:
                 self._jobs.put(None)           # let the owner thread finish
 
+    def show(self) -> bool:
+        """Make the browser one the person can see.
+
+        A source fetch launches it hidden. Signing in, a form with help and
+        an application all need a window — and reusing the hidden browser
+        told the person to "sign in on the window that just opened" when no
+        window had opened. If it was launched hidden, it is closed and the
+        next page opens in a visible one; the profile, and every login in
+        it, carries over. Returns True if anything changed.
+        """
+        def _go():
+            if not self.headless:
+                return False
+            self.headless = False
+            real, self._real = self._real, None
+            if real is not None:
+                real.close(keep_open=False)
+            return True
+        if getattr(self, "_thread", None) is None:
+            return _go()                       # never started: nothing to post to
+        return bool(self._call(_go, timeout=60))
+
     @property
     def _ctx(self):
         return getattr(self._real, "_ctx", None)
@@ -1105,23 +1387,43 @@ class ThreadBoundDriver:
 _SHARED: dict = {"driver": None, "uses": 0, "headless": True}
 _SHARED_LOCK = threading.RLock()
 
+# How long a request for a visible window waits for a hidden pass that is
+# mid-page to finish before relaunching the browser anyway. A fetch that
+# loses its page reports that one source as failed; a person left waiting
+# on a window that never appears is worse.
+SHOW_WAIT_S = 20.0
+
 
 def acquire_driver(headless: bool | None = None):
-    """Borrow the browser. Launches it if nobody has it yet."""
-    with _SHARED_LOCK:
-        if DRIVER is not None:
-            return DRIVER                      # a test supplied its own
-        if _SHARED["driver"] is None:
-            _SHARED["driver"] = ThreadBoundDriver(
-                headless=bool(_SHARED["headless"] if headless is None
-                              else headless))
-            _SHARED["uses"] = 0
-        elif headless is False and _SHARED["headless"]:
-            # somebody now needs to see it; the window is already there, so
-            # it stays as it is rather than fighting over the profile
-            pass
-        _SHARED["uses"] += 1
-        return _SHARED["driver"]
+    """Borrow the browser. Launches it if nobody has it yet.
+
+    headless=False means a person has to see it. The shared browser may
+    have been launched hidden by a source fetch, and Chromium allows the
+    profile to be open once, so it can't simply launch a second, visible
+    one: the hidden one is relaunched visible instead (see show()).
+    """
+    want_visible = headless is False
+    deadline = time.time() + SHOW_WAIT_S
+    while True:
+        with _SHARED_LOCK:
+            if DRIVER is not None:
+                return DRIVER                  # a test supplied its own
+            d = _SHARED["driver"]
+            if d is None:
+                d = _SHARED["driver"] = ThreadBoundDriver(
+                    headless=bool(_SHARED["headless"] if headless is None
+                                  else headless))
+                _SHARED["uses"] = 0
+            elif want_visible and getattr(d, "headless", False):
+                launched = getattr(d, "_real", None) is not None
+                if launched and _SHARED["uses"] > 0 and time.time() < deadline:
+                    d = None                   # a hidden pass is mid-page
+                else:
+                    d.show()
+            if d is not None:
+                _SHARED["uses"] += 1
+                return d
+        time.sleep(0.25)
 
 
 def release_driver(close: bool = False) -> None:
@@ -1216,6 +1518,7 @@ def apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
 def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                      headless: bool = False, brain=None, model=None,
                      wait: bool = False, session_key: str = "") -> dict:
+    _HELP.profile, _HELP.role = profile_data, role
     url = str((role or {}).get("url") or "").strip()
     if not url:
         return {"ok": False, "state": FAILED,
@@ -1397,6 +1700,14 @@ def _apply_to_portal(role: dict, profile_data: dict, *, submit: bool = False,
                                       (NEEDS_LOGIN, NEEDS_CAPTCHA) else ""))
         except Exception:
             pass
+        # a form that failed is no use to anyone left open: an unattended run
+        # left one dead tab per failure, piling up beside the forms that do
+        # need you. Prepared and hand-over pages stay — you finish those.
+        if page is not None and result.get("state") == FAILED:
+            try:
+                driver.close_page(page)
+            except Exception:
+                pass
         # hand it back; it closes when nobody else is using it and the
         # application actually went through
         release_driver(close=(result.get("state") == SUBMITTED))

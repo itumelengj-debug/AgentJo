@@ -57,6 +57,35 @@ export AGENT_HOME=~/agentjo-test     (macOS/Linux)
 
 Then it starts empty, with none of your engines or history.
 
+## Reaching it from another machine
+
+From the 2026-10-01 build, both apps refuse requests that other websites
+send, and answer only to this computer's own addresses (CHANGELOG 144).
+Nothing changes if you open them as `127.0.0.1` or `localhost`, or from a
+phone at the address the Phone panel shows.
+
+If you reach the agent by a **name** — a reverse proxy, a Tailscale name —
+it will answer *"This app only answers to this computer's own address"* until
+you add that name, then restart:
+
+```
+setx AGENT_ALLOWED_HOSTS agent.example.org        (Windows, new console after)
+export AGENT_ALLOWED_HOSTS=.tail1234.ts.net       (macOS/Linux)
+```
+
+A leading dot covers every name under it. If you develop the interface on a
+separate server (a Vite dev server, say), CORS used to let it in by allowing
+every origin; name it instead with `AGENT_ALLOWED_ORIGINS=http://localhost:5173`.
+
+**Roles an earlier rehearsal marked as applied go back to drafted** the
+first time auto-apply runs or its readiness is checked (CHANGELOG 149) — they
+were never sent. With rehearsal off, the next run sends them, best fit first,
+within your daily cap.
+
+**Restart both apps after upgrading.** The Health panel's *Build* row says
+which build is running; if it's older than the files, the old code is still
+running — and so is the old behaviour.
+
 ## If something goes wrong
 
 Run `install.bat --check`. It surveys the machine and changes nothing.

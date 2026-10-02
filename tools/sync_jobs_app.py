@@ -29,12 +29,39 @@ ROOT = Path(__file__).resolve().parent.parent
 # to start with ModuleNotFoundError rather than anything subtler.
 ENTRY = ("jobscout", "boards", "jobalerts", "cv", "portal", "outcomes",
          "brain", "config", "memory", "scheduler", "engines")
+# ...and whatever the Jobs app's own files import from agent/, read from the
+# files themselves. The list above is kept by hand, and it went stale the
+# moment the server imported a new module (localguard): the sync would have
+# shipped a server that couldn't start. The imports can't go stale.
+APP_FILES = ("jobs/server.py", "run_jobs.py")
 ALSO = [("jobs/server.py", "jobs/server.py"),
         # the window is identical in both now, icon included, so it syncs too
         ("web_jobs/index.html", "web_jobs/index.html"),
         ("web_jobs/jobs.css", "web_jobs/jobs.css"),
         ("web_jobs/jobs.js", "web_jobs/jobs.js"),
-        ("run_jobs.py", "run_jobs.py")]
+        ("run_jobs.py", "run_jobs.py"),
+        # the helper is where applications happen, so its check goes too
+        ("tools/check_helper.py", "tools/check_helper.py"),
+        ("tools/check_layout.py", "tools/check_layout.py")]
+
+
+def _app_imports() -> set:
+    """Every agent module the Jobs app's own files import, lazy ones included."""
+    names = set()
+    for rel in APP_FILES:
+        f = ROOT / rel
+        if not f.exists():
+            continue
+        for n in ast.walk(ast.parse(f.read_text("utf-8"))):
+            if isinstance(n, ast.Import):
+                names.update(a.name.split(".")[1] for a in n.names
+                             if a.name.startswith("agent."))
+            elif isinstance(n, ast.ImportFrom) and not n.level and n.module:
+                if n.module == "agent":
+                    names.update(a.name for a in n.names)
+                elif n.module.startswith("agent."):
+                    names.add(n.module.split(".")[1])
+    return names
 
 
 def closure() -> list:
@@ -52,13 +79,17 @@ def closure() -> list:
                     walk(n.module.split(".")[0])
                 for a in n.names:
                     walk(a.name)
-    for e in ENTRY:
+    for e in sorted(set(ENTRY) | _app_imports()):
         walk(e)
     return sorted(seen)
 
 
 def _hash(p: Path) -> str:
-    return hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.exists() else ""
+    """Of the text with line endings normalised: git on Windows may check a
+    file out with CRLF, and that is not a change to the code."""
+    if not p.exists():
+        return ""
+    return hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:16]
 
 
 def report(dest: Path) -> dict:
@@ -93,8 +124,12 @@ def sync(dest: Path) -> dict:
     manifest = {
         "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "from_build": _build_id(),
-        "files": {f"agent/{m}.py": _hash(ROOT / "agent" / f"{m}.py")
-                  for m in closure()},
+        # every file the sync owns, not just the modules: the server, the
+        # window and the launcher are copies too, and the Jobs app's own
+        # tests check each one against this, so a hand edit over there shows
+        "files": {**{f"agent/{m}.py": _hash(ROOT / "agent" / f"{m}.py")
+                     for m in closure()},
+                  **{dst: _hash(ROOT / src) for src, dst in ALSO}},
     }
     (dest / "VENDORED.json").write_text(json.dumps(manifest, indent=2), "utf-8")
     return {"copied": copied, "manifest": "VENDORED.json"}

@@ -22,6 +22,9 @@ shutil.rmtree(TEST_HOME, ignore_errors=True)
 os.environ["AGENT_HOME"] = TEST_HOME
 os.environ["AGENT_OLLAMA_HOST"] = "http://127.0.0.1:11533"
 os.environ["ANTHROPIC_API_KEY"] = "test-not-real"
+# The servers answer only to this machine's own names (agent/localguard.py),
+# and the in-process test client calls itself "testserver".
+os.environ.setdefault("AGENT_ALLOWED_HOSTS", "testserver")
 
 from rich.console import Console                              # noqa: E402
 from agent import config, tools                               # noqa: E402
@@ -3029,7 +3032,10 @@ def main() -> None:
           "color-scheme: light" in _uicss and "color-scheme: dark" in _uicss)
     check("ui.follows_the_os_and_resolves_before_paint",
           "prefers-color-scheme" in _uijs
-          and "prefers-color-scheme" in _uihtml)
+          # resolved before first paint: in prepaint.js now, because the
+          # page's CSP blocks the inline script it used to be
+          and ("prefers-color-scheme" in _uihtml
+               or "prefers-color-scheme" in _RPath("web/static/prepaint.js").read_text("utf-8")))
     check("ui.theme_choices_include_system",
           '"system"' in _uijs and "fluent-light" in _uijs)
     _uivars = set(_re.findall(r"var\((--[a-z0-9-]+)", _uicss))
@@ -3121,7 +3127,9 @@ def main() -> None:
           "viewport-fit=cover" in _pwhtml
           and "env(safe-area-inset" in _uicss)
     check("phone.registers_a_service_worker",
-          "serviceWorker.register" in _pwhtml)
+          ("serviceWorker.register" in _pwhtml
+           # in app.js now: the page's CSP blocks the inline script it was in
+           or "serviceWorker.register" in _RPath("web/static/app.js").read_text("utf-8")))
     _pwsw = _RPath("web/static/sw.js").read_text("utf-8")
     # the important one: live state must never be served from cache
     check("phone.never_caches_live_state",
@@ -12051,7 +12059,936 @@ def main() -> None:
             _brainmod._custom_engines_cache = _w_cache
             _brainmod._custom_brains.clear()
 
+    _hardening_checks()
+    _auto_apply_checks()
+    _sources_checks()
+    _helper_checks()
+    _look_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
+
+
+# ---------------------------------------------------------------------- #
+# Hardening: other websites, the browser's own thread, a visible window,
+# and the Jobs app's copy. One function so it can be run on its own:
+#   python -c "import tests.run_tests as t; t._hardening_checks()"
+# ---------------------------------------------------------------------- #
+def _hardening_checks() -> None:
+    import asyncio as _hxaio
+    import importlib.util as _hxil
+    import re as _hxre
+    import socket as _hxsock
+    import tempfile as _hxtmp
+    import time as _hxtime
+    root = Path(__file__).resolve().parents[1]
+
+    # --- other websites may not drive the app ------------------------------ #
+    #
+    # Being on 127.0.0.1 was treated as the whole defence. It isn't one: any
+    # page open in the browser can send requests there. /api/chat took form
+    # fields — which cross sites with no preflight — with full_access=true in
+    # the same post, CORS allowed every origin, and nothing checked the Host,
+    # so a site re-resolving its name to 127.0.0.1 counted as the app. With
+    # no password (the default) any page could ask the agent to write files.
+    from agent.localguard import LocalOnlyGuard as _LG
+
+    def _guard(method, headers, kind="http"):
+        seen, sent = {"inner": False}, []
+
+        async def _inner(scope, receive, send):
+            seen["inner"] = True
+            if kind == "http":
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"ok"})
+
+        async def _recv():
+            return ({"type": "websocket.connect"} if kind == "websocket"
+                    else {"type": "http.request", "body": b""})
+
+        async def _send(m):
+            sent.append(m)
+
+        scope = {"type": kind, "path": "/api/chat",
+                 "headers": [(k.encode(), v.encode()) for k, v in headers.items()]}
+        if kind == "http":
+            scope["method"] = method
+        # its own thread: asyncio.run refuses a thread whose loop is running
+        t = threading.Thread(target=lambda: _hxaio.run(
+            _LG(_inner)(scope, _recv, _send)))
+        t.start()
+        t.join(10)
+        status = next((m["status"] for m in sent
+                       if m["type"] == "http.response.start"), None)
+        return (seen["inner"], status,
+                any(m["type"] == "websocket.close" for m in sent))
+
+    H = "127.0.0.1:8765"
+    EVIL = {"host": H, "origin": "https://evil.example",
+            "sec-fetch-site": "cross-site"}
+    saved = {k: os.environ.get(k)
+             for k in ("AGENT_ALLOWED_HOSTS", "AGENT_ALLOWED_ORIGINS")}
+    os.environ.pop("AGENT_ALLOWED_HOSTS", None)
+    os.environ.pop("AGENT_ALLOWED_ORIGINS", None)
+    try:
+        check("guard.the_apps_own_page_can_post",
+              _guard("POST", {"host": H, "origin": "http://127.0.0.1:8765",
+                              "sec-fetch-site": "same-origin"})[0])
+        check("guard.a_cross_site_form_post_is_refused",
+              _guard("POST", EVIL)[:2] == (False, 403))
+        check("guard.an_older_browser_from_another_site_is_refused",
+              _guard("POST", {"host": H, "origin": "https://evil.example"})[:2]
+              == (False, 403))
+        check("guard.an_older_browser_on_the_app_still_works",
+              _guard("POST", {"host": H, "origin": "http://127.0.0.1:8765"})[0])
+        check("guard.a_null_origin_is_refused",
+              not _guard("POST", {"host": H, "origin": "null"})[0])
+        check("guard.another_local_port_is_another_site",
+              not _guard("POST", {"host": H, "origin": "http://127.0.0.1:8766",
+                                  "sec-fetch-site": "same-site"})[0])
+        check("guard.scripts_and_curl_still_work", _guard("POST", {"host": H})[0])
+        check("guard.a_link_from_another_site_still_opens_it",
+              _guard("GET", {"host": H, "sec-fetch-site": "cross-site"})[0])
+        check("guard.dns_rebinding_is_refused_even_for_reads",
+              _guard("GET", {"host": "evil.example:8765"})[:2] == (False, 403)
+              and not _guard("POST", {"host": "evil.example:8765",
+                                      "origin": "http://evil.example:8765",
+                                      "sec-fetch-site": "same-origin"})[0])
+        check("guard.loopback_the_lan_and_this_machine_are_allowed",
+              all(_guard("GET", {"host": h})[0] for h in (
+                  "localhost:8765", "[::1]:8765", "192.168.1.20:8765",
+                  "100.101.102.103:8765", "app.localhost:8765",
+                  _hxsock.gethostname().lower() + ":8765")))
+        check("guard.websockets_are_held_to_the_same_rule",
+              _guard("GET", EVIL, kind="websocket")[2])
+        os.environ["AGENT_ALLOWED_HOSTS"] = "agent.example.org,.tail1234.ts.net"
+        os.environ["AGENT_ALLOWED_ORIGINS"] = "http://localhost:5173"
+        check("guard.a_named_proxy_can_be_allowed",
+              _guard("GET", {"host": "agent.example.org"})[0]
+              and _guard("GET", {"host": "pc.tail1234.ts.net"})[0]
+              and not _guard("GET", {"host": "other.example"})[0])
+        check("guard.a_dev_server_can_be_allowed",
+              _guard("POST", {"host": "localhost:8765",
+                              "origin": "http://localhost:5173",
+                              "sec-fetch-site": "same-site"})[0])
+        os.environ["AGENT_ALLOWED_ORIGINS"] = "*"
+        check("guard.a_wildcard_origin_is_not_honoured",
+              not _guard("POST", EVIL)[0])
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    wsrc = (root / "web" / "server.py").read_text("utf-8")
+    jsrc = (root / "jobs" / "server.py").read_text("utf-8")
+    add = "app.add_middleware(localguard.LocalOnlyGuard)"
+    check("guard.both_servers_install_it", add in wsrc and add in jsrc)
+    check("guard.it_is_the_outermost_layer",
+          add in wsrc and wsrc.rindex('@app.middleware("http")') < wsrc.index(add))
+    check("guard.cors_no_longer_allows_every_origin",
+          'allow_origins=["*"]' not in wsrc)
+    ck = wsrc[wsrc.index("def _client_key"):]
+    ck = ck[:ck.index("\n\n\n")]
+    check("guard.the_login_limit_ignores_a_forged_forwarded_for",
+          'headers.get("x-forwarded-for"' not in ck)
+    try:
+        from fastapi.testclient import TestClient as _GTC
+    except ImportError:
+        _GTC = None
+    if _GTC is not None:
+        import jobs.server as _gjs
+        _gc = _GTC(_gjs.app)
+        _r = _gc.post("/api/jobs/auto/run", headers={
+            "origin": "https://evil.example", "sec-fetch-site": "cross-site"})
+        check("guard.the_jobs_app_refuses_another_site",
+              _r.status_code == 403
+              and "AGENT_ALLOWED_ORIGINS" in _r.json().get("detail", ""))
+        check("guard.the_jobs_app_refuses_a_rebound_name",
+              _gc.get("/api/meta", headers={"host": "evil.example:8766"})
+              .status_code == 403)
+        check("guard.the_jobs_app_still_answers_itself",
+              _gc.get("/").status_code == 200)
+
+    # --- the wait for a listing runs on the browser's own thread ------------ #
+    #
+    # The fetch called page.wait_for_load_state from its own thread. Pages
+    # belong to the browser's thread, so Playwright refused — "cannot switch
+    # to a different thread" — the error was swallowed as a slow tracker, and
+    # a source whose roles are drawn by script came back with none.
+    import agent.portal as _sp
+    import agent.jobscout as _sj
+    wrong = []
+
+    class _SPage:
+        def __init__(self):
+            self.owner = threading.current_thread()
+            self.ready = False
+
+        def _mine(self, what):
+            if threading.current_thread() is not self.owner:
+                wrong.append(what)
+                raise RuntimeError("cannot switch to a different thread")
+
+        def wait_for_load_state(self, state="load", timeout=0):
+            self._mine("wait_for_load_state")
+            self.ready = True
+
+    class _SReal(_sp.PlaywrightDriver):     # the real settle(), a fake page
+        def __init__(self, headless=True):
+            self.headless, self._ctx = headless, None
+
+        def open(self, url):
+            return _SPage()
+
+        def html(self, page):
+            page._mine("content")
+            return "<li>Senior Data Engineer</li>" if page.ready else "<ul></ul>"
+
+        def close_page(self, page):
+            pass
+
+        def close(self, keep_open=True):
+            pass
+
+    was = (_sp.PlaywrightDriver, _sp.DRIVER, dict(_sp._SHARED), dict(_sj._BATCH))
+    _sp.PlaywrightDriver, _sp.DRIVER = _SReal, None
+    _sp._SHARED.update({"driver": None, "uses": 0, "headless": True})
+    _sj._BATCH.clear()
+    out = {}
+    try:
+        t = threading.Thread(target=lambda: out.update(
+            html=_sj.fetch_with_browser("https://board.example/jobs")))
+        t.start()
+        t.join(30)
+    finally:
+        if _sp._SHARED.get("driver") is not None:
+            _sp._SHARED["driver"].close(keep_open=False)
+        _sp.PlaywrightDriver, _sp.DRIVER = was[0], was[1]
+        _sp._SHARED.clear(); _sp._SHARED.update(was[2])
+        _sj._BATCH.clear(); _sj._BATCH.update(was[3])
+    check("browser.a_listing_drawn_by_script_is_waited_for",
+          "Senior Data Engineer" in out.get("html", ""), f"{out}")
+    check("browser.a_page_is_only_touched_on_its_own_thread", not wrong, f"{wrong}")
+    check("browser.the_fetch_never_calls_a_page_itself",
+          not _hxre.findall(r"\bpage\.\w+\(",
+                            (root / "agent" / "jobscout.py").read_text("utf-8")))
+
+    # --- a window you can see, when a person has to see it ------------------ #
+    #
+    # A fetch launches the shared browser hidden, and sign-in, "open the form
+    # with help" and applications then reused it: "sign in on the window that
+    # just opened", with no window. A visible request relaunches it visibly —
+    # still one browser, one profile, so logins carry over.
+    launches = []
+
+    class _VReal(_sp.PlaywrightDriver):
+        def __init__(self, headless=True):
+            self.headless, self._ctx, self.closed = headless, None, False
+            launches.append(self)
+
+        def open(self, url):
+            return {"url": url}
+
+        def html(self, page):
+            return ""
+
+        def close_page(self, page):
+            pass
+
+        def close(self, keep_open=True):
+            self.closed = self.closed or not keep_open
+
+    was = (_sp.PlaywrightDriver, _sp.DRIVER, dict(_sp._SHARED), _sp.SHOW_WAIT_S)
+    _sp.PlaywrightDriver, _sp.DRIVER = _VReal, None
+    _sp._SHARED.update({"driver": None, "uses": 0, "headless": True})
+    try:
+        d1 = _sp.acquire_driver(headless=True)          # a source fetch
+        d1.open("https://board.example/jobs")
+        _sp.release_driver(close=False)
+        d2 = _sp.acquire_driver(headless=False)         # then a sign-in
+        d2.open("https://board.example/login")
+        check("browser.a_sign_in_after_a_fetch_gets_a_window",
+              [x.headless for x in launches] == [True, False]
+              and launches[0].closed, f"{[x.headless for x in launches]}")
+        check("browser.it_is_still_one_shared_browser",
+              d1 is d2 and _sp._SHARED["driver"] is d2)
+        _sp.release_driver(close=False)
+        d3 = _sp.acquire_driver(headless=True)          # a fetch after it
+        d3.open("https://board.example/jobs")
+        check("browser.a_fetch_reuses_the_window_rather_than_relaunching",
+              d3 is d2 and len(launches) == 2)
+        _sp.release_driver(close=False)
+        _sp._SHARED["driver"].close(keep_open=False)    # start again, hidden
+        _sp._SHARED.update({"driver": None, "uses": 0})
+        launches.clear()
+        _sp.SHOW_WAIT_S = 5.0
+        order = []
+        _sp.acquire_driver(headless=True).open("https://board.example/a")
+
+        def _fetch_finishes():
+            _hxtime.sleep(0.4)
+            order.append("fetch released")
+            _sp.release_driver(close=False)
+        t = threading.Thread(target=_fetch_finishes)
+        t.start()
+        _sp.acquire_driver(headless=False).open("https://board.example/login")
+        order.append("window acquired")
+        t.join(5)
+        check("browser.a_window_waits_for_the_page_in_flight",
+              order == ["fetch released", "window acquired"]
+              and [x.headless for x in launches] == [True, False], f"{order}")
+        _sp.release_driver(close=False)
+    finally:
+        if _sp._SHARED.get("driver") is not None:
+            _sp._SHARED["driver"].close(keep_open=False)
+        _sp.PlaywrightDriver, _sp.DRIVER = was[0], was[1]
+        _sp._SHARED.clear(); _sp._SHARED.update(was[2])
+        _sp.SHOW_WAIT_S = was[3]
+
+    # --- the Jobs app's copy can't drift unnoticed ---------------------------- #
+    #
+    # The list of modules to copy was kept by hand: a new import in the Jobs
+    # server (localguard) would have shipped a server that couldn't start.
+    # And the manifest hashed only the modules, so a hand edit to the copied
+    # server or window went unseen.
+    spec = _hxil.spec_from_file_location("_sync_jobs_app",
+                                         root / "tools" / "sync_jobs_app.py")
+    sync = _hxil.module_from_spec(spec)
+    spec.loader.exec_module(sync)
+    check("vendor.what_the_jobs_server_imports_is_copied",
+          "localguard" in sync.closure())
+    dest = Path(_hxtmp.mkdtemp(prefix="vendor-"))
+    try:
+        sync.sync(dest)
+        man = json.loads((dest / "VENDORED.json").read_text("utf-8"))["files"]
+        check("vendor.the_manifest_covers_every_synced_file",
+              {"jobs/server.py", "web_jobs/jobs.js", "run_jobs.py",
+               "agent/localguard.py"} <= set(man))
+        r = sync.report(dest)
+        check("vendor.a_fresh_copy_is_in_step", not r["stale"] and not r["missing"],
+              f"{r}")
+        (dest / "agent" / "portal.py").write_bytes(
+            (root / "agent" / "portal.py").read_bytes().replace(b"\n", b"\r\n"))
+        check("vendor.crlf_line_endings_are_not_a_change",
+              "agent/portal.py" not in sync.report(dest)["stale"])
+        (dest / "agent" / "portal.py").write_text("# edited by hand\n", "utf-8")
+        check("vendor.a_hand_edit_is_caught",
+              "agent/portal.py" in sync.report(dest)["stale"])
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------- #
+# Auto-apply: the gates, rehearsal, the cap, portals, the engine, storage.
+#   python -c "import tests.run_tests as t; t._auto_apply_checks()"
+# ---------------------------------------------------------------------- #
+def _auto_apply_checks() -> None:
+    import tempfile as _axt
+    import time as _axtime
+    from types import SimpleNamespace as _AXN
+    from agent import config as _axc
+    import agent.jobscout as J
+    import agent.portal as P
+    import agent.outreach as O
+
+    def blk(t):
+        return _AXN(content=[_AXN(type="text", text=t)], stop_reason="end_turn")
+
+    def section(name, fn):
+        try:
+            fn()
+        except AssertionError:
+            raise
+        except Exception as exc:
+            check(f"{name}.ran", False, f"{type(exc).__name__}: {exc}")
+
+    home, db = _axc.AGENT_HOME, _axc.DB_PATH
+    saved = (O.send, O.is_configured, O._is_draft_only, P.apply_to_portal)
+    sends, opened = [], []
+    GOOD = ("I built a Medallion pipeline with regression testing, in Python "
+            "and SQL, at Standard Bank.")
+    CLEAN = {"subject": "S", "body": GOOD, "check": {"ok": True, "problems": []}}
+
+    def fresh(**auto):
+        _axc.AGENT_HOME = Path(_axt.mkdtemp(prefix="auto-"))
+        _axc.DB_PATH = _axc.AGENT_HOME / "a.db"
+        J.save_profile({
+            "summary": "Tech lead on an FX desk. Build BI and data pipelines.",
+            "technologies": ["Python", "SQL", "Power BI"],
+            "employers": ["Standard Bank"],
+            "achievements": ["Built a Medallion pipeline with regression testing"],
+            "years_experience": {"BI": "8"}})
+        J.save_auto_config({"enabled": True, "dry_run": False, "min_score": 75,
+                            "daily_cap": 5, "portal_mode": "prepare",
+                            "portal_per_run": 5, **auto})
+        sends.clear(); opened.clear()
+
+    def role(title, fit=None, email="", url="", draft=None, **extra):
+        J.add_roles([{"title": title, "company": title + " Co",
+                      "url": url or f"https://x.test/{title}",
+                      "summary": "Python SQL", "apply_email": email}])
+        k = [r for r in J.roles() if r["title"] == title][0]["key"]
+        J.update_role(k, fit=({"score": fit} if fit is not None else None),
+                      draft=draft, **extra)
+        return k
+
+    O.send = lambda to, s, b, **kw: (sends.append((to, kw.get("dry_run")))
+                                     or {"ok": True})
+    O.is_configured = lambda: True
+    O._is_draft_only = lambda: False
+    P.apply_to_portal = lambda r, prof, **kw: (
+        opened.append((r["title"], kw.get("submit"))) or
+        {"state": "filled", "answers": [], "message": "filled"})
+    try:
+        # --- every role meets the same gates, whatever its delivery -------- #
+        def gates_first():
+            fresh()
+            role("Weak", fit=30, draft=dict(CLEAN))
+            role("Invents", fit=90, draft={"subject": "S", "body": "x",
+                                           "check": {"ok": False,
+                                                     "problems": ["AWS"]}})
+            role("Good", fit=90, draft=dict(CLEAN))
+            out = J.auto_apply(None)
+            check("auto.a_weak_portal_role_is_not_opened",
+                  "Weak" not in [t for t, _ in opened]
+                  and any("below your threshold" in h["reason"]
+                          for h in out["held"] if h["title"] == "Weak"),
+                  f"{opened}")
+            check("auto.a_portal_draft_with_invented_claims_is_not_opened",
+                  "Invents" not in [t for t, _ in opened])
+            check("auto.a_good_portal_role_is_prepared",
+                  [p["title"] for p in out["prepared"]] == ["Good"])
+        section("auto.gates", gates_first)
+
+        # --- rehearsal consumes nothing ----------------------------------- #
+        def rehearsal():
+            fresh(dry_run=True)
+            k = role("Mailable", fit=90, email="jobs@beta.test", draft=dict(CLEAN))
+            out = J.auto_apply(None)
+            check("auto.a_rehearsal_is_reported_as_sent",
+                  [s["dry_run"] for s in out["sent"]] == [True]
+                  and sends == [("jobs@beta.test", True)])
+            check("auto.a_rehearsal_leaves_the_role_to_be_sent",
+                  J.get_role(k)["stage"] != "applied")
+            check("auto.a_rehearsal_uses_none_of_the_days_cap",
+                  J._sent_today() == 0)
+            J.save_auto_config({**J.auto_config(), "dry_run": False})
+            sends.clear()
+            J.auto_apply(None)
+            check("auto.after_rehearsal_it_really_sends",
+                  sends == [("jobs@beta.test", False)]
+                  and J.get_role(k)["stage"] == "applied")
+            # a role an older rehearsal marked as applied is put back
+            k2 = role("Consumed", fit=90, email="hr@gamma.test",
+                      draft=dict(CLEAN), sent_dry_run=True,
+                      sent_at=J._iso())
+            J.set_stage(k2, "applied", "REHEARSAL (dry run) — not actually sent")
+            sends.clear()
+            J.auto_apply(None)
+            check("auto.roles_an_old_rehearsal_consumed_are_sent",
+                  ("hr@gamma.test", False) in sends)
+        section("auto.rehearsal", rehearsal)
+
+        def rehearsal_never_submits():
+            fresh(dry_run=True, portal_mode="submit")
+            role("Portal", fit=90, draft=dict(CLEAN))
+            J.auto_apply(None)
+            check("auto.rehearsal_never_submits_a_portal_form",
+                  opened == [("Portal", False)], f"{opened}")
+        section("auto.rehearsal_portal", rehearsal_never_submits)
+
+        # --- the cap goes to the best ------------------------------------- #
+        def best_first():
+            fresh(daily_cap=1)
+            role("Fine", fit=80, email="a@a.test", draft=dict(CLEAN))
+            role("Best", fit=97, email="b@b.test", draft=dict(CLEAN))
+            out = J.auto_apply(None)
+            check("auto.the_cap_goes_to_the_best_fit",
+                  [s["title"] for s in out["sent"]] == ["Best"]
+                  and any(h["title"] == "Fine" and "cap" in h["reason"]
+                          for h in out["held"]))
+        section("auto.best_first", best_first)
+
+        # --- portals: once each, a few per run, failures not for ever ------ #
+        def portals():
+            fresh(portal_per_run=2)
+            for t in ("Portal One", "Portal Two", "Portal Three"):
+                role(t, fit=90, draft=dict(CLEAN))
+            out = J.auto_apply(None)
+            check("auto.portal_forms_per_run_are_limited",
+                  len(opened) == 2
+                  and any("limit" in h["reason"] for h in out["held"]))
+            opened.clear()
+            J.auto_apply(None)
+            check("auto.a_prepared_form_is_not_reopened_every_run",
+                  [t for t, _ in opened] == ["Portal Three"], f"{opened}")
+            fresh()
+            k = role("Broken", fit=90, draft=dict(CLEAN))
+            P.apply_to_portal = lambda r, prof, **kw: (
+                opened.append((r["title"], kw.get("submit"))) or
+                {"state": "failed", "message": "TimeoutError"})
+            out = J.auto_apply(None)
+            check("auto.a_failed_form_is_an_error_not_a_prepared_one",
+                  not out["prepared"] and any("portal" in e for e in out["errors"]))
+            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
+            J.auto_apply(None)
+            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
+            J.auto_apply(None)
+            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
+            opened.clear()
+            J.auto_apply(None)
+            check("auto.a_form_that_keeps_failing_is_left_to_you",
+                  opened == [] and J.get_role(k)["portal_attempts"] == 3)
+        section("auto.portals", portals)
+
+        # --- the engine ---------------------------------------------------- #
+        def engine():
+            check("auto.its_own_timestamps_are_read",
+                  J._hours_since(J._iso()) < 1
+                  and J._hours_since("2000-01-01 00:00 UTC") > 1000)
+            check("auto.scores_are_read_however_they_come",
+                  J._parse_score("82/100") == 82 and J._parse_score("8.2/10") == 82
+                  and J._parse_score("85%") == 85 and J._parse_score(77.6) == 78
+                  and J._parse_score("high") is None)
+            fresh()
+            calls = {"n": 0}
+
+            class Down:
+                def chat(self, m, s, t=None, **kw):
+                    calls["n"] += 1
+                    raise ConnectionError("Connection refused")
+            for i in range(6):
+                role(f"Dead engine role {i}")
+            out = J.auto_apply(Down())
+            check("auto.a_dead_engine_is_asked_three_times_not_six",
+                  calls["n"] == J.ENGINE_TRIP and out["engine_stopped"]
+                  and any("left for the next run" in e for e in out["errors"]),
+                  f"{calls}")
+            fresh()
+            k = role("Wordy")
+            seq = ["Sure! Here's my assessment of the fit.",
+                   json.dumps({"score": "88/100", "verdict": "strong"})]
+
+            class Chatty:
+                def chat(self, m, s, t=None, **kw):
+                    return blk(seq.pop(0))
+            check("auto.a_reply_without_json_is_asked_once_more",
+                  J.score_role(k, Chatty())["ok"]
+                  and J.get_role(k)["fit"]["score"] == 88)
+
+            class NoScore:
+                def chat(self, m, s, t=None, **kw):
+                    return blk(json.dumps({"verdict": "strong"}))
+            k2 = role("Unscored")
+            check("auto.a_reply_with_no_score_is_not_filed_as_zero",
+                  not J.score_role(k2, NoScore())["ok"]
+                  and (J.get_role(k2).get("fit") or {}).get("score") is None)
+
+            class Empty:
+                def chat(self, m, s, t=None, **kw):
+                    return blk(json.dumps({"subject": "", "body": ""}))
+            k3 = role("Blank", fit=90)
+            check("auto.an_empty_draft_is_not_saved_as_drafted",
+                  not J.draft_application(k3, Empty())["ok"]
+                  and J.get_role(k3)["stage"] == "found")
+        section("auto.engine", engine)
+
+        # --- one run at a time, in the background --------------------------- #
+        def runs():
+            fresh()
+            role("Mail", fit=90, email="m@m.test", draft=dict(CLEAN))
+            J._RUN_LOCK.acquire()
+            try:
+                busy = J.auto_apply(None)
+            finally:
+                J._RUN_LOCK.release()
+            check("auto.only_one_run_at_a_time",
+                  busy["ok"] is False and "already" in busy["error"])
+            st = J.start_run("apply", None)
+            again = J.start_run("apply", None)
+            for _ in range(100):
+                if J.run_status()["state"] != "running":
+                    break
+                _axtime.sleep(0.05)
+            s = J.run_status()
+            check("auto.a_background_run_reports_when_done",
+                  st["ok"] and s["state"] == "done"
+                  and "1 sent" in s["result"]["summary"], f"{s}")
+            check("auto.a_second_start_follows_the_first",
+                  again.get("already") or again["state"] in ("running", "done"))
+        section("auto.runs", runs)
+
+        # --- roles storage survives a bad write and concurrent writers ------ #
+        def storage():
+            fresh()
+            keys = [role(f"Stored role {i}") for i in range(4)]
+            J.save_roles(J.roles())
+            p = J._roles_path()
+            p.write_text('[{"key": "half', "utf-8")
+            check("storage.a_damaged_file_falls_back_to_the_last_good_copy",
+                  len(J.roles()) == 4)
+            J.save_roles(json.loads(p.with_name(p.name + ".bak")
+                                    .read_text("utf-8")))
+
+            def bump(k, n):
+                for i in range(n):
+                    J.update_role(k, **{f"n_{threading.get_ident()}": i})
+            ts = [threading.Thread(target=bump, args=(keys[i % 4], 15))
+                  for i in range(8)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            got = sum(len([f for f in r if f.startswith("n_")])
+                      for r in J.roles())
+            check("storage.concurrent_writers_lose_nothing", got == 8, f"{got}")
+        section("storage", storage)
+    finally:
+        O.send, O.is_configured, O._is_draft_only, P.apply_to_portal = saved
+        _axc.AGENT_HOME, _axc.DB_PATH = home, db
+
+
+# ---------------------------------------------------------------------- #
+# Finding more sources.
+#   python -c "import tests.run_tests as t; t._sources_checks()"
+# ---------------------------------------------------------------------- #
+def _sources_checks() -> None:
+    import tempfile as _sxt
+    from agent import config as _sxc
+    import agent.jobscout as J
+    import agent.boards as B
+
+    def section(name, fn):
+        try:
+            fn()
+        except AssertionError:
+            raise
+        except Exception as exc:
+            check(f"{name}.ran", False, f"{type(exc).__name__}: {exc}")
+
+    RSS = ("<rss><channel><item><title>Senior Data Engineer</title>"
+           "<link>https://feed.test/1</link><description>Python SQL dbt"
+           "</description></item></channel></rss>")
+    GH = json.dumps({"jobs": [{"title": "Data Engineer",
+                               "absolute_url": "https://boards.greenhouse.io/acme/jobs/9",
+                               "location": {"name": "Remote"},
+                               "content": "&lt;p&gt;Python, SQL and dbt.&lt;/p&gt;"}]})
+    LV = json.dumps([{"text": "Analytics Engineer",
+                      "hostedUrl": "https://jobs.lever.co/globex/x1",
+                      "categories": {"location": "Cape Town"},
+                      "workplaceType": "remote",
+                      "descriptionPlain": "SQL, Python, Power BI."}])
+    AS = json.dumps({"jobs": [{"title": "Data Engineer", "isRemote": True,
+                               "jobUrl": "https://jobs.ashbyhq.com/beta/u1",
+                               "location": "Europe",
+                               "descriptionPlain": "Python and SQL."}]})
+    fetched = []
+    pages = {}
+
+    def fetcher(u):
+        fetched.append(u)
+        for k, v in pages.items():
+            if k in u:
+                return v
+        raise RuntimeError("404 Not Found")
+
+    home, db, cat = _sxc.AGENT_HOME, _sxc.DB_PATH, list(B.CATALOGUE)
+    prev_fetch, prev_browser = J.JOB_FETCHER, J.fetch_with_browser
+    try:
+        _sxc.AGENT_HOME = Path(_sxt.mkdtemp(prefix="src-"))
+        _sxc.DB_PATH = _sxc.AGENT_HOME / "s.db"
+        J.save_profile({"summary": "Data engineer building pipelines.",
+                        "target_roles": ["Data Engineer", "Analytics Engineer"],
+                        "skills": ["Python", "SQL"],
+                        "technologies": ["Python", "SQL", "dbt", "Power BI"],
+                        "employers": ["Standard Bank"], "achievements": ["x"],
+                        "years_experience": {"BI": "8"}})
+        J.save_job_sources([])
+        J.JOB_FETCHER = fetcher
+        J.fetch_with_browser = lambda u: (_ for _ in ()).throw(
+            RuntimeError("no browser here"))
+
+        def exhaustion():
+            B.CATALOGUE[:] = [
+                {"name": "Good feed", "kind": "rss", "url": "https://good.test/rss",
+                 "regions": [B.WORLD], "focus": ["data"], "about": ""},
+                {"name": "Dead feed", "kind": "rss", "url": "https://dead.test/rss",
+                 "regions": [B.WORLD], "focus": ["data"], "about": ""}]
+            pages.clear()
+            pages["good.test"] = RSS
+            first = B.auto_add()
+            check("sources.a_working_board_is_added",
+                  [a["name"] for a in first["added"]] == ["Good feed"]
+                  and "Added 1" in first["message"], first.get("message"))
+            fetched.clear()
+            again = B.auto_add()
+            check("sources.a_failed_board_is_not_retried_every_click",
+                  not any("dead.test" in u for u in fetched)
+                  and [r["name"] for r in again["resting"]] == ["Dead feed"],
+                  f"{fetched}")
+            check("sources.running_out_says_so_and_says_what_to_do",
+                  again["message"].startswith("Nothing new to add")
+                  and "Greenhouse" in again["message"])
+        section("sources.exhaustion", exhaustion)
+
+        def company():
+            check("sources.company_boards_are_recognised",
+                  J.ats_board_for("https://job-boards.greenhouse.io/acme/jobs/1")[:2]
+                  == ("greenhouse", "acme")
+                  and J.ats_board_for("https://boards.greenhouse.io/embed/job_app?for=acme")[1]
+                  == "acme"
+                  and J.ats_board_for("https://jobs.lever.co/globex/abc")[:2]
+                  == ("lever", "globex")
+                  and J.ats_board_for("https://jobs.ashbyhq.com/beta/u")[:2]
+                  == ("ashby", "beta")
+                  and J.ats_board_for("https://careers.example.com/jobs/1") is None)
+            J.add_roles([
+                {"title": "BI Developer", "company": "Acme",
+                 "url": "https://boards.greenhouse.io/acme/jobs/123"},
+                {"title": "BI Analyst", "company": "Globex",
+                 "url": "https://jobs.lever.co/globex/abc"},
+                {"title": "Data Lead", "company": "Beta",
+                 "url": "https://jobs.ashbyhq.com/beta/u1"}])
+            pages["boards-api.greenhouse.io/v1/boards/acme"] = GH
+            pages["api.lever.co/v0/postings/globex"] = LV
+            pages["api.ashbyhq.com/posting-api/job-board/beta"] = AS
+            offered = {b["name"] for b in B.company_boards()}
+            check("sources.tracked_companies_offer_their_whole_board",
+                  offered == {"Acme — careers", "Globex — careers",
+                              "Beta — careers"}, f"{offered}")
+            res = B.auto_add()
+            kinds = sorted(a["kind"] for a in res["added"])
+            check("sources.company_boards_are_added_when_the_list_runs_out",
+                  kinds == ["ashby", "greenhouse", "lever"], f"{res['message']}")
+            check("sources.an_added_company_board_is_not_offered_again",
+                  B.company_boards() == [])
+            d = J.discover()
+            got = {(r["title"], r["company"]) for r in J.roles()}
+            check("sources.their_roles_arrive_with_the_company_named",
+                  ("Data Engineer", "Acme") in got
+                  and ("Analytics Engineer", "Globex") in got
+                  and ("Data Engineer", "Beta") in got, f"{got} {d.get('errors')}")
+            lv = [r for r in J.roles() if r["company"] == "Globex"
+                  and r["title"] == "Analytics Engineer"][0]
+            gh = [r for r in J.roles() if r["company"] == "Acme"
+                  and r["title"] == "Data Engineer"][0]
+            check("sources.ats_details_are_read_properly",
+                  "remote" in lv["location"].lower()
+                  and "dbt" in gh.get("summary", "")
+                  and "&lt;" not in gh.get("summary", ""))
+        section("sources.company", company)
+
+        def browser_retry():
+            shell = "<html><head><title>Jobs</title></head><body><div id=app></div></body></html>"
+            drawn = ("<html><head><title>Jobs</title></head><body>"
+                     + "".join(f'<a href="/jobs/{i}-data-engineer">Data Engineer {i}</a>'
+                               for i in range(3)) + "</body></html>")
+            pages["drawn.test"] = shell
+            J.fetch_with_browser = lambda u: drawn
+            v = B.validate("https://drawn.test/jobs", "html")
+            check("sources.a_board_drawn_by_script_is_tried_in_the_browser",
+                  v.get("ok") and v.get("kind") == "browser", f"{v}")
+        section("sources.browser", browser_retry)
+
+        check("sources.the_window_reports_what_happened",
+              "Added ${x.added ?? 0}" not in
+              (Path(__file__).resolve().parents[1] / "web_jobs" / "jobs.js")
+              .read_text("utf-8"))
+    finally:
+        B.CATALOGUE[:] = cat
+        J.JOB_FETCHER, J.fetch_with_browser = prev_fetch, prev_browser
+        _sxc.AGENT_HOME, _sxc.DB_PATH = home, db
+
+
+# ---------------------------------------------------------------------- #
+# The in-page helper follows an application through every page.
+#   python -c "import tests.run_tests as t; t._helper_checks()"
+#   python tools/check_helper.py     (the same, in a real browser)
+# ---------------------------------------------------------------------- #
+def _helper_checks() -> None:
+    import agent.portal as P
+    src = (Path(__file__).resolve().parents[1] / "agent" / "portal.py").read_text("utf-8")
+    js = P._COMPANION_JS
+
+    prof = {"full_name": "Thandi Mokoena", "email": "t@example.com",
+            "phone": "+27 82 000 0000", "linkedin": "https://linkedin.com/in/t",
+            "availability": "30 days"}
+    role = {"title": "Data Engineer", "company": "Acme",
+            "draft": {"body": "I build data platforms."}}
+    pay = P.companion_payload([{"label": "Why here?", "value": "x",
+                                "source": "engine"}], prof, role)
+    check("helper.it_carries_your_profile_to_every_screen",
+          pay["known"].get("email") == "t@example.com"
+          and pay["known"].get("first_name") == "Thandi"
+          and pay["known"].get("notice") == "30 days"
+          and pay["hints"][0]["label"] == "Why here?")
+    check("helper.it_uses_the_fillers_own_rules",
+          [k for k, _ in pay["rules"]] == [k for k, _ in P.FIELD_PATTERNS]
+          and pay["sensitive"] == list(P.SENSITIVE))
+    check("helper.it_says_which_application_it_is_for",
+          pay["for"] == "Data Engineer @ Acme")
+
+    class _Frame:
+        def __init__(self):
+            self.ran = 0
+
+        def evaluate(self, script):
+            self.ran += 1
+            return True
+
+    class _Ctx:
+        def __init__(self):
+            self.init = []
+            self.pages = []
+
+        def add_init_script(self, script):
+            self.init.append(script)
+
+    class _Page:
+        def __init__(self, ctx):
+            self.context, self.frames = ctx, [_Frame(), _Frame()]
+            self.main = 0
+
+        def evaluate(self, script):
+            self.main += 1
+            return True
+
+    ctx = _Ctx()
+    pg = _Page(ctx)
+    ctx.pages = [pg]
+    ok = P.PlaywrightDriver.companion(object.__new__(P.PlaywrightDriver), pg, pay)
+    check("helper.it_is_registered_for_every_page_tab_and_frame_to_come",
+          ok and len(ctx.init) == 1 and '"t@example.com"' in ctx.init[0]
+          and "__AGENT_JO_DATA__" not in ctx.init[0])
+    check("helper.it_is_put_into_every_frame_already_open",
+          pg.main == 1 and all(f.ran == 1 for f in pg.frames))
+    check("helper.an_old_style_list_of_hints_still_works",
+          P.PlaywrightDriver.companion(object.__new__(P.PlaywrightDriver),
+                                       _Page(_Ctx()), [{"label": "a"}]))
+
+    seen = {}
+
+    class _D:
+        def companion(self, page, data):
+            seen.update(data)
+            return True
+    P._HELP.profile, P._HELP.role = prof, role
+    try:
+        P._offer_companion(_D(), None, [])
+    finally:
+        P._HELP.profile = P._HELP.role = None
+    check("helper.a_session_hands_it_the_profile",
+          seen.get("known", {}).get("phone") == "+27 82 000 0000")
+
+    check("helper.it_sees_inside_web_components", "composedPath" in js)
+    check("helper.a_field_reached_by_keyboard_gets_help",
+          '"focusin"' in js)
+    check("helper.it_waits_for_the_pointer_to_reach_it",
+          "hideTimer" in js and "mouseenter" in js)
+    check("helper.it_never_writes_html_strings",
+          "innerHTML" not in js)              # pages enforcing Trusted Types
+    check("helper.it_shows_it_is_there", "data-agent-jo" in js and "badge" in js)
+    check("helper.someone_elses_details_are_not_offered",
+          "referee|reference" in js)
+    check("helper.the_profile_registers_it", "add_init_script" in src)
+
+
+# ---------------------------------------------------------------------- #
+# The look: what broke the two references, kept fixed.
+#   python -c "import tests.run_tests as t; t._look_checks()"
+#   python tools/check_layout.py     (the same, measured in a real browser)
+# ---------------------------------------------------------------------- #
+def _look_checks() -> None:
+    import re
+    root = Path(__file__).resolve().parents[1]
+    css = (root / "web" / "static" / "styles.css").read_text("utf-8")
+    js = (root / "web" / "static" / "app.js").read_text("utf-8")
+    jcss = (root / "web_jobs" / "jobs.css").read_text("utf-8")
+    jjs = (root / "web_jobs" / "jobs.js").read_text("utf-8")
+
+    def body(src, head, last=False):
+        # in CSS the last rule with a selector is the one that wins
+        i = src.rfind(head) if last else src.find(head)
+        return src[i:src.index("\n}\n", i)] if i >= 0 else ""
+
+    # Glass: one teal accent, primary buttons included
+    pb = body(css, '[data-look="new"][data-theme="glass"] .btn.primary {')
+    check("look.glass_has_its_own_primary_buttons",
+          pb and "#E0B058" not in pb and "#C08A38" not in pb)
+    check("look.a_plain_link_is_readable_in_glass",
+          ':where([data-look="new"][data-theme="glass"]) a:where(:not([class])) { color: var(--accent); }' in css)
+
+    # the task feed covers nothing in its default corner. It is moved to
+    # <body> at start-up, so .main is found through the board, not the feed
+    tr = body(js, "function _tfReserve() {")
+    check("look.the_feed_reserves_room_through_the_board",
+          'getElementById("dash")' in tr and "closest(\".main\")" not in tr
+          and ".main.tf-reserve .dash" in css
+          and ".main.tf-reserve.tf-reserve-min .dash" in css)
+    check("look.a_repaint_does_no_dom_lookups",
+          "dash.parentElement" in body(js, "function _markDash(dash, n) {")
+          and "querySelector" not in body(js, "function _markDash(dash, n) {"))
+    check("look.the_greeting_shrinks_when_the_board_is_full",
+          ".main.dash-full .empty-title" in css and "_markDash(dash" in js)
+    # asked for: no picture on the welcome in the new look; the previous
+    # look keeps it, as it was
+    check("look.the_new_look_has_no_picture_on_the_welcome",
+          '[data-look="new"][data-theme="glass"] .empty-mark { display: none; }' in css)
+    check("look.needs_you_rows_are_slim",
+          '[data-look="new"][data-theme="glass"] .dash-attention .dash-item {' in css
+          and "border-left: 1px solid var(--line);"
+              in body(css, '[data-look="new"][data-theme="glass"] .dash-attention .dash-item {', last=True))
+
+    # the phone
+    check("look.a_phone_has_one_menu_button",
+          '[data-look="new"][data-theme="glass"] #menuBtn { display: none; }' in css)
+    check("look.the_phone_header_keeps_the_engine_on_screen",
+          "order: 3; flex: 1 1 100%" in css)
+    check("look.the_drawer_sits_above_its_backdrop",
+          "body.nav-open #app::after" in css
+          and "body.nav-open::after { display: none; }" in css)
+    check("look.hidden_still_wins_everywhere",
+          css.rstrip().endswith("[hidden] { display: none !important; }")
+          and jcss.rstrip().endswith("[hidden] { display: none !important; }"))
+
+    # Agent Jo Jobs
+    narrow = jcss.rfind('@media (max-width: 1000px) {\n  [data-look="new"] .shell')
+    check("look.a_narrow_jobs_window_reflows",
+          narrow > jcss.find("density matched to the reference") > 0)
+    check("look.the_jobs_window_shows_keyboard_focus",
+          ":focus-visible" in jcss and "--ink-4: #7f8890" in jcss)
+    check("look.an_open_drafts_pane_is_never_blank", '"Pick a draft"' in jjs)
+
+    # both looks kept, switched in Settings (Agent Jo) and the sidebar (Jobs),
+    # remembered, and applied before the first paint
+    html = (root / "web" / "static" / "index.html").read_text("utf-8")
+    pre = (root / "web" / "static" / "prepaint.js").read_text("utf-8")
+    srv = (root / "web" / "server.py").read_text("utf-8")
+    jhtml = (root / "web_jobs" / "index.html").read_text("utf-8")
+    check("look.agent_jo_keeps_both_looks",
+          "function applyLook" in js and '"model_LOOK"' in js
+          and "agentjo-look" in js and "agentjo-look" in pre
+          and 'data-look="new"' in html)
+    check("look.the_look_is_set_before_the_first_paint",
+          '<script src="/static/prepaint.js"></script>' in html
+          and 'f"/static/prepaint.js?v={v}"' in srv)
+    # the CSP (script-src 'self') blocks inline scripts: theme-before-paint
+    # and the service worker both lived in one and never ran
+    check("look.no_inline_scripts_under_the_csp",
+          not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html))
+    blk = css[css.index("the new look (152), and the previous one"):
+              css.index("--- both looks ---")]
+    loose = [ln.strip() for ln in blk.splitlines()
+             if ln.strip().endswith(("{", ",")) and not ln.strip().startswith(("@", "/*", "*"))
+             and 'data-look="new"' not in ln]
+    check("look.every_new_rule_is_switchable", not loose, f"{loose[:3]}")
+    check("look.agent_jo_jobs_keeps_both_looks",
+          'id="lookSel"' in jhtml and 'data-look="new"' in jhtml
+          and "agentjo-look" in jhtml and "function applyLook" in jjs
+          and ':root[data-look="new"] { --ink-4' in jcss
+          and ':root[data-look="previous"] .rail-foot { display: block; }' in jcss)
 
 
 if __name__ == "__main__":

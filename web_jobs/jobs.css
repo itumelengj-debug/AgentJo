@@ -1144,4 +1144,63 @@ body { font-size: 13px; }
 /* on a very wide screen the tail of a page shouldn't float in space */
 .main { min-height: 100%; }
 
+/* --- the new look (152), and the previous one ------------------------- */
+/* Rules under [data-look="new"] are the new look; the sidebar's Look →
+   Previous turns them off and the window is as it was before build 152.
+   Keyboard focus and reduced motion apply to both: they aren't a matter of
+   taste. */
+
+/* The faintest text (counts at zero, conversion notes, placeholders) sat at
+   3.3:1 on the page; this lifts it to 4.6:1 and leaves the rest alone. */
+:root[data-look="new"] { --ink-4: #7f8890; }
+
+/* the window had no visible focus at all, so it couldn't be used from the
+   keyboard; controls that style their own focus keep it */
+:where(button, a[href], summary, select, [role="button"],
+  [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* A narrow window — half a laptop screen is 683px — kept a 200px rail and
+   cut the page off at the right. The narrow layout above (max-width: 1000px)
+   was right; the reference-density rules after it set the rail and the split
+   columns unconditionally and undid it. Re-stated here, after them. */
+@media (max-width: 1000px) {
+  [data-look="new"] .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  [data-look="new"] .rail {
+    flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px;
+    height: auto; position: static; border-right: 0;
+    border-bottom: 1px solid var(--rule); padding: 10px 12px;
+  }
+  [data-look="new"] .rail-brand { padding: 0 8px 0 2px; }
+  [data-look="new"] .rail-nav { flex-direction: row; flex-wrap: wrap; gap: 2px; }
+  [data-look="new"] .rail-rule { display: none; }
+  /* the engine and look pickers stay reachable: at the end of the top bar */
+  [data-look="new"] .rail-foot {
+    display: flex; align-items: center; gap: 6px; margin: 0 0 0 auto; padding: 0;
+  }
+  [data-look="new"] .rail-foot .rail-label,
+  [data-look="new"] .rail-foot .rail-build { display: none; }
+  [data-look="new"] .rail-foot .select { width: auto; }
+  [data-look="new"] .view { padding: 22px 18px 36px; }
+  [data-look="new"] .view-split.is-on { grid-template-columns: minmax(0, 1fr); height: auto; }
+  [data-look="new"] .pane-list { border-right: 0; border-bottom: 1px solid var(--rule); }
+  [data-look="new"] .pane-detail { padding: 22px 18px; }
+  [data-look="new"] .grid-2, [data-look="new"] .grid-3, [data-look="new"] .steps { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* both looks: the narrow layout of old hid the sidebar's foot, and the Look
+   switch lives there — it must always be reachable to switch back */
+@media (max-width: 1000px) {
+  :root[data-look="previous"] .rail-foot { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important;
+  }
+}
+
+
 [hidden] { display: none !important; }

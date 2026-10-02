@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="glass" data-look="new">
 <head>
   <meta charset="utf-8" />
   <!-- viewport-fit=cover so the app can paint under the notch and home bar;
@@ -17,22 +17,8 @@
   <title>Agent Jo</title>
   <link rel="icon" href="/avatar" />
   <link rel="stylesheet" href="/static/styles.css" />
-  <script>
-    /* resolve the theme before first paint, or the page flashes the wrong
-       one for a frame while the stylesheet and JS catch up */
-    (function () {
-      try {
-        var c = localStorage.getItem("agentjo-theme") || "system";
-        var r = c;
-        if (c === "system") {
-          r = (window.matchMedia &&
-               window.matchMedia("(prefers-color-scheme: dark)").matches)
-              ? "fluent" : "fluent-light";
-        }
-        if (r !== "instruments") document.documentElement.setAttribute("data-theme", r);
-      } catch (e) {}
-    })();
-  </script>
+  <!-- theme and look, before the first paint (see prepaint.js) -->
+  <script src="/static/prepaint.js"></script>
 </head>
 <body>
   <div id="app">
@@ -1625,14 +1611,5 @@
   </div>
 
   <script src="/static/app.js"></script>
-  <script>
-    // Registered late and failing quietly: without a service worker the app
-    // still works, it just can't be installed to a home screen.
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/static/sw.js").catch(() => {});
-      });
-    }
-  </script>
 </body>
 </html>

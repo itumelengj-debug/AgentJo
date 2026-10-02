@@ -27,8 +27,11 @@ rather than dangerous:
 """
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -130,14 +133,66 @@ def _roles_path() -> Path:
 
 
 def roles() -> list:
+    """Every tracked role.
+
+    A file that won't parse used to read as "no roles". It was written in
+    place, so a read that landed mid-write saw half a file — and the next
+    save from that reader (discovery adding roles, say) wrote back only what
+    it had, wiping the rest. Writes are atomic now; if the file still won't
+    parse, the last good copy is used rather than nothing.
+    """
+    p = _roles_path()
+    for _ in range(3):
+        try:
+            return json.loads(p.read_text("utf-8"))
+        except FileNotFoundError:
+            return []
+        except Exception:
+            time.sleep(0.05)
     try:
-        return json.loads(_roles_path().read_text("utf-8"))
+        return json.loads(p.with_name(p.name + ".bak").read_text("utf-8"))
     except Exception:
         return []
 
 
 def save_roles(rs: list) -> None:
-    _roles_path().write_text(json.dumps(rs, indent=2), "utf-8")
+    """Write the whole list atomically, keeping the previous copy as .bak."""
+    p = _roles_path()
+    text = json.dumps(rs, indent=2)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, "utf-8")
+    try:
+        if p.exists():
+            p.with_name(p.name + ".bak").write_text(p.read_text("utf-8"), "utf-8")
+    except Exception:
+        pass
+    # Windows refuses to replace a file another process is reading at that
+    # instant (both apps read this one); a moment later it's free
+    for i in range(10):
+        try:
+            os.replace(tmp, p)
+            return
+        except PermissionError:
+            time.sleep(0.05 * (i + 1))
+    p.write_text(text, "utf-8")
+    try:
+        tmp.unlink()
+    except Exception:
+        pass
+
+
+# Every read-modify-write of the roles happens under one lock. Runs now go on
+# in the background while you use the window, and two writers interleaving —
+# a run updating a role while you archive another — lost one of the changes.
+_ROLES_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def inner(*a, **k):
+        with _ROLES_LOCK:
+            return fn(*a, **k)
+    return inner
 
 
 def _looks_like_a_real_role(job: dict) -> bool:
@@ -151,6 +206,7 @@ def _looks_like_a_real_role(job: dict) -> bool:
                 or str(job.get("url") or "").strip())
 
 
+@_locked
 def add_roles(found: list) -> dict:
     """Merge newly-found roles.
 
@@ -199,6 +255,7 @@ def get_role(key: str) -> dict | None:
     return None
 
 
+@_locked
 def update_role(key: str, **fields) -> dict:
     rs = roles()
     for i, r in enumerate(rs):
@@ -209,6 +266,7 @@ def update_role(key: str, **fields) -> dict:
     return {"ok": False, "error": "no such role"}
 
 
+@_locked
 def set_stage(key: str, stage: str, note: str = "") -> dict:
     if stage not in STAGES:
         return {"ok": False, "error": f"stage must be one of {STAGES}"}
@@ -392,6 +450,53 @@ def _json_from(resp) -> dict:
         raise ValueError("engine returned truncated JSON")
 
 
+# Worth one more try: a local model that wrapped its JSON in prose, a provider
+# that said "overloaded". Anything else (no credit, a bad key) won't change in
+# two seconds, so it fails at once with the reason.
+_TRANSIENT = ("no json", "truncated json", "jsondecodeerror", "expecting",
+              "overloaded", "529", "503", "502", "rate", "timeout",
+              "timed out", "temporarily", "connection reset")
+
+
+def _engine_json(brain, payload: str, system: str, model=None) -> dict:
+    kw = {"model": model} if model else {}
+    last = None
+    for attempt in range(2):
+        prompt = system if not attempt else (
+            system + "\nReply with the JSON object only: no prose, no code fence.")
+        try:
+            return _json_from(brain.chat([{"role": "user", "content": payload}],
+                                         [prompt], None, **kw))
+        except Exception as exc:
+            last = exc
+            low = f"{type(exc).__name__}: {exc}".lower()
+            if not any(t in low for t in _TRANSIENT):
+                break
+            if any(t in low for t in ("overloaded", "529", "503", "rate")):
+                time.sleep(3)
+    raise last
+
+
+def _parse_score(v):
+    """82, "82", "82/100", "82%", "8.2/10" -> 82. None when there's no number.
+
+    A reply with no usable score was recorded as 0 — so a local model that
+    answered "score": "82/100", or called it "fit", wrote the role off as a
+    poor match for good, and it was never looked at again."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        n = float(v)
+    else:
+        m = re.search(r"\d+(?:\.\d+)?", str(v))
+        if not m:
+            return None
+        n = float(m.group())
+        if re.search(r"/\s*10(?!\d)", str(v)) and n <= 10:
+            n *= 10
+    return max(0, min(100, int(round(n))))
+
+
 def score_role(key: str, brain, model=None) -> dict:
     r = get_role(key)
     if r is None:
@@ -401,12 +506,15 @@ def score_role(key: str, brain, model=None) -> dict:
         return {"ok": False, "error": why}
     payload = json.dumps({"profile": profile(), "role": r}, default=str)[:12000]
     try:
-        kw = {"model": model} if model else {}
-        data = _json_from(brain.chat([{"role": "user", "content": payload}],
-                                     [_SCORE_SYSTEM], None, **kw))
+        data = _engine_json(brain, payload, _SCORE_SYSTEM, model)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    fit = {"score": int(data.get("score") or 0),
+    score = _parse_score(data.get("score", data.get("fit", data.get("rating"))))
+    if score is None:
+        # left unscored, so the next run asks again, rather than filed as 0
+        return {"ok": False, "error": "the engine's reply had no score in it: "
+                                      + json.dumps(data, default=str)[:160]}
+    fit = {"score": score,
            "verdict": _as_text(data.get("verdict")) or "possible",
            "for": _as_list(data.get("for"))[:6],
            "against": _as_list(data.get("against"))[:6],
@@ -438,15 +546,18 @@ def draft_application(key: str, brain, model=None) -> dict:
                           "VOICE": p.get("voice_notes", "")},
                          default=str)[:12000]
     try:
-        kw = {"model": model} if model else {}
-        data = _json_from(brain.chat([{"role": "user", "content": payload}],
-                                     [_DRAFT_SYSTEM + _banned_clause()],
-                                     None, **kw))
+        data = _engine_json(brain, payload, _DRAFT_SYSTEM + _banned_clause(),
+                            model)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    body = _as_text(data.get("body"))
+    body = _as_text(data.get("body") or data.get("message")).strip()
+    if not body:
+        # saved as "drafted" with nothing in it, the role sat at "no draft
+        # yet" looking finished; it stays undrafted so the next run tries
+        return {"ok": False, "error": "the engine returned an empty draft"}
     check = check_draft(body, r)
-    draft = {"subject": _as_text(data.get("subject"))[:200],
+    subject = _as_text(data.get("subject")).strip()
+    draft = {"subject": (subject or f"Application: {r.get('title', '')}")[:200],
              "body": body,
              "gaps": _as_list(data.get("gaps"))[:8],
              "check": check, "at": _iso()}
@@ -505,6 +616,9 @@ AUTO_DEFAULTS = {
     "portal_mode": "prepare",
     "daily_cap": 5,         # applications are not a numbers game; a cap also
                             # bounds the blast radius of any mistake
+    # each prepared form is a page left open for you to finish; a run that
+    # opened forty of them would bury the ones that matter
+    "portal_per_run": 5,
     "signature": "",
 }
 
@@ -547,16 +661,46 @@ def _explain_engine_error(err: str) -> str:
 
 
 def _sent_today() -> int:
+    """Real applications today. A rehearsal sends nothing, so it uses none of
+    the day's cap — it used to, and a morning of rehearsing left the real run
+    with no room."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return sum(1 for r in roles()
-               if r.get("sent_at", "").startswith(today))
+               if r.get("sent_at", "").startswith(today)
+               and not r.get("sent_dry_run"))
+
+
+def _undo_rehearsal_stages() -> int:
+    """Put back roles an earlier rehearsal marked as applied.
+
+    A rehearsal moved each role it "sent" to applied — so the roles that had
+    cleared every gate, the best ones, were never sent once rehearsal was
+    turned off. A rehearsal now leaves the role where it is; this repairs the
+    ones it already moved. Idempotent.
+    """
+    n = 0
+    for r in roles():
+        if r.get("stage") == "applied" and r.get("sent_dry_run"):
+            back = "drafted" if (r.get("draft") or {}).get("body") else "found"
+            update_role(r["key"], sent_at="", sent_dry_run=False,
+                        rehearsed_at=r.get("sent_at", ""))
+            set_stage(r["key"], back, "rehearsal only; nothing was sent")
+            n += 1
+    return n
+
+
+_NO_EMAIL = "no application email on the advert"
 
 
 def _gate(r: dict, cfg: dict) -> str:
-    """Return '' if this role may be auto-applied to, else why it can't."""
-    if not _as_text(r.get("apply_email")).strip():
-        return ("no application email on the advert — portal applications "
-                "still need you")
+    """Return '' if this role may be auto-applied to, else why it can't.
+
+    The address is checked last. It was checked first, and a role without one
+    — most adverts — went straight to the portal path without ever meeting the
+    fit threshold or the claim check: a 20% match, or a draft inventing a
+    certification, had its form filled in, and submitted in submit mode.
+    Every role now clears the same gates; only how it is delivered differs.
+    """
     fit = r.get("fit") or {}
     if fit.get("score") is None:
         return "not scored yet"
@@ -576,6 +720,50 @@ def _gate(r: dict, cfg: dict) -> str:
         n = len(chk.get("problems") or [])
         return (f"draft makes {n} claim(s) I can't source from your profile "
                 f"— needs your eyes")
+    if not _as_text(r.get("apply_email")).strip():
+        return f"{_NO_EMAIL} — portal applications still need you"
+    return ""
+
+
+PORTAL_TRIES = 3
+_PORTAL_WAITING = ("filled", "needs_answer", "unknown_form", "needs_login",
+                   "needs_captcha")
+
+
+def _hours_since(stamp: str) -> float:
+    """Hours since one of _iso()'s stamps ("2026-10-01 20:40 UTC"); an ISO
+    stamp is read too. Unreadable counts as long ago."""
+    s = str(stamp or "").strip()
+    for parse in (lambda: datetime.strptime(s, "%Y-%m-%d %H:%M UTC"),
+                  lambda: datetime.fromisoformat(s.replace("Z", "+00:00"))):
+        try:
+            t = parse()
+        except Exception:
+            continue
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds() / 3600
+    return 1e9
+
+
+def _portal_wait(r: dict) -> str:
+    """Why a portal role shouldn't be opened again this run, or ''.
+
+    Every run reopened every portal form, prepared or not — another tab for
+    the same advert each morning — and a form that failed was retried for
+    ever."""
+    p = r.get("portal") or {}
+    state, at = p.get("state", ""), r.get("portal_at", "")
+    if state in _PORTAL_WAITING and _hours_since(at) < 72:
+        return ("its form was prepared and is waiting for you — use "
+                "'Open the form with help' on the role to finish it")
+    if state == "failed":
+        tries = int(r.get("portal_attempts") or 0)
+        if tries >= PORTAL_TRIES:
+            return (f"its form failed {tries} times, so it is left to you — "
+                    f"last time: {str(p.get('message', ''))[:140]}")
+        if _hours_since(at) < 20:
+            return "its form failed recently; it is tried again tomorrow"
     return ""
 
 
@@ -591,6 +779,7 @@ def auto_readiness() -> dict:
     """
     from . import outreach
     cfg = auto_config()
+    _undo_rehearsal_stages()
     roles_all = roles()
     ready, why = profile_ready()
     blockers, notes = [], []
@@ -649,6 +838,25 @@ def auto_readiness() -> dict:
                         else f"{len(blockers)} thing(s) stop anything being sent.")}
 
 
+# One run at a time. Two at once — the daily schedule firing while you press
+# Run, or a run started twice from two windows — could each pick the same role
+# and send it twice.
+_RUN_LOCK = threading.Lock()
+# Consecutive failures with the same cause before a run stops asking the
+# engine. With no credit, or Ollama stopped, every role failed in turn, each
+# waiting out its own timeout, and the run took an age to say one thing.
+ENGINE_TRIP = 3
+
+_BG: dict = {"state": "idle", "kind": "", "started": "", "finished": "",
+             "progress": {}, "result": None, "error": ""}
+_BG_LOCK = threading.Lock()
+
+
+def _note(phase: str, done: int = 0, total: int = 0, title: str = "") -> None:
+    _BG["progress"] = {"phase": phase, "done": done, "total": total,
+                       "title": str(title or "")[:120]}
+
+
 def auto_apply(brain, model=None, limit: int | None = None) -> dict:
     """Score, draft and SEND applications that clear every gate. Anything
     that doesn't clear a gate is held for you with the reason — that's the
@@ -660,125 +868,247 @@ def auto_apply(brain, model=None, limit: int | None = None) -> dict:
     ok, why = profile_ready()
     if not ok:
         return {"ok": False, "error": why}
-    from . import outreach
+    if not _RUN_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "An auto-apply run is already going. "
+                                      "Wait for it to finish, then run again."}
+    try:
+        return _auto_apply(brain, model, limit, cfg)
+    finally:
+        _RUN_LOCK.release()
 
+
+def _fit_of(r: dict) -> int:
+    s = (r.get("fit") or {}).get("score")
+    return int(s) if isinstance(s, (int, float)) else -1
+
+
+def _auto_apply(brain, model, limit, cfg) -> dict:
+    from . import outreach
+    _undo_rehearsal_stages()
+    dry = bool(cfg.get("dry_run", True))
+    floor = int(cfg["min_score"])
+    mode = str(cfg.get("portal_mode", "prepare")).lower()
     sent, held, errors, prepared = [], [], [], []
     cap = int(cfg.get("daily_cap", 5))
     room = max(0, cap - _sent_today())
-    todo = [r for r in roles()
-            if r.get("stage") in ("found", "drafted")]
+    portal_room = max(0, int(cfg.get("portal_per_run", 5) or 0))
+    todo = [r for r in roles() if r.get("stage") in ("found", "drafted")]
     if limit:
         todo = todo[:limit]
 
-    for r in todo:
+    # --- 1. bring every role up to date: score it, draft the good ones ------
+    failed, engine_down, last, streak, skipped = set(), "", "", 0, 0
+
+    def _engine_failed(r, err):
+        nonlocal last, streak, engine_down
+        why = _explain_engine_error(err)
+        errors.append(f"{r['title']}: {why}")
+        failed.add(r["key"])
+        streak = streak + 1 if why == last else 1
+        last = why
+        if streak >= ENGINE_TRIP:
+            engine_down = why
+
+    for i, r in enumerate(todo, 1):
         key = r["key"]
+        needs_score = (r.get("fit") or {}).get("score") is None
+        needs_draft = (not needs_score and _fit_of(r) >= floor
+                       and not (r.get("draft") or {}).get("body"))
+        if engine_down:
+            if needs_score or needs_draft:
+                skipped += 1
+                failed.add(key)
+            continue
+        _note("Scoring and drafting", i, len(todo), r.get("title", ""))
         try:
-            # bring it up to date: score, then draft
-            if (r.get("fit") or {}).get("score") is None:
+            if needs_score:
                 s = score_role(key, brain, model=model)
                 if not s.get("ok"):
-                    errors.append(f"{r['title']}: "
-                                  + _explain_engine_error(s["error"]))
+                    _engine_failed(r, s["error"])
                     continue
-                r = get_role(key)
-            fit = r.get("fit") or {}
-            if int(fit.get("score") or 0) >= int(cfg["min_score"]) \
-                    and not (r.get("draft") or {}).get("body"):
+                streak = 0
+                r = get_role(key) or r
+            if _fit_of(r) >= floor and not (r.get("draft") or {}).get("body"):
                 d = draft_application(key, brain, model=model)
                 if not d.get("ok"):
-                    errors.append(f"{r['title']}: "
-                                  + _explain_engine_error(d["error"]))
+                    _engine_failed(r, d["error"])
                     continue
-                r = get_role(key)
+                streak = 0
+        except Exception as exc:
+            failed.add(key)
+            errors.append(f"{r.get('title', '?')}: {type(exc).__name__}: {exc}")
+    if skipped:
+        errors.append(f"{skipped} more role(s) left for the next run: "
+                      f"{engine_down}")
 
+    # --- 2. deliver, best fit first, so the day's cap goes to the strongest --
+    ready = [get_role(r["key"]) for r in todo if r["key"] not in failed]
+    ready = [r for r in ready if r and r.get("stage") in ("found", "drafted")]
+    ready.sort(key=lambda r: -_fit_of(r))
+    for i, r in enumerate(ready, 1):
+        key = r["key"]
+        _note("Applying", i, len(ready), r.get("title", ""))
+        row = {"key": key, "title": r["title"], "company": r.get("company", "")}
+        try:
             reason = _gate(r, cfg)
-            if reason:
-                # A role with no address was simply skipped, so auto-apply
-                # only ever worked for email — and most adverts are portals.
-                # It prepares those instead: the form is opened and filled,
-                # the engine answers what it can from your profile, and you
-                # finish it. Submitting on its own stays off unless asked.
-                mode = str(cfg.get("portal_mode", "prepare")).lower()
-                # match the gate's own words, not a guess at them
-                if ("no application email" in reason and mode != "off"
-                        and str(r.get("url") or "").strip()):
-                    try:
-                        from . import portal as _portal
-                        res = _portal.apply_to_portal(
-                            r, profile(), submit=(mode == "submit"),
-                            brain=brain, model=model)
-                    except Exception as exc:
-                        errors.append(f"{r['title']}: portal — "
-                                      f"{type(exc).__name__}: {exc}")
-                        continue
-                    state = res.get("state", "")
-                    update_role(key, portal=res)
-                    if state == "submitted":
-                        room -= 1
-                        set_stage(key, "applied", "submitted via portal")
-                        sent.append({"key": key, "title": r["title"],
-                                     "company": r.get("company", ""),
-                                     "to": "portal", "dry_run": False})
-                    else:
-                        prepared.append({
-                            "key": key, "title": r["title"],
-                            "company": r.get("company", ""),
-                            "state": state,
-                            "answered": len([a for a in (res.get("answers") or [])
-                                             if a.get("source") == "engine"]),
-                            "needs_you": [a["question"] for a
-                                          in (res.get("answers") or [])
-                                          if a.get("source") != "engine"],
-                            "url": r.get("url", ""),
-                            "message": res.get("message", "")})
+            portal_ok = (reason.startswith(_NO_EMAIL) and mode != "off"
+                         and str(r.get("url") or "").strip())
+            if reason and not portal_ok:
+                held.append({**row, "reason": reason})
+                continue
+            if portal_ok:
+                # most adverts have no address: the form is opened and filled,
+                # the engine answers what it can, and you finish it. Submitting
+                # by itself stays off unless asked — and never in rehearsal.
+                wait = _portal_wait(r)
+                submit = mode == "submit" and not dry
+                if not wait and portal_room <= 0:
+                    wait = (f"this run's limit of {cfg.get('portal_per_run', 5)} "
+                            f"portal form(s) was reached — it is next in line")
+                if not wait and submit and room <= 0:
+                    wait = f"daily cap of {cap} reached — queued for tomorrow"
+                if wait:
+                    held.append({**row, "reason": wait})
                     continue
-                held.append({"key": key, "title": r["title"],
-                             "company": r.get("company", ""),
-                             "reason": reason})
+                from . import portal as _portal
+                try:
+                    res = _portal.apply_to_portal(r, profile(), submit=submit,
+                                                  brain=brain, model=model)
+                except Exception as exc:
+                    res = {"state": "failed",
+                           "message": f"{type(exc).__name__}: {exc}"}
+                portal_room -= 1
+                state = res.get("state", "")
+                update_role(key, portal=res, portal_at=_iso(),
+                            portal_attempts=(int(r.get("portal_attempts") or 0)
+                                             + 1 if state == "failed" else 0))
+                if state == "submitted":
+                    room -= 1
+                    update_role(key, sent_at=_iso(), sent_dry_run=False)
+                    set_stage(key, "applied", "submitted via portal")
+                    sent.append({**row, "to": "portal", "dry_run": False})
+                elif state == "failed":
+                    errors.append(f"{r['title']}: portal: "
+                                  + str(res.get("message") or "the form failed"))
+                else:
+                    answers = res.get("answers") or []
+                    prepared.append({
+                        **row, "state": state, "url": r.get("url", ""),
+                        "answered": len([a for a in answers
+                                         if a.get("source") == "engine"]),
+                        "needs_you": [a["question"] for a in answers
+                                      if a.get("source") != "engine"],
+                        "message": res.get("message", ""),
+                        "rehearsal": dry and mode == "submit"})
                 continue
             if room <= 0:
-                held.append({"key": key, "title": r["title"],
-                             "company": r.get("company", ""),
-                             "reason": f"daily cap of {cap} reached — queued "
-                                       f"for tomorrow"})
+                held.append({**row, "reason": f"daily cap of {cap} reached — "
+                                              f"queued for tomorrow"})
                 continue
-
             d = r["draft"]
+            subject = (_as_text(d.get("subject")).strip()
+                       or f"Application: {r['title']}")
             body = d["body"] + ("\n\n" + cfg["signature"]
                                 if cfg.get("signature") else "")
-            res = outreach.send(r["apply_email"], d["subject"], body,
-                                dry_run=bool(cfg.get("dry_run", True)))
+            res = outreach.send(r["apply_email"], subject, body, dry_run=dry)
             if res.get("ok"):
                 room -= 1
-                stamp = _iso()
-                update_role(key, sent_at=stamp,
-                            sent_dry_run=bool(cfg.get("dry_run", True)))
-                set_stage(key, "applied",
-                          ("REHEARSAL (dry run) — not actually sent"
-                           if cfg.get("dry_run") else "auto-applied"))
-                sent.append({"key": key, "title": r["title"],
-                             "company": r.get("company", ""),
-                             "to": r["apply_email"],
-                             "dry_run": bool(cfg.get("dry_run", True))})
+                if dry:
+                    # rehearsed, not applied: the role stays where it is, so
+                    # it really goes once rehearsal is off
+                    update_role(key, rehearsed_at=_iso())
+                else:
+                    update_role(key, sent_at=_iso(), sent_dry_run=False)
+                    set_stage(key, "applied", "auto-applied")
+                sent.append({**row, "to": r["apply_email"], "dry_run": dry})
             else:
                 errors.append(f"{r['title']}: {res.get('error', 'send failed')}")
         except Exception as exc:
             errors.append(f"{r.get('title', '?')}: {type(exc).__name__}: {exc}")
 
     # twelve roles failing with the same message is one fault, not twelve
-    common = ""
-    if errors and len(errors) >= 3:
+    common = engine_down
+    if not common and errors and len(errors) >= 3:
         tails = [e.split(": ", 1)[-1] for e in errors]
         if len(set(tails)) == 1:
             common = tails[0]
+    groups: dict = {}
+    for e in errors:
+        tail = e.split(": ", 1)[-1]
+        groups[tail] = groups.get(tail, 0) + 1
+    _note("Finished", len(ready), len(ready))
     _audit("auto-apply",
-           f"{len(sent)} sent{' (dry run)' if cfg.get('dry_run') else ''}, "
-           f"{len(held)} held, {len(errors)} error(s)")
+           f"{len(sent)} sent{' (rehearsal)' if dry else ''}, "
+           f"{len(prepared)} prepared, {len(held)} held, {len(errors)} error(s)")
     return {"ok": True, "sent": sent, "held": held, "errors": errors,
-            "prepared": prepared,
-            "common_error": common,
-            "dry_run": bool(cfg.get("dry_run", True)),
-            "remaining_today": room}
+            "prepared": prepared, "common_error": common,
+            "error_groups": groups,
+            "engine_stopped": bool(engine_down),
+            "dry_run": dry, "remaining_today": room}
+
+
+def describe_run(r: dict) -> str:
+    """One line saying what a run did, for the window and the log."""
+    if not r.get("ok", True) and r.get("error"):
+        return str(r["error"])
+    bits = []
+    if r.get("discovered") is not None:
+        bits.append(f"{r.get('discovered') or 0} new role(s) found")
+    n_sent = len(r.get("sent") or [])
+    bits.append(f"{n_sent} sent" + (" (rehearsal — nothing left this machine)"
+                                    if r.get("dry_run") and n_sent else ""))
+    if r.get("prepared"):
+        bits.append(f"{len(r['prepared'])} portal form(s) filled for you to "
+                    f"finish")
+    if r.get("held"):
+        bits.append(f"{len(r['held'])} held for you")
+    if r.get("errors"):
+        bits.append(f"{len(r['errors'])} error(s)")
+    if r.get("engine_stopped"):
+        bits.append("stopped asking the engine: " + str(r.get("common_error")))
+    if r.get("error"):
+        bits.append(str(r["error"]))
+    return "; ".join(bits)
+
+
+def run_status() -> dict:
+    with _BG_LOCK:
+        return json.loads(json.dumps(_BG, default=str))
+
+
+def start_run(kind: str, brain, model=None, finish=None) -> dict:
+    """Run auto-apply ("apply") or the whole cycle ("cycle") in the
+    background, and return at once; run_status() follows it.
+
+    A run scores, drafts and opens forms — minutes of work — and it was one
+    request the window waited on. The window gave up first and reported an
+    error while the run carried on, which is exactly "hit and miss"."""
+    with _BG_LOCK:
+        if _BG["state"] == "running":
+            return {"ok": False, "already": True,
+                    "error": "A run is already going.",
+                    **json.loads(json.dumps(_BG, default=str))}
+        _BG.update(state="running", kind=kind, started=_iso(), finished="",
+                   result=None, error="",
+                   progress={"phase": "Starting", "done": 0, "total": 0,
+                             "title": ""})
+
+    def _go():
+        try:
+            res = (auto_cycle(brain, model=model) if kind == "cycle"
+                   else auto_apply(brain, model=model))
+            res["summary"] = res.get("summary") or describe_run(res)
+            if finish is not None:
+                res = finish(res) or res
+            with _BG_LOCK:
+                _BG.update(state="done", result=res, finished=_iso())
+        except Exception as exc:
+            with _BG_LOCK:
+                _BG.update(state="failed", finished=_iso(),
+                           error=f"{type(exc).__name__}: {exc}")
+
+    threading.Thread(target=_go, daemon=True, name=f"jobs-{kind}").start()
+    return {"ok": True, **run_status()}
 
 
 # --------------------------------------------------------------------------- #
@@ -1015,10 +1345,17 @@ def fetch_with_browser(url: str) -> str:
     page = None
     try:
         page = driver.open(url)
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass                       # a slow tracker shouldn't lose the page
+        # Wait for the listing a script draws — through the driver, so it
+        # runs on the browser's own thread. Calling the page directly from
+        # here raised "cannot switch to a different thread", which this
+        # swallowed as a slow tracker: the wait never happened, and a source
+        # whose roles arrive by script came back with none.
+        settle = getattr(driver, "settle", None)
+        if settle is not None:
+            try:
+                settle(page)
+            except Exception:
+                pass                   # a slow tracker shouldn't lose the page
         return driver.html(page)
     finally:
         try:
@@ -1165,9 +1502,97 @@ def _parse_browser_kind(text: str) -> list:
     return _parse_html_kind(text)
 
 
+# --- company hiring systems ------------------------------------------------ #
+# Greenhouse, Lever and Ashby publish each company's open roles as JSON, for
+# exactly this purpose: one documented address per company, nothing scraped,
+# no login. A role you've tracked that links to one of them is a door to
+# every role that company lists — which is where "find more sources" finds
+# new ones once the fixed catalogue has been used up.
+_ATS_ROLE_URL = (
+    ("greenhouse", re.compile(
+        r"(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io/"
+        r"(?:embed/job_app\?for=)?([A-Za-z0-9_-]+)", re.I)),
+    ("lever", re.compile(r"jobs\.(?:eu\.)?lever\.co/([A-Za-z0-9_.-]+)", re.I)),
+    ("ashby", re.compile(r"jobs\.ashbyhq\.com/([A-Za-z0-9_.%-]+)", re.I)),
+)
+_ATS_API = {
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{}/jobs?content=true",
+    "lever": "https://api.lever.co/v0/postings/{}?mode=json",
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{}",
+}
+_ATS_API_SLUG = {
+    "greenhouse": re.compile(r"/boards/([^/?#]+)/jobs", re.I),
+    "lever": re.compile(r"/postings/([^/?#]+)", re.I),
+    "ashby": re.compile(r"/job-board/([^/?#]+)", re.I),
+}
+_ATS_NOT_A_COMPANY = {"embed", "jobs", "job", "careers", "v1", "api"}
+
+
+def ats_board_for(url: str):
+    """(kind, company slug, API address) for a role hosted on Greenhouse,
+    Lever or Ashby; None for anything else."""
+    for kind, rx in _ATS_ROLE_URL:
+        m = rx.search(str(url or ""))
+        if m and m.group(1).lower() not in _ATS_NOT_A_COMPANY:
+            slug = m.group(1)
+            return kind, slug, _ATS_API[kind].format(slug)
+    return None
+
+
+def _ats_company(kind: str) -> str:
+    m = _ATS_API_SLUG[kind].search(_CURRENT_SOURCE_URL.get("url") or "")
+    slug = m.group(1) if m else ""
+    return " ".join(w.capitalize() for w in re.split(r"[-_.]+", slug) if w)
+
+
+def _ats_job(kind, company, title, url, location, body, remote=False) -> dict:
+    loc = _clean_location(location or ("Remote" if remote else ""))
+    if remote and "remote" not in loc.lower():
+        loc = (loc + " (remote)").strip()
+    return {"title": title or "", "company": company, "url": url or "",
+            "location": loc, "summary": body[:600],
+            "apply_email": _apply_email(body),
+            "source": f"{company} ({kind.capitalize()})"}
+
+
+def _parse_greenhouse(text: str) -> list:
+    import html as _html
+    company = _ats_company("greenhouse")
+    return [_ats_job("greenhouse", j.get("company_name") or company,
+                     j.get("title"), j.get("absolute_url"),
+                     (j.get("location") or {}).get("name", ""),
+                     _strip_html(_html.unescape(j.get("content") or "")))
+            for j in (json.loads(text).get("jobs") or [])
+            if isinstance(j, dict)]
+
+
+def _parse_lever(text: str) -> list:
+    data = json.loads(text)
+    company = _ats_company("lever")
+    return [_ats_job("lever", company, j.get("text"), j.get("hostedUrl"),
+                     (j.get("categories") or {}).get("location", ""),
+                     j.get("descriptionPlain")
+                     or _strip_html(j.get("description") or ""),
+                     remote=str(j.get("workplaceType", "")).lower() == "remote")
+            for j in (data if isinstance(data, list) else [])
+            if isinstance(j, dict)]
+
+
+def _parse_ashby(text: str) -> list:
+    company = _ats_company("ashby")
+    return [_ats_job("ashby", company, j.get("title"),
+                     j.get("jobUrl") or j.get("applyUrl"), j.get("location", ""),
+                     j.get("descriptionPlain")
+                     or _strip_html(j.get("descriptionHtml") or ""),
+                     remote=bool(j.get("isRemote")))
+            for j in (json.loads(text).get("jobs") or [])
+            if isinstance(j, dict) and j.get("isListed", True)]
+
+
 _PARSERS = {"remotive": _parse_remotive, "remoteok": _parse_remoteok,
             "rss": _parse_jobs_rss, "html": _parse_html_kind,
-            "browser": _parse_browser_kind}
+            "browser": _parse_browser_kind, "greenhouse": _parse_greenhouse,
+            "lever": _parse_lever, "ashby": _parse_ashby}
 
 
 def looks_like_html(text: str) -> bool:
@@ -1347,6 +1772,7 @@ def auto_cycle(brain, model=None) -> dict:
     'applies to the roles you gave it' into something that can genuinely run
     without you."""
     out = {"discovered": 0, "errors": []}
+    _note("Looking for new roles")
     try:
         d = discover()
         out["discovered"] = d.get("added", 0)
@@ -1374,17 +1800,24 @@ def auto_cycle(brain, model=None) -> dict:
                         ats=ps["score"])
             screened += 1
     out["screened_out"] = screened
+    _note("Checking which adverts have closed")
     try:
         sw = sweep_expired(limit=8)
         out["expired"] = len(sw.get("closed") or [])
     except Exception:
         out["expired"] = 0
     res = auto_apply(brain, model=model)
+    # the prepared forms and the shared cause were dropped here, so a
+    # scheduled run never reported the portal work it had done
     out.update({k: res.get(k) for k in
-                ("ok", "sent", "held", "dry_run", "remaining_today")})
+                ("ok", "sent", "held", "dry_run", "remaining_today",
+                 "prepared", "common_error", "error_groups",
+                 "engine_stopped")})
     out["errors"] += res.get("errors", [])
     if not res.get("ok"):
         out["error"] = res.get("error", "")
+        out["ok"] = True              # the finding still happened
+    out["summary"] = describe_run(out)
     return out
 
 
@@ -2244,6 +2677,7 @@ def unignore(key: str) -> dict:
     return {"ok": True, "ignored": keep}
 
 
+@_locked
 def remove_role(key: str, forget: bool = True) -> dict:
     """Remove one tracked role. `forget` keeps it from coming back."""
     key = (key or "").strip()
@@ -2261,6 +2695,7 @@ def remove_role(key: str, forget: bool = True) -> dict:
             "forgotten": bool(forget), "remaining": len(keep)}
 
 
+@_locked
 def remove_roles(keys: list, forget: bool = True) -> dict:
     wanted = {str(k).strip() for k in (keys or []) if str(k).strip()}
     rs = roles()
@@ -2275,6 +2710,7 @@ def remove_roles(keys: list, forget: bool = True) -> dict:
     return {"ok": True, "removed": removed, "remaining": len(keep)}
 
 
+@_locked
 def prune_junk(forget: bool = False) -> dict:
     """Remove roles that were never vacancies.
 
@@ -2295,6 +2731,7 @@ def prune_junk(forget: bool = False) -> dict:
             "titles": [r.get("title", "") for r in junk][:20]}
 
 
+@_locked
 def clear_roles(stage: str = "", never_scored: bool = False,
                 forget: bool = False) -> dict:
     """Bulk tidy-up. Defaults to NOT remembering, because clearing out old
@@ -2361,6 +2798,7 @@ def _norm_title(s: str) -> str:
     return " ".join(t.split())
 
 
+@_locked
 def dedupe_roles(forget: bool = False) -> dict:
     """Collapse the same vacancy listed on several boards.
 
@@ -2793,6 +3231,7 @@ def _save_archive(items: list) -> None:
     _archive_path().write_text(json.dumps(items, indent=2), "utf-8")
 
 
+@_locked
 def archive_closed(also_applied_before_days: int = 0) -> dict:
     """Move closed and expired roles out of the working list.
 
@@ -2823,6 +3262,7 @@ def archive_closed(also_applied_before_days: int = 0) -> dict:
             "note": "They're kept in the archive — nothing was deleted."}
 
 
+@_locked
 def unarchive(key: str) -> dict:
     """Bring one back into the working list."""
     items = archived()

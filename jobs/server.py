@@ -41,6 +41,7 @@ import agent.outcomes as outcomes                             # noqa: E402
 import agent.brain as brainmod                                # noqa: E402
 from agent.brain import make_brain, EngineNotConfigured       # noqa: E402
 import agent.engines as engines                               # noqa: E402
+import agent.localguard as localguard                         # noqa: E402
 from agent.memory import MemoryStore                          # noqa: E402
 import agent.scheduler as scheduler                           # noqa: E402
 
@@ -48,6 +49,11 @@ APP_NAME = "Agent Jo Jobs"
 STATIC = ROOT / "web_jobs"
 
 app = FastAPI(title=APP_NAME)
+# Any web page open in your browser can send requests to this port, and this
+# app has no password: an auto-apply run or a full cycle needed nothing but a
+# form post from another site. Only this app's own page may change anything
+# now — see agent/localguard.py.
+app.add_middleware(localguard.LocalOnlyGuard)
 
 _brain = None
 memory = None
@@ -273,6 +279,24 @@ def jobs_auto(body: JobsAutoBody):
 
 class JobsCycleBody(BaseModel):
     engine: str = ""
+    # run it in the background and follow /api/jobs/auto/status. A run is
+    # minutes of scoring, drafting and form-filling; held open as one
+    # request, the window gave up first and showed an error while the run
+    # carried on regardless.
+    background: bool = False
+
+
+def _finish_run(r: dict) -> dict:
+    """What every finished run reports: one line, and why nothing went."""
+    r["summary"] = jobscout.describe_run(r)
+    if r.get("ok", True) and not (r.get("sent") or []):
+        r["why_nothing"] = jobscout.auto_readiness()
+    return r
+
+
+@app.get("/api/jobs/auto/status")
+def jobs_auto_status():
+    return jobscout.run_status()
 
 
 @app.get("/api/jobs/auto/readiness")
@@ -290,27 +314,15 @@ def jobs_auto_run(body: JobsCycleBody | None = None):
     model, why = _trend_model((body.engine if body else "") or "")
     if why:
         raise HTTPException(status_code=409, detail=why)
+    if body is not None and body.background:
+        return jobscout.start_run("apply", get_brain(), model=model,
+                                  finish=_finish_run)
     r = jobscout.auto_apply(get_brain(), model=model)
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r["error"][:300])
     # say what happened in one line. The window read a "summary" key that was
     # never returned, so every run reported "Ran once." whatever it did.
-    n_sent, n_held = len(r.get("sent") or []), len(r.get("held") or [])
-    n_err = len(r.get("errors") or [])
-    n_prep = len(r.get("prepared") or [])
-    bits = [f"{n_sent} sent" + (" (rehearsal — nothing left this machine)"
-                                if r.get("dry_run") else "")]
-    if n_prep:
-        bits.append(f"{n_prep} portal form(s) filled for you to finish")
-    if n_held:
-        bits.append(f"{n_held} held for you")
-    if n_err:
-        bits.append(f"{n_err} error(s)")
-    r["summary"] = "; ".join(bits)
-    if not n_sent:
-        # a run that sends nothing should say what stopped it
-        r["why_nothing"] = jobscout.auto_readiness()
-    return r
+    return _finish_run(r)
 
 
 class PortalApplyBody(BaseModel):
@@ -475,8 +487,15 @@ def jobs_boards_auto():
 def jobs_sources_suggested():
     """Offered, never imposed — the user picks which to add."""
     have = {x.get("url") for x in jobscout.job_sources()}
-    return {"suggested": [dict(x, added=x["url"] in have)
-                          for x in jobscout.SUGGESTED_SOURCES]}
+    # whole boards of companies you've tracked come first: they're the ones
+    # that keep growing as you track more, where the fixed list runs out
+    try:
+        own = [{"name": b["name"], "url": b["url"], "kind": b["kind"],
+                "why": b["why"]} for b in boards.company_boards()]
+    except Exception:
+        own = []
+    return {"suggested": own + [dict(x, added=x["url"] in have)
+                                for x in jobscout.SUGGESTED_SOURCES]}
 
 
 @app.get("/api/jobs/search/config")
@@ -853,7 +872,10 @@ def jobs_cycle(body: JobsCycleBody | None = None):
     model, why = _trend_model((body.engine if body else "") or "")
     if why:
         raise HTTPException(status_code=409, detail=why)
-    return jobscout.auto_cycle(get_brain(), model=model)
+    if body is not None and body.background:
+        return jobscout.start_run("cycle", get_brain(), model=model,
+                                  finish=_finish_run)
+    return _finish_run(jobscout.auto_cycle(get_brain(), model=model))
 
 
 @app.post("/api/jobs/follow-up")

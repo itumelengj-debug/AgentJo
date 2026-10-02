@@ -3104,6 +3104,131 @@ body.presenting .composer { opacity: .35; pointer-events: none; }
 }
 
 
+/* --- the new look (152), and the previous one ------------------------- */
+/* Everything prefixed [data-look="new"] is the new look; Settings → Look →
+   Previous turns all of it off and the page is exactly as it was before build
+   152 (prepaint.js sets data-look before the first paint). Two fixes aren't a
+   matter of taste and apply to both: the drawer under its own backdrop, and a
+   visible keyboard focus. */
+
+/* The task feed sits beside the greeting and covers nothing (CHANGELOG 120).
+   While it's in its default corner the board leaves it room: the full width
+   open, a pill's width minimised. Dragged elsewhere, nothing is reserved.
+   (tf-reserve / tf-reserve-min are kept on .main by app.js: the feed is moved
+   out to <body> at start-up, so no rule can find it inside the page.) */
+@media (min-width: 761px) {
+  [data-look="new"][data-theme="glass"] .main.tf-reserve .dash {
+    padding-right: calc(250px + 22px + 14px);
+  }
+  [data-look="new"][data-theme="glass"] .main.tf-reserve.tf-reserve-min .dash {
+    padding-right: calc(200px + 22px + 14px);
+  }
+}
+@media (min-width: 1100px) {
+  /* the greeting stays centred, narrowing until it clears the open feed */
+  [data-look="new"][data-theme="glass"] .main.tf-reserve:not(.tf-reserve-min) .empty {
+    max-width: min(620px, calc(100% - 2 * (250px + 22px + 14px)));
+  }
+}
+
+/* "needs you": one line per item, the severity a dot rather than a bar */
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item {
+  align-items: center; gap: 12px; padding: 8px 12px 8px 14px;
+  border-left: 1px solid var(--line);
+  background: rgba(20, 32, 36, .55);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge);
+}
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item::before {
+  content: ""; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--faint);
+}
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item.act::before {
+  background: var(--danger); box-shadow: 0 0 0 3px rgba(255, 122, 107, .16);
+}
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item.review::before {
+  background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 196, 107, .14);
+}
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item:hover { border-color: rgba(95, 224, 207, .38); }
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item-body {
+  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px;
+}
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item-detail { margin-top: 0; }
+[data-look="new"][data-theme="glass"] .dash-attention .dash-item-why { flex-basis: 100%; }
+
+/* the welcome: no picture (asked for, 154), and with the board full a single
+   line over the suggestions, so nothing slides under the composer */
+[data-look="new"][data-theme="glass"] .empty-mark { display: none; }
+[data-look="new"][data-theme="glass"] .empty { padding-bottom: 28px; }
+[data-look="new"][data-theme="glass"] .main.dash-full .empty { padding-top: 18px; }
+[data-look="new"][data-theme="glass"] .main.dash-full .empty-sub { display: none; }
+[data-look="new"][data-theme="glass"] .main.dash-full .empty-title { font-size: 22px; margin: 0 0 14px; }
+[data-look="new"][data-theme="glass"] .main.dash-full .suggest { gap: 8px; }
+[data-look="new"][data-theme="glass"] .main.dash-full .suggest-card { padding: 10px 12px; font-size: 13px; }
+[data-look="new"][data-theme="glass"] .main.dash-full .suggest-k { display: none; }
+
+/* Primary buttons were gold in Glass: Midnight and Fluent restyle
+   .btn.primary for their accent, Glass never did, so its 33 primary buttons
+   fell back to the base theme's gold. Matched to the send button. */
+[data-look="new"][data-theme="glass"] .btn.primary {
+  background: linear-gradient(180deg, #6fe6d6 0%, #4cc9bd 100%);
+  border: 1px solid rgba(95, 224, 207, .55);
+  color: #052a26; font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 6px 16px -8px rgba(95, 224, 207, .6);
+}
+[data-look="new"][data-theme="glass"] .btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+[data-look="new"][data-theme="glass"] .btn.primary:active:not(:disabled) { filter: brightness(.94); }
+
+/* a plain link was the browser's dark blue on a dark panel, unreadable;
+   links that style themselves keep their own colour */
+:where([data-look="new"][data-theme="glass"]) a:where(:not([class])) { color: var(--accent); }
+:where([data-look="new"][data-theme="glass"]) a:where(:not([class])):visited { color: var(--accent-2); }
+
+/* the long hint in the message box ends in an ellipsis instead of wrapping */
+[data-look="new"][data-theme="glass"] .composer-input::placeholder {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* on a phone: one menu button in the header, the controls on a row of their
+   own that scrolls sideways (they ran off the edge with the engine picker and
+   the title), and no task feed covering the page */
+@media (max-width: 760px) {
+  [data-look="new"][data-theme="glass"] #menuBtn { display: none; }
+  [data-look="new"][data-theme="glass"] .nav-toggle { position: absolute; top: 14px; left: 10px; z-index: 6; }
+  [data-look="new"][data-theme="glass"] .topbar { flex-wrap: wrap; row-gap: 8px; padding-left: 60px; height: auto; }
+  [data-look="new"][data-theme="glass"] .topbar-title {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  [data-look="new"][data-theme="glass"] .topbar > .engine-pill { margin-left: 0; }
+  [data-look="new"][data-theme="glass"] .topbar-actions {
+    order: 3; flex: 1 1 100%; margin: 0; overflow-x: auto;
+    justify-content: flex-start; scrollbar-width: none;
+  }
+  [data-look="new"][data-theme="glass"] .topbar-actions::-webkit-scrollbar { display: none; }
+  [data-look="new"][data-theme="glass"] .empty:not(.hidden) .task-feed,
+  [data-look="new"][data-theme="glass"] .task-feed { display: none; }
+}
+
+/* --- both looks ---------------------------------------------------------- */
+/* In every theme the open drawer sat under its own backdrop on a phone:
+   #app (z-index 1) is a stacking context, so the drawer's z-index 300 only
+   counted inside it and the page-level backdrop (290) covered the whole app,
+   drawer included. The backdrop is drawn inside #app, under the drawer. */
+@media (max-width: 760px) {
+  body.nav-open::after { display: none; }
+  body.nav-open #app::after {
+    content: ""; position: fixed; inset: 0; z-index: 290;
+    background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px);
+  }
+}
+
+/* a visible place for the keyboard, wherever a control didn't set its own */
+:where([data-theme="glass"]) :where(button, a[href], summary, select,
+  [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+
 /* Kept last: a class that sets display must never outrank [hidden].
    The Glass theme was once appended after this and the check caught it. */
 [hidden] { display: none !important; }

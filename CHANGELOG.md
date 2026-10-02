@@ -5029,3 +5029,380 @@ monitor showed a column of content with a dead strip beside it. The cap is
 gone; the grids add columns as the window widens, and only prose keeps a
 readable measure. At 1920px the content now reaches 1688 of 1724px, where it
 used to stop at 1240.
+
+
+### 144. Other websites could drive the agent
+
+Found in a review rather than reported — which is the worrying kind.
+
+Both servers listen on 127.0.0.1, and that was treated as the whole defence.
+It isn't one. Any web page open in your browser can send requests to
+127.0.0.1: the browser stops a page *reading* another site's reply, not
+*sending* the request. Four things turned that into a way in:
+
+- **`/api/chat` takes form fields**, and a form post crosses sites with no
+  CORS preflight to stop it. The same post carried `full_access=true`, under
+  which files are written and commands run without asking. With no password
+  set — which is how the app starts — any page could have asked the agent to
+  write to `~/.bashrc`.
+- **CORS allowed every origin**, so the JSON endpoints — a schedule with full
+  access, say — were open to the same pages, replies included.
+- **Nothing checked the Host header**, so a site that re-resolves its own
+  name to 127.0.0.1 ("DNS rebinding") counted as the app itself.
+- **The Jobs app has no password at all**: a form post from another site was
+  enough to start an auto-apply run.
+
+Both servers now sit behind `agent/localguard.py`, outermost:
+
+- **A request must be addressed to this machine** — a loopback name, an IP
+  address (how a phone on the LAN reaches it), this computer's own name, or
+  a name in `AGENT_ALLOWED_HOSTS`. A rebinding site arrives under its own
+  name and is refused, reads included.
+- **Changes must come from the app's own page.** Browsers state where a
+  request came from in `Sec-Fetch-Site`, which a page can't forge; older ones
+  send `Origin`, which then has to match the Host. Scripts and curl send
+  neither, and still work.
+- **CORS is off unless asked for.** A separately hosted front end names
+  itself in `AGENT_ALLOWED_ORIGINS`; a `*` there is ignored, because it is
+  the hole.
+- Reads stay open: following a link to the app is a cross-site GET, and the
+  browser already keeps the reply from the other site.
+
+And the login rate limit was keyed on `X-Forwarded-For`, which anyone can
+send — so every guess at the password could arrive with a fresh allowance.
+It uses the connection's address now; uvicorn already applies that header
+from the proxies it trusts.
+
+Checked against every way the app is meant to be reached: localhost, the
+address the Phone panel shows, a Tailscale IP, the app's own page posting,
+and a link from somewhere else. A proxy or Tailscale *name* has to be added
+to `AGENT_ALLOWED_HOSTS` — see UPGRADING.md.
+
+> A password already stopped most of this for the main app — its cookie isn't
+> sent with another site's post. But it's optional, the app starts without
+> one, and the Jobs app has none to set. A defence that depends on a setting
+> most people never change is an open default.
+
+
+### 145. The wait for a listing never happened
+
+Entry 143 moved the browser onto a thread of its own. One call didn't move:
+the fetch for a `browser` source called `page.wait_for_load_state` itself,
+from the fetch's thread. Playwright refused — the page belongs to the
+browser's thread — and the `except` around it, written for a slow tracker,
+swallowed the refusal.
+
+So a source whose roles are drawn by script was read the moment its document
+loaded, before the script had drawn anything. Reproduced against real
+Chromium with a board whose roles arrive from its own API a moment later:
+**no roles, and no error** — only, in the console, *"cannot switch to a
+different thread (which happens to have exited)"*, the message 143 set out to
+remove. This was one more source of it.
+
+- The wait belongs to the driver now (`settle()`), posted to the browser's
+  thread like every other call.
+- Measured on the same board: the roles are there, and the message is gone.
+- **A check fails the build if the fetch calls a page method itself.** The
+  rule from 143 only holds if nothing walks around it.
+
+
+### 146. Sign in on which window?
+
+Found while fixing 145, with the same real browser.
+
+The shared browser is launched by whichever caller needs it first, and a
+source fetch launches it hidden. Signing in, "Open the form with help" and
+portal applications all ask for a visible one — and were handed the hidden
+one, on the reasoning that "the window is already there". There was no
+window. After any fetch, the daily cycle included, the app said *"Sign in on
+the window that just opened"* while only a headless Chromium was running, and
+auto-apply's prepared forms were filled in a browser nobody could see.
+
+- A request for a window now gets one: the hidden browser is relaunched
+  visible (`show()`) on the same profile, so every login carries over.
+- If a hidden fetch is mid-page, it waits for it — up to 20 seconds — rather
+  than pull the page from under it.
+- Still one browser: the next fetch reuses the window rather than swapping
+  back.
+
+Verified with real Chromium on a virtual display: after a hidden fetch, the
+sign-in gets a visible browser and the headless one is gone.
+
+> The new browser checks were run against the old code first. Six of the
+> seven fail there, as they should; a check that can't fail proves nothing.
+
+
+### 147. The Jobs app's copy, fully accounted for
+
+Two gaps in the vendoring from 115:
+
+- **The list of modules to copy was kept by hand**, and the guard in 144 is
+  a module the Jobs server imports that wasn't on it. Synced as it was, the
+  standalone app would have failed to start. The sync tool now reads the
+  Jobs app's own imports, which can't go stale.
+- **The manifest hashed the modules only.** The server, the window and the
+  launcher are copies too. They're in it now (24 files, was 18), and the Jobs
+  app's own tests check every one — so an edit made there instead of here
+  fails its tests, rather than vanishing at the next sync. Line endings are
+  normalised first, so a Windows checkout isn't a change.
+
+
+### 148. Glass is the default
+
+Asked for: Glass as the default look.
+
+It was only ever the default for half of you. A fresh install opened on
+"System", which gives Glass in dark mode and the light theme in light mode —
+so a Windows machine set to light never showed the design at all. Glass is
+what a fresh install opens on now. Anyone still on "System" is moved to it
+once; picking another theme afterwards sticks, and every other theme is still
+in Settings, with System (follow Windows) for anyone who wants the old
+behaviour.
+
+> And the page flashed the wrong theme before every load. The script that
+> paints the theme before the stylesheet loads still turned dark mode into the
+> old "Dark (classic)" — so Glass users saw the previous design for a frame on
+> every open. It agrees with the app now.
+
+
+### 149. Auto-apply, reliably
+
+Reported: "still errors, and still hit and miss". Read end to end, the run
+had faults at every stage, and most of them looked like luck:
+
+- **Portal roles skipped every gate.** The gate checked for an email address
+  *first*, so a role without one — most adverts — went straight to its form
+  without meeting the fit threshold or the claim check. A 30% match, or a
+  draft that invented a certification, had its form filled in, and in submit
+  mode submitted. Every role now clears the same gates; only how it is
+  delivered differs.
+- **Rehearsal used up the best roles.** A rehearsed role was marked applied,
+  so the roles that had cleared every gate were never sent once rehearsal was
+  turned off — and each one counted against the real day's cap. A rehearsal
+  leaves the role where it is now, and the ones already moved are put back.
+  The old test had to reset a role by hand before a real run could send it;
+  that was this bug.
+- **Rehearsal could submit for real.** In portal submit mode, the submit flag
+  ignored rehearsal. It never submits while rehearsing.
+- **The cap went to whatever came first.** Roles were sent in list order;
+  they're sent best fit first, so five a day are your five strongest.
+- **Forms were reopened every run.** A prepared form got another tab every
+  morning, failures were retried for ever, and a run could open forty. A
+  prepared form waits for you (three days, then it's offered again), a form
+  that fails three times is left to you with the reason, at most
+  `portal_per_run` (5) are opened per run, and portal submissions now count
+  against the daily cap. A failed attempt closes its tab.
+- **One odd reply wrote a role off.** A reply without a usable score was
+  filed as 0 — "82/100", or a local model calling it "fit", meant a weak
+  match for good, never looked at again. Scores are read however they come,
+  and a reply without one leaves the role to be scored next run. A reply
+  with prose around its JSON, a timeout or "overloaded" gets one more try. An
+  empty draft is no longer saved as drafted.
+- **A dead engine failed every role in turn.** No credit, or Ollama stopped,
+  and each role waited out its own failure. After three identical failures
+  the run stops asking, says why once, and still sends what was already
+  drafted.
+- **Long runs looked like errors.** A run is minutes of scoring, drafting and
+  form-filling, and it was one request the window waited on; the window gave
+  up first and reported a failure while the run carried on. Runs go in the
+  background now and the button shows where it has got to — "Scoring and
+  drafting 4/12".
+- **Two runs at once could send twice.** The daily run firing while you press
+  Run could pick the same role. One run at a time; a second start follows the
+  first.
+- **Roles could vanish.** `roles.json` was rewritten in place with no lock,
+  and a read that caught it half-written saw no roles — if that reader then
+  saved, every role was gone. Writes are atomic, with the last good copy kept
+  beside it, and every change to the roles goes through one lock.
+
+Also: the daily-run switch said it "never sends by itself", which was never
+true; a scheduled run's portal work is reported rather than dropped; a full
+cycle says what it did instead of "Cycle complete."; and errors with one cause
+arrive as one message.
+
+> Each check was run against the old code first: sixteen of eighteen fail
+> there. The first one, run as written, shows the bug plainly — the weak
+> role, the invented one and the good one, all three forms opened.
+
+
+### 150. Finding more sources that actually finds more
+
+Reported: asking the sources manager to look for other sources added
+nothing.
+
+**It had nothing left to find.** "Find more" chose from a fixed catalogue of
+fourteen boards. Once the ones that work for your profile were added, all that
+remained were boards that had already failed — and it tried those again on
+every click, failed again, and added nothing. The window then read the list
+of added boards as a number and toasted "Added  board(s)", so it never said
+what it had tried or why.
+
+- **Companies you've tracked are now sources.** A tracked role on Greenhouse,
+  Lever or Ashby names its company's whole board, and those systems publish
+  it as JSON for exactly this. Each becomes a candidate — "Acme — careers:
+  you've tracked a role at Acme" — in "find more" and in the suggested list.
+  The more roles you track, the more there is to find; discovery still
+  filters every role against your profile. Three new source kinds read them
+  properly: the company named, locations and remote flags kept, the
+  advert text unescaped.
+- **A board drawn by script gets the browser.** Rejected as "probably built
+  in the browser after loading", when the app has a source kind for exactly
+  that. It's tried in the browser before being given up on, and added as a
+  browser source if the roles appear.
+- **A board that failed is left alone for a week**, so a click tries
+  something new instead of the same failures.
+- **It says what happened**: what was added and how many roles each returned,
+  what failed and why — or, when there's nothing left, that this is the case
+  and how to get more.
+- Three more We Work Remotely category feeds in the catalogue.
+
+> Each check fails against the old code; the browser one with the very
+> message a user saw.
+
+
+### 151. The helper follows the application
+
+Reported: the assist cursor doesn't appear all the time — on sites where you
+click through a few screens to the application itself, it shows on the
+landing page and then disappears.
+
+**It was put into one page, once.** The helper went in with
+`page.evaluate`, which lives exactly as long as that document. "Apply" loads
+another page — gone. "Start application" opens a tab — never there. Greenhouse
+and Workday put the form in an iframe — the mouse over it never reached the
+helper. Measured in a real browser on a local site built that way: present
+on the landing page, then absent after Apply, in the new tab, and in the
+form.
+
+- **Registered with the browser profile** (`add_init_script`), so every page,
+  every tab and every frame the application moves through starts with it, and
+  it's put into every frame already open. A step drawn without a page load
+  keeps it too.
+- **It answers on every screen.** It carried only the labels of the first
+  page's fields, matched exactly: "Email address" on step three didn't match
+  "Email", and got "type it yourself". It now carries what your profile says
+  for each kind of field and uses the filler's own rules to recognise them —
+  plus close wording for questions that were answered ("why do you want to
+  work at Acme?" finds the answer to "why do you want to work here?").
+- **It finds the question** when it's written above the box rather than in a
+  label, and sees fields inside web components.
+- **Someone else's details stay theirs**: a referee's or manager's email or
+  phone isn't offered yours, and questions the app never answers for you
+  (gender, ethnicity and the rest) say so.
+- **It waits for you to reach it** — the box vanished the moment the pointer
+  left the field, before it could get to the buttons — and a field reached
+  with Tab or a click gets help as well as one hovered. Esc closes it.
+- **It shows that it's there**: a small "Agent Jo is here" badge on any page
+  with a form, with Copy all. Dismissible.
+- "Fill this" picks the matching option in a drop-down; a CV upload offers
+  the file's path to paste into the file dialog.
+
+**`python tools/check_helper.py`** walks a local job site — landing page,
+details, a new tab, a form in an iframe, a web component, a second step drawn
+in place — in a real browser and checks the helper at each step. It passes
+11 of 11; against the old helper it fails as soon as the application leaves
+the first page. It uses a throwaway profile and visits no real site.
+
+
+### 152. Both references, holding together
+
+Asked for: a better look and feel for both apps.
+
+Both were restyled to supplied references — Glass in Agent Jo (CHANGELOG 120),
+the Jobs window to its own (118) — so this keeps their identity and fixes
+where they broke, measured in a real browser at desktop, laptop, half-screen
+and phone sizes rather than judged from the CSS.
+
+**Agent Jo, the home screen.** With items in "needs you" the reference fell
+apart:
+
+- **The task feed sat on the items**, chevrons included. Its default corner
+  is beside the greeting, and nothing reserved room for it — and a CSS rule
+  couldn't: start-up moves the feed out to `<body>`, so a rule looking for it
+  inside the page matched until start-up finished and never after. The page
+  now leaves room for the feed, open or minimised to a pill, while it's in its
+  default corner; dragged somewhere else, it reserves nothing.
+- **The greeting slid out of view** under the message box. With the board
+  full, it becomes one line above the suggestions, and all four stay in view.
+- **Every item carried a thick coloured bar** that outweighed the greeting;
+  they're slim one-line rows with the severity as a dot.
+- **Primary buttons were gold.** Midnight and Fluent restyle `.btn.primary`;
+  Glass never did, so its 33 primary buttons fell back to the base theme's
+  gold, in a theme whose reference is one teal accent.
+- **A plain link was the browser's dark blue** on a dark panel — the API-key
+  link in the first-run dialog among them.
+
+**Agent Jo, on a phone.** Two menu buttons, one on a row of its own; the
+header's controls ran off the edge, taking the engine picker (it sat at
+x=469 on a 390px screen) and the conversation title with them; the task feed
+covered the first row; and the message box's hint wrapped and was cut
+mid-word. One menu button in the header, the controls on a row of their own
+that scrolls sideways, the feed kept for desktops, and a hint that ends in an
+ellipsis.
+
+> Not fixed here: in **Dark (classic)** — what a fresh install opened on
+> before Glass became the default (148) — the "needs you" cards on a phone are
+> white with white titles. The row fix above is scoped to Glass.
+
+**The drawer, in every theme.** On a phone the open drawer sat under its own
+backdrop, every item dimmed and blurred: `#app` is a stacking context, so the
+drawer's z-index only counted inside it and the page-level backdrop covered the
+whole app. The backdrop is drawn inside `#app` now.
+
+**Agent Jo Jobs.**
+
+- **A narrow window kept a 200px sidebar** and cut the page off at the right —
+  half a 1366px laptop screen is 683px. The narrow layout existed; the
+  reference-density rules later in the file undid it at every width. Restated
+  after them: the sidebar becomes a top bar.
+- **The drafts pane was blank** whenever drafts were held and none was open.
+- **The faintest text sat at 3.3:1**; it's 4.6:1. The window had **no visible
+  keyboard focus** at all, and now respects reduced motion.
+
+**`python tools/check_layout.py`** draws both windows from this folder's own
+files with sample data — no server, nothing of yours read — and measures each
+of these: 15 of 15 now, 1 of 15 against the previous build.
+
+> One fix broke a check on the way: the dashboard's stability harness counts
+> DOM work on a repaint with nothing new, and the first version of the new
+> class looked `.main` up on every repaint. It reads the board's parent now.
+
+
+### 153. Agent Jo's picture stays on the welcome
+
+Asked for: the picture back on the welcome screen.
+
+152 dropped it when the board above was full, to fit the greeting and its
+suggestions above the composer. It stays now — beside the greeting, centred
+with it, rather than above it — so it costs no height and everything still
+fits. With an empty board the welcome is as it was: the full-size picture over
+the greeting. `tools/check_layout.py` checks the picture is in view at desktop
+and laptop sizes (17 of 17).
+
+
+### 154. Both looks, kept: New and Previous
+
+Asked for: keep the look from before and the new one, and switch between
+them — in both apps — with the picture gone from the new one.
+
+- **Settings → Look** in Agent Jo, and **Look** at the foot of the sidebar in
+  Agent Jo Jobs: **New** (152 on) or **Previous** (as it was before). The
+  choice is remembered on this computer, per app.
+- Every rule of the new look sits behind `[data-look="new"]` on the page, so
+  Previous is the old stylesheet exactly, not an approximation of it. A check
+  fails the build if a new-look rule isn't switchable. Two fixes apply to both
+  looks because they aren't taste: the drawer under its own backdrop, and a
+  visible keyboard focus. In a narrow Jobs window the Look switch stays
+  reachable in both.
+- **No picture on the welcome in the new look**; Previous keeps it. (153's
+  picture-beside-the-greeting is gone with it.)
+
+**And two things that never ran.** The page's security policy is
+`script-src 'self'`, which blocks inline scripts — and index.html had two:
+the one that set the theme before the first paint (so every load painted the
+default theme until app.js caught up, and 148's change to it did nothing), and
+the one that registers the service worker (so the phone install never had
+one). Both are in files now — `prepaint.js`, cache-stamped like the rest, and
+the end of app.js — and a check fails if an inline script comes back.
+
+`tools/check_layout.py`: 23 of 23, both looks included.

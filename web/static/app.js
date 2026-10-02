@@ -3601,13 +3601,15 @@ function showDraft(d) {
 const THEMES = {
   // "System" in dark mode is Glass now. The older dark themes stay one click
   // away in Settings, so nobody loses a look they chose.
-  system: { label: "System (follow Windows)", dark: "glass", light: "fluent-light" },
   glass: { label: "Glass (dark)", fixed: "glass" },
+  system: { label: "System (follow Windows)", dark: "glass", light: "fluent-light" },
   "fluent-light": { label: "Light", fixed: "fluent-light" },
   fluent: { label: "Dark (classic)", fixed: "fluent" },
   instruments: { label: "Instruments (dark)", fixed: "instruments" },
   midnight: { label: "Midnight (dark)", fixed: "midnight" },
 };
+// What a fresh install opens on, and what an unknown choice falls back to.
+const DEFAULT_THEME = "glass";
 let _themeMedia = null;
 
 function currentTheme() {
@@ -3623,12 +3625,22 @@ function currentTheme() {
       }
       localStorage.setItem("agentjo-theme-glass-migrated", "1");
     }
-    return localStorage.getItem("agentjo-theme") || "system";
+    // Glass is the default look, whatever the OS is set to. "System" only
+    // gave it to people in dark mode — a Windows machine in light mode opened
+    // on the light theme and never showed the design at all. Anyone still on
+    // "System" from before is moved once; choosing it again afterwards sticks.
+    if (!localStorage.getItem("agentjo-theme-glass-default")) {
+      if ((localStorage.getItem("agentjo-theme") || "system") === "system") {
+        localStorage.setItem("agentjo-theme", DEFAULT_THEME);
+      }
+      localStorage.setItem("agentjo-theme-glass-default", "1");
+    }
+    return localStorage.getItem("agentjo-theme") || DEFAULT_THEME;
   }
-  catch (e) { return "system"; }
+  catch (e) { return DEFAULT_THEME; }
 }
 function resolveTheme(choice) {
-  const t = THEMES[choice] || THEMES.system;
+  const t = THEMES[choice] || THEMES[DEFAULT_THEME];
   if (t.fixed) return t.fixed;
   const prefersDark = window.matchMedia
     && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -3650,8 +3662,22 @@ function paintTheme(choice) {
     next(() => { try { layoutTiles(); } catch (e) {} });
   }
 }
+// The look, separate from the theme: "new" is build 152 on — slim alerts,
+// teal buttons, a tidier phone layout, no picture on the welcome — and
+// "previous" is the page as it was before. Both are kept, chosen in Settings,
+// and remembered on this computer. prepaint.js applies it before first paint.
+function currentLook() {
+  try { return localStorage.getItem("agentjo-look") === "previous" ? "previous" : "new"; }
+  catch (e) { return "new"; }
+}
+function applyLook(choice) {
+  const look = choice === "previous" ? "previous" : "new";
+  try { localStorage.setItem("agentjo-look", look); } catch (e) { /* not saved */ }
+  if (document.documentElement) document.documentElement.setAttribute("data-look", look);
+}
+
 function applyTheme(choice) {
-  const c = THEMES[choice] ? choice : "system";
+  const c = THEMES[choice] ? choice : DEFAULT_THEME;
   try { localStorage.setItem("agentjo-theme", c); } catch (e) {}
   paintTheme(c);
   // follow the OS live, but only while "System" is selected
@@ -3781,11 +3807,28 @@ function setFeedMin(min) {
     b.setAttribute("aria-label", (min ? "Expand" : "Minimise") + " the task feed");
   }
   _tfSave({ min: !!min });
+  _tfReserve();
   requestAnimationFrame(() => _tfClamp(feed));
 }
 function showTaskFeed(on) {
   const feed = document.getElementById("taskFeed");
   if (feed) feed.classList.toggle("tf-off", !on);
+  _tfReserve();
+}
+// The dashboard leaves the feed room only while it's open in its default
+// corner — the one place it lands on the "needs you" items. CSS alone can't
+// see that: initTaskFeed moves the feed out to <body>, so a rule looking for
+// it inside .main matched until start-up finished and never after. .main is
+// found through the board, which lives in it.
+function _tfReserve() {
+  const feed = document.getElementById("taskFeed");
+  const dash = document.getElementById("dash");
+  const main = dash && dash.parentElement;
+  if (!feed || !main || !main.classList) return;
+  const on = !feed.classList.contains("tf-off") && !feed.style.left;
+  main.classList.toggle("tf-reserve", on);
+  // minimised it's a pill, but a pill in the same corner still covers a row
+  main.classList.toggle("tf-reserve-min", on && feed.classList.contains("min"));
 }
 function initTaskFeed() {
   const feed = document.getElementById("taskFeed");
@@ -3831,6 +3874,7 @@ function initTaskFeed() {
     drag = null;
     feed.classList.remove("dragging");
     if (moved) {
+      _tfReserve();
       const r = feed.getBoundingClientRect();
       _tfSave({ x: Math.round(r.left), y: Math.round(r.top) });
     } else if (feed.classList.contains("min")) {
@@ -4798,6 +4842,23 @@ async function loadModelPickers() {
   thCtrl.appendChild(thSel);
   thRow.append(thInfo, thCtrl);
   box.appendChild(thRow);
+  const lkRow = el("div", "set-row");
+  const lkInfo = el("div", "set-info");
+  const lkNm = el("div", "set-name"); lkNm.textContent = "Look";
+  const lkDs = el("div", "set-desc");
+  lkDs.textContent = "New: slim alerts, teal buttons, a tidier phone layout and no picture on the welcome. Previous: how it looked before. Switch any time; it's remembered on this computer.";
+  lkInfo.append(lkNm, lkDs);
+  const lkCtrl = el("div", "set-control");
+  const lkSel = el("select"); lkSel.id = "model_LOOK"; lkSel.className = "model-select";
+  [["new", "New"], ["previous", "Previous"]].forEach(([value, label]) => {
+    const op = el("option"); op.value = value; op.textContent = label;
+    if (value === currentLook()) op.selected = true;
+    lkSel.appendChild(op);
+  });
+  lkSel.addEventListener("change", (e) => applyLook(e.target.value));
+  lkCtrl.appendChild(lkSel);
+  lkRow.append(lkInfo, lkCtrl);
+  box.appendChild(lkRow);
   const blRow = el("div", "set-row");
   const blInfo = el("div", "set-info");
   const blNm = el("div", "set-name"); blNm.textContent = "Blender path";
@@ -6038,6 +6099,7 @@ function paintDashboard(d) {
                                 d.all_clear]);
     if (sig === _dashSig) {
       dash.hidden = dashHidden();
+      _markDash(dash);
       return;
     }
     _dashSig = sig;
@@ -6154,7 +6216,20 @@ function paintDashboard(d) {
     layoutTiles();
     // the toggle owns visibility; this only owns content
     dash.hidden = dashHidden();
+    _markDash(dash, items.length + (d.tiles || []).length);
   } catch (e) { /* a bad payload must not take the chat down */ }
+}
+// With the board full, the welcome below it shrinks to fit above the
+// composer instead of sliding out of view under it.
+let _dashCount = 0;
+function _markDash(dash, n) {
+  if (typeof n === "number") _dashCount = n;
+  // the board's own parent, not a document lookup: a repaint with nothing
+  // new must do no DOM work at all (tests/dash_stability.js)
+  const main = dash && dash.parentElement;
+  if (main && main.classList) {
+    main.classList.toggle("dash-full", !dash.hidden && _dashCount > 0);
+  }
 }
 
 /* ---- the tile picker: what shows, and in what order -------------------- */
@@ -6354,6 +6429,7 @@ $("#projectFilter").addEventListener("change", async (e) => {
     _tileResize = setTimeout(layoutTiles, 120);
   });
   applyTheme(currentTheme());
+  applyLook(currentLook());
   loadSetup(true);   // a fresh install has no engine — say so immediately
   // paint the last known board first: a restart shouldn't show an empty pane
   // while the live one is being assembled
@@ -6917,3 +6993,14 @@ $("#projectFilter").addEventListener("change", async (e) => {
 }
 
 document.addEventListener("DOMContentLoaded", boot);
+
+// Registered late and failing quietly: without a service worker the app still
+// works, it just can't be installed to a home screen. This was an inline
+// script in index.html, which the page's own CSP (script-src 'self') blocks —
+// so it never registered, and the phone install never had a worker.
+if (typeof navigator !== "undefined" && navigator && "serviceWorker" in navigator
+    && typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/static/sw.js").catch(() => {});
+  });
+}
