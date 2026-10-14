@@ -176,6 +176,21 @@ SCENES = [
         "panel": "undoBtn", "seconds": 12,
     },
     {
+        # this scene was appended after "close", so a live demo said "close
+        # here" and then carried on; it belongs with the trust story
+        "key": "gates",
+        "act": "Why you can trust it",
+        "title": "Reads run; anything leaving the machine waits",
+        "say": "Under full access it doesn't ask about everything — being "
+               "prompted constantly teaches you to click through without "
+               "reading. It sorts by consequence: listing a folder runs, "
+               "sending an email waits, and it shows you the actual "
+               "recipient, subject and size rather than the tool's name.",
+        "note": "The distinction, not the prompt, is the feature. Show a "
+                "held call and read the summary line aloud.",
+        "panel": "autonomyBtn", "seconds": 18,
+    },
+    {
         "key": "health",
         "act": "Why you can trust it",
         "title": "It tells you when it isn't working",
@@ -204,8 +219,8 @@ SCENES = [
         "act": "Where it's going",
         "title": "It can build its own next feature",
         "say": "Ask it to add something to itself and it works in a sandboxed "
-               "copy of its own source, then has to pass its own eight "
-               "hundred tests before you're shown a single line. It proposes; "
+               "copy of its own source, then has to pass more than a "
+               "thousand of its own checks before you're shown a single line. It proposes; "
                "only a human applies. There is no path where it changes "
                "itself on its own.",
         "note": "Say the gate out loud. In a room with any engineer in it, "
@@ -226,51 +241,6 @@ SCENES = [
                 "more than any slide.",
         "panel": "", "seconds": 16,
     },
-    # A demo SELECTS where a guide covers — but it can't skip the largest
-    # feature, or the thing that makes the whole idea defensible.
-    {
-        "key": "jobs",
-        "act": "Doing real work",
-        "title": "A job search that runs itself",
-        "say": "This is the part that runs unattended. It reads job boards "
-               "and the alert emails those boards send, de-duplicates the "
-               "same role listed three times, screens out the obvious "
-               "mismatches for nothing using a local keyword check, scores "
-               "what's left, drafts an application, and applies — inside a "
-               "daily cap, in rehearsal until you say otherwise.",
-        "note": "The pipeline strip is the thing to point at: it shows where "
-                "the work has stopped, which is what a status bar should do "
-                "and almost never does.",
-        # the Jobs app is a separate window, so there is no panel to open
-        "panel": "", "opens": "Agent Jo Jobs", "seconds": 20,
-    },
-    {
-        "key": "fabrication",
-        "act": "Doing real work",
-        "title": "It refuses to say what it can't support",
-        "say": "Every draft is checked against the profile before it can be "
-               "sent. If it claims a tool, an employer or a number that "
-               "isn't in there, it's held — and you're shown exactly which "
-               "claim, with the choice to confirm it as true or say you "
-               "don't claim it.",
-        "note": "This is the honest centre of the whole app. A tool that "
-                "sends confident applications you'd have to defend in an "
-                "interview is worse than no tool.",
-        "panel": "", "opens": "Agent Jo Jobs", "seconds": 18,
-    },
-    {
-        "key": "gates",
-        "act": "Trusting it",
-        "title": "Reads run; anything leaving the machine waits",
-        "say": "Under full access it doesn't ask about everything — being "
-               "prompted constantly teaches you to click through without "
-               "reading. It sorts by consequence: listing a folder runs, "
-               "sending an email waits, and it shows you the actual "
-               "recipient, subject and size rather than the tool's name.",
-        "note": "The distinction, not the prompt, is the feature. Show a "
-                "held call and read the summary line aloud.",
-        "panel": "autonomyBtn", "seconds": 18,
-    }
 ]
 
 

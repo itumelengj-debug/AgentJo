@@ -40,21 +40,19 @@ api.wireEvents();
 console.log("sidebar panels found:", footBtns.length>=20);
 api.openPalette();
 console.log("palette opens:", E('paletteBackdrop').hidden===false);
-// Jobs moved to its own app, so three panel-opening entries became one
-// that opens it. The palette should still cover every panel that exists.
+// The job search is a separate app now (CHANGELOG 155); the palette still
+// covers every panel that exists, plus its actions.
 console.log("lists every panel plus actions:", api.paletteMatches("").length>=footBtns.length+2);
-console.log("jobs is reachable from the palette:",
-  api.paletteMatches("jobs").length>=1);
 
 const names=(q)=>api.paletteMatches(q).map(x=>x.name);
 console.log("finds by purpose, not just name:");
-[["spending cap","Settings"],["cv","Jobs"],["what is broken","Health"],
+[["spending cap","Settings"],["what is broken","Health"],
  ["restore a file","Undo"],["phone","Phone"],["tender","Challenges"]].forEach(([q,want])=>{
   const hit=names(q).slice(0,3).some(n=>n.includes(want));
   console.log(`   ${hit?"OK ":"MISS"} "${q}" -> ${names(q).slice(0,2).join(", ")||"(none)"}`);
 });
 console.log("every word must match:", api.paletteMatches("spending zzzz").length===0);
-console.log("name beats description:", names("jobs")[0].includes("Jobs"));
+console.log("name beats description:", names("health")[0].includes("Health"));
 
 // keyboard drive
 api.renderPalette("health");

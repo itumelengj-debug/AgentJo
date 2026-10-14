@@ -37,7 +37,6 @@ EXTERNAL = {
     "send_email": "sends mail to someone outside",
     "send_message": "sends a message outside",
     "outreach_send": "sends a campaign",
-    "apply_on_portal": "submits an application form",
     "submit_form": "submits a form on a website",
     "http_post": "posts data to an external service",
     "mcp_call": "acts through an external tool server",
@@ -101,7 +100,7 @@ def summarise(tool: str, args: dict) -> str:
                 f"{len(body)} characters")
     if tool == "run_command":
         return str(a.get("command", ""))[:300]
-    if tool in ("apply_on_portal", "submit_form"):
+    if tool == "submit_form":
         return f"{a.get('url', '(no url)')} — {len(a)} field(s)"
     if tool == "delete_file":
         return str(a.get("path", ""))[:200]

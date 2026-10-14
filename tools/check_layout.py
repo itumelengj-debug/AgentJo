@@ -1,4 +1,4 @@
-"""Measure the layout of both apps in a real browser, on this machine.
+"""Measure Agent Jo's layout in a real browser, on this machine.
 
     python tools/check_layout.py
 
@@ -7,10 +7,12 @@ made-up sample data — no server is started, nothing of yours is read, and no
 site is visited — and the things that went wrong once are measured where they
 went wrong: the task feed over the "needs you" rows, the greeting cut off
 under the message box, a phone header that ran off the screen, a drawer under
-its own backdrop, an unreadable link, gold buttons in Glass, a narrow Jobs
-window cut off at the right, a blank drafts pane. Needs Playwright with
-Chromium, as the portal applications do. In the standalone Jobs app, only the
-Jobs window is checked.
+its own backdrop, an unreadable link, gold buttons in Glass. All of it twice:
+in Glass, and in Symbolic Synapse (the skin drawn over Glass), which then has
+checks of its own — its fonts come from the app, its lattice is drawn and
+stops when it can't be seen, nothing scrolls sideways. Needs Playwright with
+Chromium (`python -m pip install playwright && python -m playwright install
+chromium`) — Agent Jo itself no longer needs it.
 """
 from __future__ import annotations
 
@@ -52,27 +54,18 @@ MAIN = {
     "/api/projects": {"projects": []},
     "/api/tasks": {"tasks": [{"id": "t", "title": "A running task", "status": "running"}]},
     "/api/schedules": {"schedules": []},
+    "/api/challenges": {"backlog": 0, "report": {"at": "06:40 UTC", "briefs": [
+        {"title": "Ward-level municipal service complaints", "confidence": "high",
+         "problem": "Residents report unreliable refuse collection and leaks that are "
+                    "hard to quantify and often ignored until elections.",
+         "who": "Residents", "data": "Call-centre logs", "first_engagement": "A pilot ward",
+         "why_it_might_fail": "Data access", "sources": []},
+        {"title": "Clinic queue times", "confidence": "medium",
+         "problem": "Patients wait hours with no idea how long.", "who": "Patients",
+         "data": "Clinic registers", "first_engagement": "One clinic",
+         "why_it_might_fail": "Paper records", "sources": []}]}},
 }
-JOBS = {
-    "/api/meta": {"app": "Agent Jo Jobs", "build": "x", "brand": "Sample",
-                  "profile_ready": True, "engines": ["Local"], "default_engine": "Auto"},
-    "/api/jobs/pipeline": {"stages": {"found": 4, "scored": 3, "drafted": 2, "held": 1,
-                                      "applied": 1}, "total": 4, "blocked_at": "held",
-                           "why": "1 draft claims more than your profile", "counts": {}},
-    "/api/jobs": {"profile": {}, "auto": {"enabled": False}, "follow_ups": [], "daily": False,
-                  "roles": [{"key": "r", "title": "Data Engineer", "company": "Sample Co",
-                             "stage": "held", "fit": {"score": 80}}]},
-    "/api/jobs/claims": {"held": [{"key": "r", "title": "Data Engineer",
-                                   "company": "Sample Co", "problems": ["a claim"],
-                                   "body": "Dear..."}], "claims": []},
-    "/api/jobs/outcomes": {"sent": 0, "replied": 0, "overall": {"low": 0, "high": 0},
-                           "findings": [], "by_source": []},
-    "/api/jobs/search/config": {"sources": []},
-    "/api/jobs/profile": {"profile": {}, "ready": True, "why": ""},
-    "/api/jobs/auto/preview": {"sentence": "Nothing would be sent.", "dry_run": True},
-    "/api/jobs/sources/suggested": {"suggested": []},
-    "/api/jobs/auto/status": {"state": "idle"},
-}
+
 
 
 def _router(static: Path, data: dict):
@@ -104,27 +97,35 @@ def main() -> int:
     with sync_playwright() as p:
         b = p.chromium.launch()
 
-        def page(app, w, h, look=None):
-            static = ROOT / ("web/static" if app == "main" else "web_jobs")
-            pg = b.new_page(viewport={"width": w, "height": h}, color_scheme="dark")
+        def page(app, w, h, look=None, theme="glass", data=None, motion="no-preference",
+                 hook=""):
+            static = ROOT / "web/static"
+            pg = b.new_page(viewport={"width": w, "height": h}, color_scheme="dark",
+                            reduced_motion=motion)
             if look:
                 pg.add_init_script(f"localStorage.setItem('agentjo-look', '{look}')")
-            pg.route("**/*", _router(static, MAIN if app == "main" else JOBS))
+            # the theme as Settings stores it, past the one-time moves to Glass
+            if theme:
+                pg.add_init_script(
+                    f"localStorage.setItem('agentjo-theme', '{theme}');"
+                    "localStorage.setItem('agentjo-theme-glass-migrated', '1');"
+                    "localStorage.setItem('agentjo-theme-glass-default', '1');"
+                    "localStorage.setItem('agentjo-theme-synapse-default', '1');" + hook)
+            elif hook:
+                pg.add_init_script(hook)
+            pg.route("**/*", _router(static, data or MAIN))
             pg.goto("http://app.test/")
-            if app == "main":
-                pg.wait_for_function(
-                    "document.querySelectorAll('#dashTiles > *').length >= 4", timeout=30000)
-            else:
-                pg.wait_for_function(
-                    "document.getElementById('track').children.length === 6", timeout=30000)
-            time.sleep(1.5)
+            pg.wait_for_function(
+                "document.querySelectorAll('#dashTiles > *').length >= 4"
+                if data is None else "typeof state === 'object'", timeout=30000)
+            pg.wait_for_timeout(1500)   # not time.sleep: the page only runs while Playwright does
             return pg
 
-        if (ROOT / "web" / "static" / "index.html").exists():
-            print("Agent Jo")
+        for theme in ("glass", "synapse"):
+            print("Agent Jo — " + {"glass": "Glass", "synapse": "Symbolic Synapse"}[theme])
             for w, h, label in ((1440, 900, "desktop"), (1280, 800, "laptop"),
                                 (1150, 800, "small laptop, feed minimised")):
-                pg = page("main", w, h)
+                pg = page("main", w, h, theme=theme)
                 m = pg.evaluate("""() => {
                   const it = [...document.querySelectorAll('.dash-item')], f = document.getElementById('taskFeed');
                   const fr = f.getBoundingClientRect(), th = document.getElementById('thread');
@@ -134,14 +135,14 @@ def main() -> int:
                            bar: it.length ? getComputedStyle(it[0]).borderLeftWidth : '' }; }""")
                 check(f"{label}: the task feed covers no 'needs you' row", not m["cover"])
                 if w >= 1280:
-                    check(f"{label}: no picture on the welcome in the new look", pg.evaluate(
-                        "() => document.querySelector('#emptyState .empty-mark').getBoundingClientRect().width === 0"))
+                    check(f"{label}: the welcome keeps Agent Jo's picture", pg.evaluate(
+                        "() => document.querySelector('#emptyState .empty-mark').getBoundingClientRect().width > 30"))
                 if w >= 1280:
                     check(f"{label}: the greeting fits above the message box", m["clipped"] <= 1)
                 pg.close()
             check("the 'needs you' rows have no thick bar", m["bar"] == "1px")
 
-            pg = page("main", 390, 844)
+            pg = page("main", 390, 844, theme=theme)
             m = pg.evaluate("""() => {
               const vis = (e) => e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0;
               const pill = document.getElementById('enginePill').getBoundingClientRect();
@@ -154,61 +155,184 @@ def main() -> int:
             check("phone: the conversation title shows", m["title"] > 20)
             check("phone: the task feed doesn't cover the page", not m["feed"])
             pg.click("#navToggle")
-            time.sleep(0.6)
+            pg.wait_for_timeout(600)
             check("phone: the open drawer sits above its backdrop", pg.evaluate(
                 "() => !!document.elementFromPoint(60, 300).closest('#sidebar')"))
             pg.close()
 
-            pg = page("main", 1280, 800)
+            pg = page("main", 1280, 800, theme=theme)
             pg.evaluate("openSetup()")
-            time.sleep(0.5)
+            pg.wait_for_timeout(500)
             m = pg.evaluate("""() => {
               const a = document.querySelector('#setupModal a'), btn = document.getElementById('setupSaveBtn');
               return { link: a ? getComputedStyle(a).color : '', button: getComputedStyle(btn).backgroundImage }; }""")
             check("the setup dialog's link is readable",
                   m["link"] and m["link"] not in ("rgb(0, 0, 238)", "rgb(85, 26, 139)"))
-            check("Glass primary buttons aren't gold", "224, 176, 88" not in m["button"])
-            # switching is remembered, and applied before the first paint
-            pg.evaluate("applyLook('previous')")
-            pg.reload()
-            look = pg.evaluate("document.documentElement.getAttribute('data-look')")
-            pg.evaluate("applyLook('new')")
-            check("switching to Previous is remembered across a reload", look == "previous")
-            pg.close()
-
-            print("Agent Jo, previous look")
-            pg = page("main", 1440, 900, look="previous")
+            check("primary buttons aren't gold", "224, 176, 88" not in m["button"])
+            # one look now (the New/Previous switch was removed): set before
+            # the first paint, with the picture on the welcome
             m = pg.evaluate("""() => ({ look: document.documentElement.getAttribute('data-look'),
               mark: document.querySelector('#emptyState .empty-mark').getBoundingClientRect().width,
-              bar: getComputedStyle(document.querySelector('.dash-item')).borderLeftWidth })""")
-            check("the previous look is the page as it was", m["look"] == "previous" and m["bar"] == "3px")
-            check("the previous look keeps Agent Jo's picture", m["mark"] > 30)
+              sw: !!document.getElementById('model_LOOK') })""")
+            check("one look, and the welcome keeps Agent Jo's picture",
+                  m["look"] == "previous" and m["mark"] > 30 and not m["sw"])
             pg.close()
 
-        print("Agent Jo Jobs")
-        pg = page("jobs", 683, 768)
-        m = pg.evaluate("""() => ({ overflow: document.scrollingElement.scrollWidth - innerWidth,
-                                    mainLeft: document.querySelector('.main').getBoundingClientRect().left })""")
-        check("a narrow window (half a laptop screen) reflows",
-              m["overflow"] <= 1 and m["mainLeft"] < 40)
-        check("the Look switch is reachable in a narrow window", pg.evaluate(
-            "() => document.getElementById('lookSel').getBoundingClientRect().width > 0"))
-        pg.select_option("#lookSel", "previous")
+            # every panel, at phone width and desktop: nothing runs off the
+            # right edge, and opening one closes the one before
+            for w in (390, 1280):
+                pg = page("main", w, 900, theme=theme)
+                ids = pg.evaluate("[...document.querySelectorAll('.foot-btn')].map(b => b.id).filter(Boolean)")
+                bad = []
+                for i in ids:
+                    pg.evaluate("closeAllModals()")
+                    pg.evaluate(f"document.getElementById('{i}').click()")
+                    pg.wait_for_timeout(350)
+                    r = pg.evaluate("""() => {
+                      const ms = [...document.querySelectorAll('.modal-backdrop:not(.vt-ghost)')]
+                        .filter(x => !x.hidden && getComputedStyle(x).display !== 'none');
+                      if (!ms.length) return null;
+                      const box = ms[0].querySelector('.modal'), br = box.getBoundingClientRect();
+                      const cut = [...box.querySelectorAll('button,input,select,textarea')].filter(e => {
+                        const r = e.getBoundingClientRect();
+                        return r.width > 0 && (r.right > br.right + 1 || r.left < br.left - 1); });
+                      return { n: ms.length, over: box.scrollWidth - box.clientWidth, cut: cut.length }; }""")
+                    if r and (r["over"] > 1 or r["cut"] or r["n"] > 1):
+                        bad.append(i)
+                check(f"{w}px: all {len(ids)} panels fit, one at a time", not bad and len(ids) >= 20)
+                if bad:
+                    print("      ", ", ".join(bad))
+                pg.close()
+
+        # ---- Symbolic Synapse, on its own -------------------------------- #
+        print("Agent Jo — Symbolic Synapse, its own parts")
+        asked = []
+        at_load = ("document.addEventListener('DOMContentLoaded', () => {"
+                   " window.__skinAtLoad = document.documentElement.getAttribute('data-skin'); });")
+        pg = page("main", 1440, 900, theme="synapse", hook=at_load)
+        pg.on("request", lambda r: asked.append(r.url))
         pg.reload()
-        pg.wait_for_function("document.getElementById('track').children.length === 6", timeout=30000)
-        m = pg.evaluate("""() => ({ look: document.documentElement.getAttribute('data-look'),
-          sel: document.getElementById('lookSel').value,
-          reach: document.getElementById('lookSel').getBoundingClientRect().width > 0 })""")
-        check("switching the Jobs window to Previous is remembered",
-              m["look"] == "previous" and m["sel"] == "previous")
-        check("the switch is still reachable in the previous look", m["reach"])
+        pg.wait_for_function("document.querySelectorAll('#dashTiles > *').length >= 4", timeout=30000)
+        pg.wait_for_timeout(1500)
+        check("the skin is on before the first paint",
+              pg.evaluate("window.__skinAtLoad") == "synapse"
+              and pg.evaluate("document.documentElement.getAttribute('data-theme')") == "glass")
+        fonts = pg.evaluate("""async () => { await document.fonts.ready;
+          return [document.fonts.check('600 20px Archivo'),
+                  document.fonts.check('400 15px "IBM Plex Sans"'),
+                  document.fonts.check('400 12px "IBM Plex Mono"')]; }""")
+        woff = [u for u in asked if u.endswith(".woff")]
+        check("its typefaces load, from the app itself",
+              all(fonts) and woff and all(u.startswith("http://app.test/static/fonts/") for u in woff)
+              and not any("fonts.g" in u for u in asked))
+        m = pg.evaluate("""() => {
+          const c = document.querySelector('#emptyState .syn-lattice');
+          if (!c || !c.width) return { drawn: 0 };
+          const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          let n = 0; for (let i = 3; i < px.length; i += 4) if (px[i] > 8) n++;
+          const img = document.querySelector('#emptyState .empty-mark img').getBoundingClientRect();
+          const t = document.getElementById('greeting').getBoundingClientRect();
+          const at = (x, y) => document.elementFromPoint(x, y);
+          return { drawn: n,
+                   picture: at(img.x + img.width / 2, img.y + img.height / 2) === document.querySelector('#emptyState .empty-mark img'),
+                   words: at(t.x + t.width / 2, t.y + t.height / 2).id === 'greeting',
+                   running: !!_syn.raf }; }""")
+        check("the lattice is drawn behind Agent Jo, under the words",
+              m["drawn"] > 2000 and m.get("picture") and m.get("words"))
+        check("the lattice turns while the welcome is up", m.get("running"))
+        pg.evaluate("_syn.input = performance.now() - 10 * 60 * 1000")
+        pg.wait_for_timeout(300)
+        idle = pg.evaluate("_syn.raf")
+        pg.mouse.move(700, 500)
+        pg.mouse.move(720, 520)
+        pg.wait_for_timeout(300)
+        check("left alone it holds still, and a touch of the mouse wakes it",
+              not idle and pg.evaluate("!!_syn.raf"))
+        pg.evaluate("""() => { state.conversations.unshift({ id: 'x', title: 'x', unsaved: true,
+            messages: [{ role: 'user', text: 'hello' }, { role: 'assistant', text: 'hi' }] });
+          state.activeId = 'x'; renderConvList(); renderActive(); }""")
+        pg.wait_for_timeout(300)
+        check("and stops when a conversation replaces it", not pg.evaluate("_syn.raf"))
+        pg.evaluate("applyTheme('glass')")
+        m = pg.evaluate("""() => ({ skin: document.documentElement.hasAttribute('data-skin'),
+          canvas: !!document.querySelector('.syn-lattice'), raf: _syn.raf,
+          brand: getComputedStyle(document.querySelector('.brand-co')).display })""")
+        check("choosing another theme takes all of it away",
+              not m["skin"] and not m["canvas"] and not m["raf"] and m["brand"] == "none")
+        pg.evaluate("applyTheme('synapse'); newConversation();")
+        pg.wait_for_timeout(400)
+        check("and choosing it again brings it back", pg.evaluate(
+            "!!document.querySelector('#emptyState .syn-lattice') && !!_syn.raf"))
+        m = pg.evaluate("""() => ({ btn: getComputedStyle(document.getElementById('newChatBtn')).backgroundColor,
+          wordmark: getComputedStyle(document.querySelector('.brand-co')).display })""")
+        check("the site's cyan call to action and its wordmark",
+              m["btn"] == "rgb(47, 211, 227)" and m["wordmark"] == "block")
         pg.close()
-        pg = page("jobs", 1024, 640)
-        pg.evaluate("show('drafts')")
-        time.sleep(2.5)
-        check("the drafts pane is never blank", "Pick a draft" in pg.evaluate(
-            "document.getElementById('draftDetail').innerText"))
+
+        # the main look and the default (171): a fresh install opens on it,
+        # before the first paint; someone on Glass, the old default, moves to
+        # it once, and Glass picked again afterwards stays
+        pg = page("main", 1440, 900, theme=None, hook=at_load)
+        check("a fresh install opens on Symbolic Synapse, from the first paint",
+              pg.evaluate("window.__skinAtLoad") == "synapse"
+              and pg.evaluate("[currentTheme(), document.documentElement.getAttribute('data-skin')]")
+              == ["synapse", "synapse"])
         pg.close()
+        pg = page("main", 1280, 800, theme=None, hook=at_load + (
+            "if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1');"
+            " localStorage.setItem('agentjo-theme', 'glass');"
+            " localStorage.setItem('agentjo-theme-glass-migrated', '1');"
+            " localStorage.setItem('agentjo-theme-glass-default', '1'); }"))
+        moved = (pg.evaluate("window.__skinAtLoad"), pg.evaluate("currentTheme()"))
+        pg.evaluate("applyTheme('glass')")
+        pg.reload()
+        pg.wait_for_function("document.querySelectorAll('#dashTiles > *').length >= 4", timeout=30000)
+        pg.wait_for_timeout(800)
+        kept = (pg.evaluate("window.__skinAtLoad"), pg.evaluate("currentTheme()"))
+        check("Glass, the old default, moves to it once; picked again, Glass stays",
+              moved == ("synapse", "synapse") and kept == (None, "glass"))
+        pg.close()
+
+        # no bar down the left of a rounded card: the brief's tier is a dot
+        for theme in ("synapse", "glass"):
+            pg = page("main", 1280, 800, theme=theme)
+            pg.evaluate("closeAllModals(); document.getElementById('challengesBtn').click()")
+            pg.wait_for_function("document.querySelectorAll('#chList .log-row').length >= 2",
+                                 timeout=10000)
+            pg.wait_for_timeout(400)
+            m = pg.evaluate("""() => [...document.querySelectorAll('#chList .log-row')].map(r => {
+              const s = getComputedStyle(r), b = getComputedStyle(r, '::before');
+              return { shadow: s.boxShadow, left: s.borderLeftWidth, dotW: b.width, dotH: b.height,
+                       round: b.borderTopLeftRadius, dot: b.backgroundColor }; })""")
+            check(f"{theme}: a brief has no bar down its left edge, just a dot",
+                  m and all(x["shadow"] == "none" and x["left"] == "0px" and x["dotW"] == "8px"
+                            and x["dotH"] == "8px" and x["round"] == "50%" for x in m)
+                  and m[0]["dot"] != m[1]["dot"])
+            pg.close()
+
+        # nothing scrolls sideways, at any width, with the lattice in place
+        wide = []
+        for w, h in ((1440, 900), (1280, 800), (1150, 800), (900, 800), (800, 900), (390, 844)):
+            pg = page("main", w, h, theme="synapse")
+            m = pg.evaluate("""() => { const t = document.getElementById('thread');
+              return [t.scrollWidth - t.clientWidth, document.documentElement.scrollWidth - innerWidth]; }""")
+            if max(m) > 1:
+                wide.append(f"{w}px")
+            pg.close()
+        check("nothing scrolls sideways, from phone to desktop", not wide)
+        if wide:
+            print("      ", ", ".join(wide))
+
+        # with less motion asked for: drawn once, then still
+        pg = page("main", 1280, 800, theme="synapse", motion="reduce")
+        m = pg.evaluate("""() => { const c = document.querySelector('#emptyState .syn-lattice');
+          const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          let n = 0; for (let i = 3; i < px.length; i += 4) if (px[i] > 8) n++;
+          return { drawn: n, raf: _syn.raf }; }""")
+        check("with reduced motion the lattice is drawn once and stays still",
+              m["drawn"] > 2000 and not m["raf"])
+        pg.close()
+
         b.close()
     print(f"\n{sum(results)} of {len(results)} checks passed.")
     return 0 if all(results) else 1

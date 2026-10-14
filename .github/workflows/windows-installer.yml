@@ -1,0 +1,25 @@
+# Builds dist\AgentJo-Setup-<version>.exe on a Windows machine in the cloud.
+# Run it from the Actions tab (Run workflow), or push a tag like v2026.10.04.
+# The installer is attached to the run as an artifact.
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build the installer
+        shell: cmd
+        run: installer\build_installer.bat --ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentJo-Setup
+          path: dist/AgentJo-Setup-*.exe
+          if-no-files-found: error

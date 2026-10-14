@@ -64,11 +64,6 @@ REGISTRY = [
     {"key": "trends", "name": "Trend scout", "group": "Automation",
      "audit_kinds": ["trend"], "evidence": [("trendscout",)],
      "test": "📡 Trends → set Digest engine → Scan now."},
-    {"key": "jobs", "name": "Job scout", "group": "Automation",
-     "audit_kinds": ["jobscout"], "evidence": [("jobscout",)],
-     "needs": [("jobscout/profile.json", "your job profile isn't filled in")],
-     "test": "Ask: “build my job profile from my CV”, then 🎯 Jobs → Run "
-             "auto-apply with rehearsal on."},
     {"key": "crew", "name": "Specialist crew", "group": "Automation",
      "audit_kinds": ["crew"], "evidence": [("crew",)],
      "test": "👥 Crew → “Research 3 JHB manufacturers likely to need BI” → "

@@ -5340,9 +5340,12 @@ mid-word. One menu button in the header, the controls on a row of their own
 that scrolls sideways, the feed kept for desktops, and a hint that ends in an
 ellipsis.
 
-> Not fixed here: in **Dark (classic)** — what a fresh install opened on
-> before Glass became the default (148) — the "needs you" cards on a phone are
-> white with white titles. The row fix above is scoped to Glass.
+> Corrected in 157: a capture here showed the "needs you" cards white with
+> white titles on a phone, and this entry blamed Dark (classic). Measured in
+> every theme afterwards, the colours are right. It was one frame caught
+> mid-way through the first load's switch from the theme the page painted to
+> Glass — a switch that no longer happens, since the theme is set before the
+> first paint (154).
 
 **The drawer, in every theme.** On a phone the open drawer sat under its own
 backdrop, every item dimmed and blurred: `#app` is a stacking context, so the
@@ -5406,3 +5409,407 @@ one). Both are in files now — `prepaint.js`, cache-stamped like the rest, and
 the end of app.js — and a check fails if an inline script comes back.
 
 `tools/check_layout.py`: 23 of 23, both looks included.
+
+
+### 155. Agent Jo Jobs, its own app
+
+Asked for: separate Agent Jo Jobs from Agent Jo completely — no shared code.
+
+The job search had its own window and launcher already, but it lived in this
+folder, shared this app's data, and had its code copied across with
+`tools/sync_jobs_app.py`. It is its own app now, with its own download, data
+and code, and its own build log (its CHANGELOG starts at 1). From Agent Jo:
+
+- **The job search's code is gone**: `agent/jobscout.py`, `portal.py`,
+  `boards.py`, `jobalerts.py`, `outcomes.py`, `cv.py`; the Jobs server and
+  window (`jobs/`, `web_jobs/`), `run_jobs.py` and its launchers; the sync
+  tool and `tools/check_helper.py`.
+- **So are its hooks here**: the `job_scout` and `apply_on_portal` chat tools,
+  the dashboard's job cards, the watchdog's job scout, the Job scout
+  capability, the presenter's two job scenes, the tour's Jobs stop, the
+  command palette's Jobs entry, the health check for the portal browser, and
+  the installer's browser download (only portal applications used it).
+- **An old "Job scout — daily" schedule switches itself off** the next time it
+  comes due, and says why. Left to the ordinary path, its prompt — "find and
+  apply" — would have gone to the chat agent as a request.
+- **The tests went with the code.** About 2,450 lines of job checks moved to
+  the Jobs app's `tests/test_logic.py`; the checks of features removed here
+  were deleted; the watchdog's tests use the weekly trend scan as their
+  example now, and the palette's use other commands.
+- Agent Jo's data folder isn't touched: the Jobs app copies what it needs on
+  its first start. Once it has, `jobscout/` and `portal/` here can be deleted
+  by hand — see UPGRADING.md.
+
+
+### 156. A Windows installer
+
+Asked for: an .exe installation.
+
+`install.bat` works, but it's a folder of files and a console, and it had one
+step that broke a one-click install: when it had just installed Python, the
+same window couldn't see it — PATH hadn't caught up — and it stopped with
+"open a new window and run install.bat again". The installer can't stop there.
+
+- **`installer\AgentJo.iss`** (Inno Setup) builds `AgentJo-Setup-<version>.exe`.
+  It installs into your own folder with no administrator prompt, finds Python
+  in the registry rather than on PATH — or downloads the official installer
+  from python.org and installs it for you alone — then runs
+  `install_agent_jo.py` with that exact Python: the same setup `install.bat`
+  runs. Start menu and desktop shortcuts are the installer's, so uninstalling
+  (Settings → Apps) removes them with the app; `install_agent_jo.py` makes
+  none when asked not to (`--no-shortcut`). An upgrade clears the old code but
+  keeps the Python environment; your data is never touched.
+- **Building it:** `Build Windows Installer.bat` (Inno Setup is installed with
+  winget if it's missing), or the GitHub workflow, which builds it on a Windows
+  machine in the cloud. The version comes from `BUILD_ID`.
+- **`agent-jo.ico`**, made from the app's own icon, for the installer and the
+  shortcuts (`atlas.ico` carried the old name).
+- Checks that fail if the installer stops matching the app: every file it
+  names exists, it never ships a `.venv` or a build, it finds Python without
+  PATH, its code is balanced, the build script keeps the batch rules.
+
+**Not done here:** the .exe can't be built on Linux, so it hasn't been run;
+and it isn't code-signed, so Windows warns the first time it's opened.
+
+
+### 157. The memory store, safe under load
+
+Asked for: improve the app further.
+
+The memory store — memories, conversations, tasks, schedules, lessons —
+opened one SQLite connection and shared it with every thread: the web
+server's workers, the scheduler, a streaming chat, the dashboard refreshing.
+sqlite3 leaves serialising a shared connection to the program, and nothing
+did. (The document store did: it has always held a lock. The memory store
+never got the same care.)
+
+Measured with eight threads writing and reading at once, as the app does on a
+busy minute: about **300 errors in 6,000 writes**, every run —
+"bad parameter or other API misuse", "another row available" — up to 129 of
+2,000 messages never stored, and tasks whose steps failed their foreign key:
+a new task's id was read from the shared connection after another thread had
+inserted through it, so its steps were filed under the wrong task or none.
+
+- **A connection per thread.** `MemoryStore.conn` is now this thread's own
+  connection, made on first use with the same settings (foreign keys, a
+  busy timeout, row access by name). Every id, transaction and cursor is the
+  thread's own; WAL mode lets readers carry on while one thread writes, and
+  the busy timeout makes writers take turns. Code that used `memory.conn` —
+  76 places — gets its own thread's connection without changing.
+- A finished thread's connection is closed when the next thread connects, so
+  open connections stay bounded however many threads come and go; `close()`
+  closes them all.
+- Same load afterwards: **0 errors, 2,000 of 2,000** memories, messages and
+  tasks, three runs out of three. A check runs that load (800 of each) and
+  fails against the old store every time.
+
+
+### 158. Your career, in the chat
+
+Asked for: bring the CV and saved answers into Agent Jo's chat.
+
+Agent Jo Jobs now keeps your full CV in searchable sections, your job
+profile, and every answer you've given an application form. Asked "what did I
+do at Standard Bank?" or "write a bio from my CV", the chat had none of it.
+
+- **A `career_lookup` tool** (`agent/career.py`). The chat calls it when you
+  ask about your experience, skills, employers or achievements, or want
+  something written from your CV. It returns the CV sections that answer the
+  question (searched, not the whole CV), your profile, and any saved form
+  answers that fit — with a reminder to the engine to use only what's there.
+  Crew members can use it too.
+- **The split holds.** It reads Agent Jo Jobs' *data files* —
+  `~/.agent_jo_jobs/jobscout`, or `AGENT_JOBS_HOME` — and imports none of its
+  code; a check fails if any job-search module is ever imported here again.
+- **Read-only, and the job search's rules apply.** It never writes to that
+  folder (a check compares every file before and after); answers to
+  sensitive questions you haven't switched on for reuse there stay hidden;
+  your email and phone aren't passed to the chat.
+- With nothing there yet, it tells you where to add your CV.
+
+Not added to the Capabilities page: its evidence is read from this app's
+data folder, so it would always read "not used" — misleading.
+
+Checks: 11, with a stand-in Jobs data folder in the shapes that app writes.
+
+
+### 159. Updates in one click, and only ones you signed
+
+Asked for: further improvements.
+
+An updater is the most dangerous thing an agent that runs commands can
+have: whoever can push it an "update" can run code on your machine. So
+`agent/updater.py` installs nothing it can't prove you signed:
+
+- **Check** reads `latest.json` from the address you set (Settings → Updates) and offers
+  a newer build; nothing downloads until you say so.
+- **Verify**: the zip must match latest.json's SHA-256, and its signature
+  must verify against the public key **already in this copy** — never the
+  one in the download, which an attacker would simply swap. Every file must
+  match the signed manifest. Refused, with the reason: another key, a file
+  changed after signing, a checksum mismatch, an older build, a release
+  carrying a different key, a path outside the app folder or into its
+  Python environment. A copy with no key refuses every update and says how
+  to fix that; so does a packaged .exe, which can't patch itself.
+- **Install** copies the files in, keeping every one it replaces, so **Roll
+  back** puts the previous version back byte for byte. New packages are
+  installed if requirements changed. Your data is never touched. Restart
+  after.
+
+**Releases are now signable.** `tools/make_release.py` didn't put the
+manifest, signature or public key in the zip — and `tools/sign.py` signs the
+whole repository while a release holds a subset, so a release could never
+have been verified against it anyway. When `signing-key.private` exists, it
+now signs a manifest of exactly the zip's files, puts it inside with the
+signature and public key, and writes `dist/latest.json`. The private key is
+now on the leak scanner's list, and `.update/` is kept out of releases and
+the installer. `agent-jo.ico` ships, as the installer's shortcuts need it.
+
+Tested end to end with the real tools: a key made, a release built, and the
+updater verifying it.
+
+Checks: 16 that attack it with real Ed25519 keys and real zips — someone
+else's signature, a tampered file, a bad checksum, a key swap, a zip slip, a
+write into `.venv`, an older build — each refused with nothing on disk
+changed; a genuine update installs and rolls back exactly; and the release
+tool's signatures pass the updater's check.
+
+**Also fixed: a test that would have stopped the suite.** One check read
+`jobs/server.py`, which left this app in 155; the suite would have crashed
+there on your machine and hidden every check after it. It's now a general
+check — every route's body model defined above it, no model defined twice —
+on this app's own server, and the Jobs app has it for its own.
+
+### 160. One failure no longer hides the rest of the suite
+
+The test suite stopped at its first failed check, so a single missing package
+hid hundreds of checks after it. Each section now runs on its own and the
+report lists every failed check, every section that couldn't run (and the
+package it needs), and which sections only failed because an earlier one did.
+`-k <text>` runs matching sections, `--list` shows them, `--stop` keeps the old
+stop-at-first-failure behaviour. It exits non-zero unless everything passed.
+
+The first full run found a real bug: the presenter's "gates" scene had been
+appended after "close", so a live demo said "close here" and carried on. It now
+sits with the trust story and "close" comes last. On a machine missing
+fastapi/httpx/anthropic, the remaining failures are those packages, named.
+
+### 161. Export a conversation as Markdown
+
+A conversation's menu now has **Export as Markdown**: the whole chat as one
+.md file — title, date, who said what — to keep, send or paste somewhere.
+Since the usual reason to export is to show someone else, anything shaped like
+a secret (API keys for Anthropic, OpenAI, GitHub, Slack, AWS and Google;
+private keys; `password=…`, `token: …`) is replaced with [removed] first, and
+the file and the toast say how many were.
+
+### 162. "When is my interview?" in the chat
+
+`career_lookup` now also reads Agent Jo Jobs' roles: interviews coming up
+(with the meeting link), and — for a company the question names — where that
+application stands and the interview prep written for it, gaps included.
+Still read-only, still no shared code.
+
+### 163. "Who do I know at Acme?"
+
+`career_lookup` also reads Agent Jo Jobs' People: for a company the question
+names, who you've dealt with there, what happened, when you last heard, and
+your notes on them. Still read-only.
+
+### 164. Approving a held action now runs it — and you can do it from your phone
+
+**Fixed, and it mattered:** anything that would leave the machine — an email,
+a form, a post — was held for your approval, and the agent told you it was
+"waiting in Autonomy". But nothing listed it there, and approving (through
+the API) only marked it approved: no code ever ran it. So an email you said
+yes to was never sent. Now:
+
+- **Autonomy → Waiting for your OK** lists every held call with exactly what
+  would be sent, where it came from and why it was held;
+- **Approve and run** runs it then and there, once (a second approval is
+  refused; it's claimed before it runs so it can't double-send), with the
+  inputs you saw; the result is kept with the record. **Refuse** records it
+  and nothing runs.
+
+**The phone companion** (Settings → Phone companion), Agent Jo's own copy of
+the one in Agent Jo Jobs (no shared code): scan the code and your phone shows
+what's waiting for your OK — approve or refuse it — your scheduled tasks and
+how they last ran, and **Pause every scheduled task** (Resume turns back on
+only the ones it paused). It can't chat, read your files or memory, run
+commands or change settings. Off until you turn it on; its own port (8768);
+the key in the link's #fragment; lock-out after ten wrong keys; strict CSP;
+every action audited; not encrypted on Wi-Fi — use Tailscale away from home.
+
+Also: the layout check's time.sleep calls inside Playwright made one check
+flaky; it waits properly now.
+
+### 165. One look
+
+The New / Previous switch in Settings is gone: the two looked almost the same.
+The page keeps the previous look — Agent Jo's picture on the welcome — and
+the fixes that only the new look had now apply always: the phone layout (one
+menu button, the engine on screen), the task feed leaving the board room,
+readable links and buttons in Glass, slim "needs you" rows. A saved choice
+from before is cleared.
+
+### 166. The board shows what's waiting for you
+
+Held actions were announced in the chat but never on the board, so you
+found them only by opening Autonomy. **"Actions waiting for your OK"** is
+now at the top of "needs you" (with the first one's exact summary), and
+clicking it opens Autonomy. From Agent Jo Jobs' data, read-only: an
+interview in the next two days, with its link, and applications waiting on
+questions only you can answer. Clicking either opens Agent Jo Jobs.
+
+Fixed: a board item with no panel would have thrown when clicked
+(`$("#")` isn't a selector).
+
+### 167. Features that were built but couldn't be seen
+
+An audit of the app's 218 endpoints against what the window calls found
+working features with no way to reach them. The biggest ones are now in the
+window:
+
+**Routing you can see.** The README promised rules-based routing "that tells
+you which rule fired". The rules, the decisions and the usage were all
+recorded, but only printed to the server console. Now:
+
+- every reply routed by Auto says, under it, which rule chose the engine
+  ("rule “summarise” → local — summarising is what small models are good
+  at"), whether a local draft had to escalate and why, or that it failed
+  over to another engine;
+- **Routing & spend** (sidebar) shows where your turns went (and what share
+  ran locally), the rules (switch any off, send a kind of work to another
+  tier, or go back to the defaults), "What would this message do?" (nothing
+  is sent), recent decisions, this month's spend by feature and by engine
+  (and which engines have no known price), and the engine tests.
+
+**The engine tests tested the wrong thing.** Running them on a named engine
+passed the engine's *name* as the model, which no engine recognises, so the
+"is my local model good enough?" result wasn't about your local model. They
+now run on the engine the name resolves to.
+
+**Your models: what drives them, and their card.** A saved predictive model
+now has **What drives it** (feature importance, measured the honest way when
+the model doesn't expose weights, with the "importance isn't causation"
+note) and **Model card** (what it was trained on, how it scored, its limits,
+as a file to keep with it).
+
+The guide has a stop for Routing & spend: the suite fails any panel without
+one, and caught this one.
+
+### 168. Every panel usable on a phone, the crew editable, Turbo measured
+
+**Panels on a phone.** A new check opens all 26 panels at phone width and
+desktop width and measures them. On a phone, eight ran off the right edge:
+the email setup's port and password, the memory search and Add, the engine
+form's model and key, the schedule's frequency, the model builder's tabs and
+Train, the MCP transport, the permission pattern. On a narrow screen, rows
+now wrap, form grids become one column, and fields take the full width.
+Desktop is unchanged. The check is in tools/check_layout.py, so a panel
+can't regress unseen.
+
+**Opening a panel closes the others.** Three panels (Models, Code map,
+Phone) weren't on the close-everything list, so opening another panel left
+them open underneath. On a phone, you closed one and found another.
+
+**The crew is editable.** Specialists had an endpoint for adding, editing and
+removing them, but no way to reach it. Each member now has **Edit** (role,
+standing brief, engine, and the words that route work to them) and
+**Remove**, and **+ Add a specialist** makes a new one ("Legal: contract,
+clause, NDA").
+
+**Turbo, measured.** Routing & spend now shows how often a local draft was
+good enough, how many escalated, the net saving (measured from this month's
+chat spend once there's enough of it), and which kinds of work it has
+stopped trying locally because the local drafts kept falling short.
+
+Also: the crew's task row cut off its Run button in a narrow window. It
+wraps now.
+
+### 169. Models that can't use tools still answer
+
+A model that chats fine in Ollama, such as
+`hf.co/mlabonne/gemma-3-27b-it-abliterated-GGUF:Q4_K_M`, failed every turn
+here with `400 … does not support tools`. Agent Jo sends its tool list with
+each turn, and many community GGUFs (abliterated ones especially) ship
+without a tool template, so Ollama refuses the whole request.
+
+Now that refusal is recognised, on both Ollama's own API and its
+OpenAI-compatible one. The turn is retried without tools and the model
+answers as a plain chat model. The reply starts with a one-line note that it
+couldn't use tools this turn (no files, search or actions), so you know why
+it didn't act. The model is remembered (`no_tools_models.json` in your Agent
+Jo folder), so later turns skip the failed request. Delete that file, or the
+model's line in it, if an updated model gains tool support.
+
+### 170. The Symbolic Synapse theme
+
+A new theme in Settings → Theme: **Symbolic Synapse (dark)**, the look of
+symbolicsynapse.co.za. It's also one keystroke away: Ctrl K, type "synapse".
+Glass stays the default.
+
+- **The site's palette and type.** The abyss background with its film grain,
+  cyan and steel accents, Archivo for headings and numbers, IBM Plex Sans for
+  text and IBM Plex Mono for labels. The fonts ship inside Agent Jo
+  (`web/static/fonts`, with their SIL Open Font License files). No font
+  service is contacted, so the theme works offline, and the fonts load only
+  while this theme is on.
+- **Agent Jo inside the lattice.** On the welcome screen, Agent Jo's picture
+  sits in a slowly turning hexagonal lattice with filaments of light leaving
+  it, after the site's hero ("Lattice: rules and tools / Filaments: what it
+  learns"). It runs only while the welcome is on screen and the window is
+  visible. Left alone for two minutes it holds still until you move the
+  mouse or type. With reduced motion turned on in Windows it's drawn once and
+  never moves.
+- **The site's controls.** "New conversation" is the site's solid cyan call
+  to action. Buttons are pills, solid or outlined. Cards are frosted like
+  the site's, with a soft light that follows the mouse. Section headings are
+  in mono capitals, and the sidebar carries the two-tone SYMBOLIC SYNAPSE
+  wordmark. Focus shows the site's cyan ring.
+- **It's Glass underneath.** The skin changes colour, type and texture, not
+  layout. Every placement, phone and panel fix made for Glass still applies.
+  `tools/check_layout.py` measures both themes: all 26 panels at phone and
+  desktop width, the greeting above the message box, nothing scrolling
+  sideways, the lattice drawn, stopping and removed when it should.
+
+Also, in every theme:
+
+- **Themes in the palette.** Ctrl K lists every theme with what it looks
+  like. Choosing one switches straight away, the same as Settings.
+- **Glass message box.** The text area no longer draws a darker box inside
+  the pill.
+- **Glass outlined buttons.** They no longer light up brass (the Instruments
+  colour) on hover.
+- **The palette's search box.** It no longer draws a focus ring that cut
+  across the panel's corners.
+- **Board history test.** The sparkline history test used the local date
+  while the board counts in UTC days, so it failed between midnight and 02:00
+  South African time. It now uses the same day as the board.
+
+### 171. Symbolic Synapse is the main look, and no more bars down the left
+
+- **Symbolic Synapse is the default.** A fresh install opens on it, from the
+  very first paint. Anyone on Glass, the previous default, moves to it once
+  when they update. A theme picked on purpose (Light, Dark, Instruments,
+  Midnight) is left alone, and so is Glass if you pick it again afterwards.
+  It's first in Settings → Theme and in the Ctrl K list. "System" now gives
+  Symbolic Synapse when Windows is dark and Light when it's light. Glass
+  stays one click away.
+- **No coloured bars down the left of cards.** On a rounded card the bar bent
+  round the corners and looked like a mistake. On a Challenges brief there
+  were two side by side: the row's amber one and the tier's thin one. Where
+  the bar meant something it's now a small dot by the title. For example, a
+  brief's confidence is amber for high, grey for medium and copper for low,
+  and a health check is cyan for fine, amber for a warning and red for
+  failing. The model builder's result rows (fine, or worth a look) and the
+  toasts (a dot for the kind of message) work the same way. A hovered
+  sidebar item, the open conversation, a selected job, an outreach draft and
+  the presenter's note are shown by their tint and border instead of a bar.
+  This applies to Glass as well.
+- **No empty bars under a panel's content.** A note box with nothing in it
+  yet (two of them sat under the Challenges briefs) is hidden until it has
+  something to say.
+- **The skin can't break anything.** It's on every page now, so the lattice
+  never throws an error into a click, key or observer. A page that can't
+  draw it just goes without.

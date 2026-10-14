@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 import agent.config as config
 import agent.localguard as localguard
+import agent.updater as updater
 import agent.main as main
 import agent.brain as brainmod
 import agent.rag as rag
@@ -52,11 +53,6 @@ import agent.neural3d as neural3d
 import agent.trendscout as trendscout
 import agent.crew as crew
 import agent.backup as backupmod
-import agent.jobscout as jobscout
-import agent.portal as portal
-import agent.cv as cvmod
-import agent.boards as boards
-import agent.jobalerts as jobalerts
 import agent.models as localmodels
 import agent.routing as routing
 import agent.intercepts as intercepts
@@ -64,7 +60,6 @@ import agent.mcpdiscover as mcpdiscover
 import agent.codemap as codemap
 import agent.modelbuild as modelbuild
 import agent.dataprep as dataprep
-import agent.outcomes as outcomes
 import agent.finetune as finetune
 import agent.health as health
 import agent.breaker as breaker
@@ -755,6 +750,29 @@ def routing_test(body: RoutingTestBody):
     return routing.decide(body.text, body.attachments)
 
 
+class PhoneBody(BaseModel):
+    enabled: bool = False
+
+
+@app.get("/api/phone")
+def phone_status():
+    from agent import phone as _phone
+    return _phone.status()
+
+
+@app.post("/api/phone")
+def phone_set(body: PhoneBody):
+    from agent import phone as _phone
+    _phone.configure(memory, console)
+    return _phone.set_enabled(body.enabled)
+
+
+@app.post("/api/phone/rotate")
+def phone_rotate():
+    from agent import phone as _phone
+    return _phone.rotate_key()
+
+
 @app.get("/api/intercepts")
 def intercepts_list():
     return intercepts.summary()
@@ -771,6 +789,10 @@ def intercepts_decide(body: InterceptBody):
     r = intercepts.decide(body.id, body.approve, body.note)
     if not r.get("ok"):
         raise HTTPException(status_code=409, detail=r["error"])
+    if body.approve:
+        # approving is what runs it — see tools.run_held
+        from agent import tools as _tools
+        r["run"] = _tools.run_held(body.id, memory, console)
     return r
 
 
@@ -961,7 +983,7 @@ def evals_run(body: EvalRunBody):
         raise HTTPException(status_code=409, detail=why)
     with costs.attribute("evals"):
         return evals.run(get_brain(), engine=body.engine or "",
-                         feature=body.feature or "")
+                         feature=body.feature or "", model=model)
 
 
 @app.get("/api/costs")
@@ -3212,23 +3234,17 @@ def _run_schedule(sch: dict) -> None:
             watchers.record_run(sch.get("name", ""), True, summary)
             return
         if action == "jobscout":
-            if jobscout.auto_config().get("enabled"):
-                # find first, then apply — without sourcing, an unattended
-                # run could only work through roles someone had already added
-                _ja = jobscout.auto_cycle(get_brain())
-                if _ja.get("ok"):
-                    status = "ok"
-                    summary = (f"found {_ja.get('discovered', 0)} new role(s); "
-                              f"{len(_ja.get('sent') or [])} sent"
-                              + (" (dry run)" if _ja.get("dry_run") else "")
-                              + f", {len(_ja.get('held') or [])} held for you")
-                    return
-            _jsum = jobscout.summary()
+            # Agent Jo Jobs is its own app now (CHANGELOG 155), with its own
+            # data and its own daily run. A job schedule left here from before
+            # is switched off, not handed to the chat agent — which would read
+            # its prompt, "find and apply", as a request.
+            try:
+                memory.set_schedule_enabled(sch["id"], False)
+            except Exception:
+                pass
             status = "ok"
-            summary = (f"{_jsum['total']} role(s) tracked; "
-                      f"{_jsum['by_stage'].get('found', 0)} unreviewed; "
-                      f"{_jsum['follow_ups']} awaiting follow-up. "
-                      f"Nothing is ever sent automatically.")
+            summary = ("job search moved to Agent Jo Jobs, which runs its own "
+                       "daily search; this schedule is switched off")
             return
 
         if action == "backup":
@@ -3396,6 +3412,17 @@ def _on_startup():
         pass
     auth.bootstrap_from_env()
     _start_scheduler()
+    # the phone companion, if you turned it on (agent/phone.py)
+    try:
+        from agent import phone as _phone
+        _phone.configure(memory, console)
+        _ph = _phone.start()
+        if _ph.get("running"):
+            console.print(f"[dim]· phone companion on port {_ph['port']}[/dim]")
+        elif _ph.get("error"):
+            console.print(f"[yellow]· phone companion: {_ph['error']}[/yellow]")
+    except Exception:
+        pass
 
 
 # --- authentication (optional password protection) -------------------------- #
@@ -3752,6 +3779,11 @@ async def chat(
                             inventory=_rinv,
                             turbo_on=bool(config.TURBO))
                         routing.log_decision(_plan)
+                        # shown under the reply: which rule chose the
+                        # engine, so routing isn't something you take on trust
+                        turn_info["route"] = {k: _plan.get(k) for k in
+                                              ("engine", "tier", "rule", "why",
+                                               "category", "escalate")}
                         console.print("[dim]· "
                                       + routing.describe_plan(_plan)
                                       + "[/dim]")
@@ -3790,6 +3822,8 @@ async def chat(
                         raise _TurboDone()
                     on_status and on_status(
                         "local draft fell short — escalating")
+                    if turn_info.get("route"):
+                        turn_info["route"]["escalated"] = ", ".join(_g["reasons"])[:160]
                     _msg = (turbo.escalation_prompt(_draft, _g["reasons"])
                             + "\n\nUSER REQUEST:\n" + _msg)
                     turbo.record(False, reasons=_g["reasons"],
@@ -3818,6 +3852,7 @@ async def chat(
                 if not _alt:
                     raise
                 _note = f"_[{_alt['why']}]_\n\n"
+                turn_info["failover"] = _alt["why"][:200]
                 on_text(_note)
                 _altforce = _force_model(_alt["engine"])
                 if _altforce is main._LOCAL_UNAVAILABLE:
@@ -3901,6 +3936,8 @@ async def chat(
                             "engine": turn_info.get("engine"),
                             "model": turn_info.get("model"),
                             "escalations": turn_info.get("escalations"),
+                            "route": turn_info.get("route"),
+                            "failover": turn_info.get("failover"),
                             "usage": turn_info.get("usage")})
         finally:
             with _cancel_lock:
@@ -4072,6 +4109,20 @@ def conversation_get(cid: str):
             "messages": msgs}
 
 
+@app.get("/api/conversations/{cid}/export")
+def conversation_export(cid: str):
+    """The conversation as a Markdown download, secrets blanked."""
+    from fastapi.responses import Response
+    from agent import chatexport
+    c = conversation_get(cid)
+    if not c["messages"]:
+        raise HTTPException(status_code=404, detail="That conversation is empty.")
+    out = chatexport.to_markdown(c["title"], c["messages"])
+    return Response(out["text"], media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{out["filename"]}"',
+                             "X-Secrets-Removed": str(out["removed"])})
+
+
 @app.post("/api/conversations/{cid}/project")
 def conversation_assign(cid: str, body: AssignBody):
     _touch_conversation(cid)
@@ -4123,6 +4174,44 @@ def index():
         return HTMLResponse(html)
     except Exception:
         return FileResponse(STATIC / "index.html")
+
+
+class UpdateBody(BaseModel):
+    source: str = ""
+
+
+@app.get("/api/updates")
+def updates_status():
+    return updater.status()
+
+
+@app.post("/api/updates/source")
+def updates_source(body: UpdateBody):
+    return updater.save_settings({"source": body.source.strip()})
+
+
+@app.post("/api/updates/check")
+def updates_check():
+    res = updater.check()
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@app.post("/api/updates/install")
+def updates_install():
+    res = updater.install()
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+@app.post("/api/updates/rollback")
+def updates_rollback():
+    res = updater.roll_back()
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
 
 
 @app.get("/api/version")

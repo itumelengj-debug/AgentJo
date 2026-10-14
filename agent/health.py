@@ -91,28 +91,7 @@ def _check_engine_config():
         return _c("Engine setup", "Engines", UNKNOWN, str(exc)[:160])
 
 
-def _check_portal_browser():
-    """Portal applications drive a real browser. Checked by whether the
-    executable is on disk — `playwright install --dry-run` exits 0 either
-    way, which once had setup reporting a browser that wasn't there."""
-    import pathlib
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        return _c("Portal browser", "Jobs", WARN, "Playwright isn't installed",
-                  "Only portal applications need it. Add it with: "
-                  "python -m pip install playwright && python -m playwright "
-                  "install chromium")
-    try:
-        p = sync_playwright().start()
-        exe = p.chromium.executable_path
-        p.stop()
-        if pathlib.Path(exe).exists():
-            return _c("Portal browser", "Jobs", OK, "ready")
-        return _c("Portal browser", "Jobs", WARN, "no browser downloaded yet",
-                  "Run: python -m playwright install chromium")
-    except Exception as exc:
-        return _c("Portal browser", "Jobs", UNKNOWN, str(exc)[:160])
+
 
 
 def _check_engine_models():
@@ -756,7 +735,6 @@ def report(memory=None) -> dict:
         _safe(_check_index_truncated, "Document index", "Safety"),
         _safe(_check_intercepts, "Review gate", "Safety"),
         _safe(_check_engine_models, "Engine models", "Engines"),
-        _safe(_check_portal_browser, "Portal browser", "Jobs"),
         _safe(_check_engine_config, "Engine setup", "Engines"),
         _safe(_check_location, "Where it lives", "Deploy"),
         _safe(_check_disk, "Disk space", "Safety"),

@@ -39,17 +39,84 @@ Graphviz or CSV for Visio.
 
 ---
 
-## Two apps
+## Checking it
 
-**Agent Jo** — the agent: chat, documents, code map, schedules, the crew.
+```
+python tests/run_tests.py            every check, and a report at the end
+python tests/run_tests.py -k phone   only sections whose title matches
+python tests/run_tests.py --list     the sections
+python tests/run_tests.py --stop     stop at the first failure (the old way)
+python tools/check_layout.py         the layout, measured in a real browser
+```
 
-**Agent Jo Jobs** — the job search, in its own window on port 8766. Roles,
-held drafts, auto-apply, and what actually produced replies. Start it with
-`start_agent_jo_jobs.bat` (or `./start_agent_jo_jobs.sh`).
+A failure no longer stops the run: each section of the suite runs on its
+own, and the report lists every failed check, every section that couldn't
+run and why (a missing package, say), and which only failed because an
+earlier one did — fix those first. It exits non-zero unless everything
+passed.
 
-They share the data, the engines and the audit trail — the routes moved, they
-weren't copied, so there is one fabrication check and one auto-apply engine.
-Run both at once; that's the normal case.
+## Updates in one click
+
+Each app checks for, verifies and installs its own updates — and installs
+nothing it can't prove you signed.
+
+**Once, on the machine you build releases on:**
+
+1. Make a signing key — Agent Jo: `python tools/sign.py --make-key`;
+   Agent Jo Jobs: `python tools/make_release.py --make-key`. Keep
+   `signing-key.private` secret and out of git; `signing-key.pub` ships
+   with the app.
+2. Build a release (`python tools/make_release.py`). It signs exactly the
+   files in the zip and writes `dist/latest.json` beside it.
+3. Install that first signed release by hand, so your copy carries the key.
+
+**Each new version after that:** build, then upload the zip and
+`latest.json` to the same place (a GitHub release works). In the app — Agent
+Jo: Settings → Updates; Agent Jo Jobs: Engines → Updates — paste
+latest.json's address once, then **Check for updates → Install update**, and
+restart. **Roll back** puts the previous version back exactly.
+
+Refused, with the reason: anything not signed by the key in your copy, a
+file changed after signing, a checksum mismatch, an older build, a release
+carrying a different key, and any file outside the app folder or in its
+Python environment. Your data is never touched.
+
+## Windows installer (.exe)
+
+**Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in
+this folder. It installs Inno Setup with winget if you don't have it, and
+writes `dist\AgentJo-Setup-<version>.exe` a minute later. No Windows PC to hand?
+Put the folder on GitHub and run **Actions → Windows installer → Run
+workflow**: the .exe is attached to the run.
+
+**What the .exe does:** installs into your own user folder
+(`%LOCALAPPDATA%\Programs\Agent Jo`) with no administrator prompt; finds
+Python 3.10+, or downloads the official one from python.org and installs it
+for you alone; sets up the app's packages; and adds Start menu and
+desktop shortcuts. Uninstall it from Settings → Apps. Your data, in
+`%USERPROFILE%\.local_agent`, is never touched, so reinstalling or upgrading keeps
+everything.
+
+**Windows will warn the first time** ("Windows protected your PC"), because
+the .exe isn't code-signed: click **More info → Run anyway**. Removing that
+warning needs a code-signing certificate, which is a paid, separate step.
+
+## The job search is a separate app
+
+**Agent Jo** is the agent: chat, documents, code map, schedules, the crew.
+The job search — roles, held drafts, auto-apply — is **Agent Jo Jobs**, a
+separate app with its own download, its own data and its own code. It used to
+ship in this folder and share this app's data; since build 155 nothing is
+shared. See UPGRADING.md if you used it from here.
+
+**Your career in the chat.** If you've given Agent Jo Jobs your CV, ask
+Agent Jo about it — "what did I do at Standard Bank?", "write me a LinkedIn
+summary from my CV" — and it looks it up (the `career_lookup` tool): the CV
+sections that answer, your job profile, and answers you've given application
+forms. It reads Agent Jo Jobs' data folder (`~/.agent_jo_jobs`, or
+`AGENT_JOBS_HOME`) and nothing else; it shares no code with the job search,
+never writes to it, and leaves out sensitive answers you haven't switched on
+for reuse there.
 
 ## Install
 

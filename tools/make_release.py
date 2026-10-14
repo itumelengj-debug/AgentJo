@@ -15,6 +15,8 @@ They supply their own engine — the first-run screen asks for it.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import sys
@@ -31,26 +33,29 @@ ROOT = Path(__file__).resolve().parent.parent
 # (correctly) trip the leak scanner. Caught by that scanner on the first real
 # build, which is the scanner earning its place.
 INCLUDE_DIRS = [
-    "agent", "web",
-    # Agent Jo Jobs ships with it: one download, two windows
-    "jobs", "web_jobs",
+    "agent", "web", "web_phone",
+    # Agent Jo Jobs is its own app and its own release now (CHANGELOG 155)
 ]
 INCLUDE_FILES = [
     "README.md", "CHANGELOG.md", "UPGRADING.md", "LICENSE", "COMMERCIAL.md",
     "install.bat", "get-python.ps1", "install_agent_jo.py",
     "install.command", "install.sh",
-    "run_jobs.py", "start_agent_jo_jobs.bat",
-    "start_agent_jo_jobs.command", "start_agent_jo_jobs.sh",
     "start_agent_jo.command", "start_agent_jo.sh",
     "VERIFYING.md", "SIGNING.md",
     "requirements.txt", "requirements-web.txt",
     "requirements-rag.txt", "requirements-voice.txt", "requirements-app.txt",
     "run_web.py", "run.py", "start_agent_jo.bat", "app.py",
-    "agent_avatar.png", "atlas.ico",
+    "agent_avatar.png", "atlas.ico", "agent-jo.ico",
 ]
+
+# Signing the release itself, so the in-app updater can prove a download came
+# from you (agent/updater.py). tools/sign.py signs the whole repository; a
+# release holds a subset, so it gets a manifest of exactly what's in it.
+MANIFEST, SIGNATURE, PUBKEY = "MANIFEST.sha256", "MANIFEST.sig", "signing-key.pub"
+KEYFILE = ROOT / "signing-key.private"
 SKIP_SUFFIX = {".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3", ".zip"}
 SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "env", "node_modules",
-             "dist", "build", ".pytest_cache", "outputs"}
+             "dist", "build", ".pytest_cache", "outputs", ".update"}
 
 # Anything matching these in the built archive means the build leaked.
 LEAK_PATTERNS = [
@@ -60,7 +65,7 @@ LEAK_PATTERNS = [
     (re.compile(rb"xox[baprs]-[A-Za-z0-9-]{10,}"), "a Slack token"),
     (re.compile(rb"AKIA[0-9A-Z]{16}"), "an AWS key"),
 ]
-LEAK_FILENAMES = ["secret.key", "credentials.json", "engines.json",
+LEAK_FILENAMES = ["signing-key.private", "secret.key", "credentials.json", "engines.json",
                   "mcp.json", "email.json", "audit.jsonl", "problems.jsonl",
                   "agent.db", "documents.db", "settings.json",
                   "roles.json", "profile.json", "members.json"]
@@ -201,17 +206,62 @@ def build() -> Path:
     zip_path = out_dir / f"AgentJo-{stamp}.zip"
     if zip_path.exists():
         zip_path.unlink()
-    files = collect()
+    files = [f for f in collect() if str(f).replace("\\", "/") not in (MANIFEST, SIGNATURE, PUBKEY)]
+    signed = _sign_files(files)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED,
                          compresslevel=6) as z:
         for rel in files:
             z.write(ROOT / rel, str(rel).replace("\\", "/"))
+        for name, data in signed.items():
+            z.writestr(name, data)
         # The real install.bat is collected from the repo above. This used to
         # write an inline copy over it, which silently shipped a superseded
         # installer — exactly the class of bug that makes an installer "work
         # on my machine" and nowhere else.
         z.writestr("READ ME FIRST.md", READ_ME_FIRST)
     return zip_path
+
+
+def _build_id() -> str:
+    m = re.search(r'BUILD_ID = "([^"]+)"', (ROOT / "agent" / "config.py").read_text("utf-8"))
+    return m.group(1) if m else ""
+
+
+def _sign_files(files: list) -> dict:
+    """{name: bytes} of the manifest, its signature and the public key, for
+    exactly these files — or {} when there's no signing key (the release then
+    builds, but the in-app updater will refuse it)."""
+    if not KEYFILE.exists():
+        return {}
+    from cryptography.hazmat.primitives import serialization
+    entries = {}
+    for rel in files:
+        h = hashlib.sha256((ROOT / rel).read_bytes()).hexdigest()
+        entries[str(rel).replace("\\", "/")] = h
+    body = {"created": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "build": _build_id(), "files": len(entries), "entries": entries}
+    man = json.dumps(body, indent=2, sort_keys=True).encode("utf-8")
+    key = serialization.load_pem_private_key(KEYFILE.read_bytes(), password=None)
+    pub = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    return {MANIFEST: man, SIGNATURE: key.sign(man), PUBKEY: pub}
+
+
+def write_latest(zip_path: Path, notes: str = "") -> Path:
+    """dist/latest.json: what the in-app updater reads. Upload it beside the
+    zip; "url" is the zip's file name, read relative to wherever latest.json
+    is, unless AGENT_JO_RELEASE_BASE says otherwise."""
+    import os
+    base = os.environ.get("AGENT_JO_RELEASE_BASE", "").rstrip("/")
+    info = {"build": _build_id(),
+            "url": (base + "/" if base else "") + zip_path.name,
+            "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
+            "size": zip_path.stat().st_size,
+            "notes": notes or "See CHANGELOG.md for what changed."}
+    out = zip_path.parent / "latest.json"
+    out.write_text(json.dumps(info, indent=2), "utf-8")
+    return out
 
 
 def audit(zip_path: Path) -> list:
@@ -257,6 +307,15 @@ def main() -> int:
         print("\nNothing was written. Fix the above and run this again.")
         return 1
     print("Clean: no keys, no conversations, no memories.")
+    with zipfile.ZipFile(zip_path) as z:
+        is_signed = SIGNATURE in z.namelist()
+    if is_signed:
+        latest = write_latest(zip_path)
+        print(f"Signed. For in-app updates, upload both {zip_path.name} and "
+              f"{latest.name} to the same place.")
+    else:
+        print("NOT signed (no signing-key.private): the in-app updater will "
+              "refuse this release. Run  python tools/sign.py --make-key  once.")
     print(f"\nShare this file: {zip_path}")
     print("They unzip it and double-click install.bat.")
     return 0

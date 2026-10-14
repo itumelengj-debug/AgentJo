@@ -27,19 +27,21 @@ So upgrading is replacing the code beside it. Nothing you have is touched.
 4. **Delete the old folder** once the new one works. Your data is elsewhere,
    so this only removes code.
 
-## Running both
+## The job search moved out (build 155)
 
-```
-start_agent_jo.bat        →  http://127.0.0.1:8765   the agent
-start_agent_jo_jobs.bat   →  http://127.0.0.1:8766   the job search
-```
+Agent Jo Jobs is its own app now: its own folder, its own data, its own code.
+Nothing is shared with Agent Jo any more.
 
-Two windows, one set of data. Open both — they share the same engines,
-memories and audit trail, so a role you save in one is the role the other
-sees. Neither needs the other running.
-
-macOS and Linux use `start_agent_jo.command` / `.sh` and
-`start_agent_jo_jobs.command` / `.sh`.
+1. Install Agent Jo Jobs from its own download and start it once. On its
+   first start it **copies** your job data across from Agent Jo's folder —
+   roles, profile and CVs, auto-apply settings, the browser logins for job
+   sites, your engines and their keys, and the daily run. Nothing is moved or
+   deleted.
+2. In Agent Jo, the old "Job scout — daily" schedule switches itself off the
+   next time it comes due; the job search runs from Agent Jo Jobs.
+3. Once Agent Jo Jobs has your roles, the job folders left in Agent Jo's data
+   folder (`jobscout` and `portal`) can be deleted by hand. Agent Jo no longer
+   reads them.
 
 ## Keeping the old one alongside
 

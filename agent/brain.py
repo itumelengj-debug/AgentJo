@@ -443,6 +443,92 @@ class AnthropicBrain(_PerThreadEngine):
 # ====================================================================== #
 # Backend 2: local open-weights model via Ollama
 # ====================================================================== #
+# --------------------------------------------------------------------------- #
+# Models that can't take tools
+#
+# Some models answer fine but refuse a request that carries tool definitions:
+# Ollama returns 400 "<model> does not support tools" (abliterated and many
+# community GGUFs ship without a tool template). The whole turn failed with
+# that error, so a model that chats perfectly in Ollama couldn't be used here
+# at all. Now the refusal is recognised, the turn is retried without tools —
+# the model answers as a plain chat model — and the model is remembered, so
+# the next turn doesn't pay for a failed request first.
+# --------------------------------------------------------------------------- #
+_NO_TOOLS: set | None = None
+_NO_TOOLS_LOCK = threading.Lock()
+
+
+def _no_tools_path():
+    return config.AGENT_HOME / "no_tools_models.json"
+
+
+def _no_tools() -> set:
+    global _NO_TOOLS
+    with _NO_TOOLS_LOCK:
+        if _NO_TOOLS is None:
+            try:
+                _NO_TOOLS = set(json.loads(_no_tools_path().read_text("utf-8")))
+            except Exception:
+                _NO_TOOLS = set()
+        return _NO_TOOLS
+
+
+def model_lacks_tools(model: str) -> bool:
+    return bool(model) and str(model).strip().lower() in _no_tools()
+
+
+def remember_no_tools(model: str) -> None:
+    if not model:
+        return
+    s = _no_tools()
+    with _NO_TOOLS_LOCK:
+        s.add(str(model).strip().lower())
+        try:
+            _no_tools_path().parent.mkdir(parents=True, exist_ok=True)
+            _no_tools_path().write_text(json.dumps(sorted(s), indent=1), "utf-8")
+        except Exception:
+            pass
+    print(f"[engine] {model} can't use tools — answering without them from now on.")
+
+
+def forget_no_tools(model: str = "") -> None:
+    """Try tools again (after the model is updated): one model, or all."""
+    global _NO_TOOLS
+    with _NO_TOOLS_LOCK:
+        if model:
+            (_NO_TOOLS or set()).discard(str(model).strip().lower())
+        else:
+            _NO_TOOLS = set()
+        try:
+            _no_tools_path().write_text(json.dumps(sorted(_NO_TOOLS or []), indent=1), "utf-8")
+        except Exception:
+            pass
+
+
+def is_no_tools_error(exc_or_text) -> bool:
+    t = str(exc_or_text).lower()
+    body = getattr(exc_or_text, "_jo_body", "")
+    t += " " + str(body).lower()
+    return ("does not support tools" in t or "tools is not supported" in t
+            or "tool use is not supported" in t or "does not support tool" in t
+            or "tool calling is not supported" in t)
+
+
+def _with_note(resp):
+    """Put the no-tools note at the start of the reply's text."""
+    for b in getattr(resp, "content", []) or []:
+        if getattr(b, "type", "") == "text":
+            b.text = NO_TOOLS_NOTE + (b.text or "")
+            return resp
+    resp.content.insert(0, SimpleNamespace(type="text", text=NO_TOOLS_NOTE))
+    return resp
+
+
+NO_TOOLS_NOTE = ("_[This model can't use tools, so it answered as plain chat: it "
+                 "can't read files, search or act this turn. Pick a tool-capable "
+                 "model for that.]_\n\n")
+
+
 class OllamaUnavailable(Exception):
     """Raised when the local Ollama server can't be reached."""
     def __init__(self, message: str):
@@ -595,12 +681,29 @@ class OllamaBrain(_PerThreadEngine):
                         "num_ctx": max(config.OLLAMA_NUM_CTX,
                                        config.MAX_TOKENS + 2048)},
         }
-        ollama_tools = self._to_ollama_tools(tools)
+        ollama_tools = (None if model_lacks_tools(payload["model"])
+                        else self._to_ollama_tools(tools))
         if ollama_tools:
             payload["tools"] = ollama_tools
 
         self.last_engine = "local"
         self.last_usage = None
+        try:
+            return self._chat_payload(payload, on_text)
+        except urllib.error.HTTPError as exc:
+            try:
+                exc._jo_body = exc.read().decode("utf-8", "replace")
+            except Exception:
+                exc._jo_body = ""
+            if "tools" in payload and is_no_tools_error(exc):
+                remember_no_tools(payload["model"])
+                payload.pop("tools", None)
+                if on_text:
+                    on_text(NO_TOOLS_NOTE)
+                return _with_note(self._chat_payload(payload, on_text))
+            raise
+
+    def _chat_payload(self, payload: dict, on_text):
 
         if on_text is None:
             data = self._post(payload)
@@ -883,9 +986,20 @@ class OpenAIBrain(_PerThreadEngine):
             return resp
         self.last_engine = self._label
         self.last_usage = None
+        _m = model or self.model
+        if model_lacks_tools(_m):
+            tools = None
         try:
             return self._do_chat(messages, system, tools, on_text, model)
         except Exception as exc:
+            if tools and self.supports_tools and is_no_tools_error(exc):
+                remember_no_tools(_m)
+                if on_text:
+                    on_text(NO_TOOLS_NOTE)
+                try:
+                    return _with_note(self._do_chat(messages, system, None, on_text, model))
+                except Exception as exc2:
+                    exc = exc2
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text",
                          text=self._friendly_error(exc, model or self.model))],

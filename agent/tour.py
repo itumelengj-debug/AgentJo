@@ -44,6 +44,18 @@ STOPS = [
      "try": "Open Engines and see what's available. If Ollama is running, "
             "pin it and ask something — that turn is free.",
      "panel": "enginesBtn"},
+    {"key": "routing", "chapter": "Start here", "title": "Routing & spend",
+     "what": "With the Auto engine, each turn goes where its first matching "
+             "rule says: summarising and reformatting to your local model, "
+             "code and analysis to the strong one. Every reply says which "
+             "rule chose its engine.",
+     "why": "Routing you can't see is routing you take on trust. Here are the "
+            "rules (change them), where your turns actually went, what the "
+            "month cost by feature, and tests that show which work your local "
+            "model can be trusted with.",
+     "try": "Open Routing & spend, paste a message into 'What would this "
+            "message do?', then run the tests on your local model.",
+     "panel": "routingBtn"},
     {"key": "permissions", "chapter": "Start here",
      "title": "What it's allowed to do",
      "what": "It asks before touching anything outside its own folder. Full "
@@ -294,17 +306,6 @@ STOPS = [
             "predict, press Build a model. Read the leakage note before "
             "believing a high score.",
      "panel": "mlBtn"},
-    {"key": "jobsapp", "chapter": "Specialist tools",
-     "title": "The job search is its own app",
-     "what": "Agent Jo Jobs runs beside this one in its own window: roles, "
-             "held drafts, auto-apply, and what actually produced replies.",
-     "why": "It had become a different product living inside this one. "
-            "Someone running a job search doesn't want a code map in the "
-            "way, and someone working doesn't want a job hunt in their "
-            "sidebar. Same data, same engines, same audit trail.",
-     "try": "Start it with start_agent_jo_jobs.bat, or press Ctrl+K and "
-            "type jobs.",
-     "panel": "tourBtn"}
 ]
 
 

@@ -73,57 +73,7 @@ def _trend_items() -> list:
     return []
 
 
-def _job_items() -> list:
-    from . import jobscout
-    out = []
-    # Read the same source the Held drafts tab reads, or the two disagree:
-    # dismissing a claim doesn't change the draft's check, so counting failed
-    # checks kept reporting "needs checking" for drafts whose every claim had
-    # already been decided — and told the user to confirm claims that were no
-    # longer there to confirm.
-    hc = jobscout.held_claims()
-    to_decide = hc.get("distinct", 0)
-    to_rewrite = len(hc.get("needs_redraft") or [])
-    if to_decide and not hc.get("profile_empty"):
-        out.append(_item(ACT, "Applications need checking",
-                         f"{to_decide} claim(s) across "
-                         f"{hc.get('count', 0)} draft(s) aren't backed by "
-                         f"your profile.", "jobsBtn",
-                         "Jobs \u2192 Held drafts: confirm the true ones and "
-                         "those drafts clear immediately."))
-    if hc.get("profile_empty") and hc.get("count"):
-        # the cause is one missing thing, not N claims to approve
-        out.append(_item(ACT, "Your job profile is empty",
-                         f"{hc['count']} draft(s) are held because there's "
-                         f"nothing to check them against.", "jobsBtn",
-                         "Ask in chat: \u201cbuild my job profile from my "
-                         "CV\u201d. Everything unblocks at once."))
-    elif not to_decide and not to_rewrite and hc.get("count"):
-        # a draft can be held by a problem that names no specific term, and
-        # counting only named claims made those invisible — the same fault
-        # this card exists to prevent
-        out.append(_item(ACT, "Applications need checking",
-                         f"{hc['count']} draft(s) are held and won't be "
-                         f"sent.", "jobsBtn",
-                         "Jobs \u2192 Held drafts shows what each one says."))
-    if to_rewrite:
-        out.append(_item(ACT, "Drafts to rewrite",
-                         f"{to_rewrite} draft(s) still say something you "
-                         f"dismissed.", "jobsBtn",
-                         "Confirming won't help these \u2014 Jobs \u2192 "
-                         "Held drafts has a Redraft button for them."))
-    fu = jobscout.follow_ups()
-    if fu:
-        out.append(_item(REVIEW, "Applications gone quiet",
-                         f"{len(fu)} sent over a week ago with no reply.",
-                         "jobsBtn"))
-    ready = [r for r in jobscout.roles() if r.get("stage") == "found"
-             and (r.get("fit") or {}).get("score") is None]
-    if ready:
-        out.append(_item(NOTE, "Roles not yet scored",
-                         f"{len(ready)} role(s) recorded but unassessed.",
-                         "jobsBtn"))
-    return out
+
 
 
 def _breaker_items() -> list:
@@ -216,9 +166,53 @@ def _capability_items() -> list:
     return []
 
 
-GATHERERS = [_selfimprove_items, _trend_items, _job_items, _breaker_items,
+def _held_items() -> list:
+    """Calls held for your OK. They were held and announced, but nothing on
+    the board said so — you found them only if you opened Autonomy."""
+    from . import intercepts
+    waiting = [i for i in intercepts.pending() if i.get("state") == "waiting"]
+    if not waiting:
+        return []
+    first = waiting[0]
+    more = f" (+{len(waiting) - 1} more)" if len(waiting) > 1 else ""
+    return [_item(ACT, "Actions waiting for your OK",
+                  f"{first['tool']}: {first['summary']}{more}", "autonomyBtn",
+                  "Anything that would leave this machine waits for you.")]
+
+
+def _jobs_items() -> list:
+    """From Agent Jo Jobs' data, read-only: an interview in the next two
+    days, and questions only you can answer that hold up applications."""
+    from . import career
+    from datetime import datetime as _dt, timedelta as _td
+    out = []
+    now = _dt.now()
+    for r in career._read("roles.json") or []:
+        try:
+            at = _dt.strptime(r.get("interview_at") or "", "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if now - _td(hours=1) <= at <= now + _td(hours=48) and r.get("stage") in ("interview", "responded", "offer"):
+            out.append(_item(REVIEW, f"Interview: {r.get('title', '')} @ {r.get('company', '')}",
+                             at.strftime("%a %d %b, %H:%M") + (" — " + r["interview_link"]
+                                                               if r.get("interview_link") else ""),
+                             "", "Prep, the brief and a practice run are in Agent Jo Jobs."))
+    q = career._read("open_questions.json") or []
+    if isinstance(q, list) and q:
+        out.append(_item(REVIEW, "Job applications waiting on your answers",
+                         f"{len(q)} question(s) only you can answer — Agent Jo Jobs → Answers.",
+                         "", "Answer once and every form that asks reuses it."))
+    for i in out:
+        i["url"] = JOBS_URL               # opens Agent Jo Jobs, where it's resolved
+    return out
+
+
+JOBS_URL = "http://127.0.0.1:8766/"
+
+
+GATHERERS = [_held_items, _selfimprove_items, _trend_items, _breaker_items,
              _backup_items, _watcher_items, _issue_items, _watchdog_items,
-             _capability_items]
+             _capability_items, _jobs_items]
 
 
 def _running(memory) -> dict:

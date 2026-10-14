@@ -220,60 +220,6 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "apply_on_portal",
-        "description": (
-            "Open a tracked role's advert in a real browser and fill the "
-            "application form (Greenhouse, Lever, Workable, Ashby, "
-            "SmartRecruiters and similar). Fills name, contact details, CV "
-            "upload and the drafted cover letter from the user's profile. It "
-            "stops and hands over if the site needs a login, shows a CAPTCHA, "
-            "or asks something the profile can't answer — it never guesses an "
-            "answer and never attempts a CAPTCHA. By default it fills and "
-            "leaves the form for the user to submit; pass submit=true only if "
-            "the user has explicitly asked for it to submit unattended."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string",
-                        "description": "the role key from job_scout list"},
-                "submit": {"type": "boolean",
-                           "description": "submit rather than leaving it for "
-                                          "review. Default false."}},
-            "required": ["key"],
-        },
-    },
-    {
-        "name": "job_scout",
-        "description": (
-            "Job hunting for the user. Actions: 'add' — record roles you "
-            "found (search the web first, then pass a list of {title, "
-            "company, url, location, summary}); 'score' — assess fit for one "
-            "role honestly, including reasons against; 'draft' — write an "
-            "application grounded ONLY in the user's stored profile, which "
-            "is then automatically checked for claims the profile can't "
-            "support; 'list' — show tracked roles and their stage; 'stage' — "
-            "move a role along (found/drafted/applied/responded/interview/"
-            "offer/closed). NEVER claim experience not in the profile, and "
-            "NEVER send anything: drafts are for the user to review and send "
-            "themselves."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string",
-                           "description": "add | score | draft | list | "
-                                          "stage"},
-                "roles": {"type": "array", "items": {"type": "object"},
-                          "description": "for 'add'"},
-                "key": {"type": "string",
-                        "description": "role key, for score/draft/stage"},
-                "stage": {"type": "string", "description": "for 'stage'"},
-                "note": {"type": "string", "description": "for 'stage'"}},
-            "required": ["action"],
-        },
-    },
-    {
         "name": "run_skill",
         "description": (
             "Run one of the user's saved skills by name, following its steps. "
@@ -630,6 +576,28 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "career_lookup",
+        "description": (
+            "Look up the user's own career: their full CV (searched for the parts "
+            "that answer the question), their job profile, and answers they've "
+            "given job application forms — as kept by Agent Jo Jobs. Call it when "
+            "the user asks about their experience, skills, employers, education "
+            "or achievements, or wants something written from their CV (a bio, a "
+            "LinkedIn summary, an answer to an interview question), or asks when "
+            "an interview is, how an application stands, or who they know at a "
+            "company. Read-only. "
+            "Use only what it returns; never add employers, dates, tools or numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "What to find, e.g. 'work at Standard Bank' or 'Airflow experience'"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "search_memory",
         "description": "Search long-term memory for facts, preferences, or past instructions.",
         "input_schema": {
@@ -856,7 +824,7 @@ def _truncate(text: str, limit: int) -> str:
 # sub-agents, manage the parent's task plan, or write long-term memory.
 SUBAGENT_TOOL_NAMES = {"read_file", "list_directory", "run_command",
                        "write_file", "search_memory", "search_documents",
-                       "web_search", "fetch_page"}
+                       "career_lookup", "web_search", "fetch_page"}
 
 
 def subagent_tools() -> list:
@@ -1026,88 +994,6 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                 return "Already remembered (duplicate) — no action needed."
             console.print(f"[dim]remembered: {content}[/dim]")
             return f"Saved to long-term memory (id {memory_id})."
-
-        if name == "apply_on_portal":
-            from . import portal as _portal, jobscout as _js2
-            _role = _js2.get_role(str(tool_input.get("key", "")).strip())
-            if _role is None:
-                return ("No role with that key. Use job_scout with "
-                        "action 'list' to see them.")
-            console.print(f"[dim]  \u2ae1 opening the application form for "
-                          f"{_role.get('title', '')}\u2026[/dim]")
-            _r = _portal.apply_to_portal(
-                _role, _js2.profile(),
-                submit=bool(tool_input.get("submit")))
-            if _r.get("state") == _portal.SUBMITTED:
-                _js2.set_stage(_role["key"], "applied",
-                               "submitted via portal")
-            _out = [f"[{_r.get('ats', 'unknown')}] {_r.get('state')}: "
-                    f"{_r.get('message', '')}"]
-            if _r.get("plan"):
-                _out.append(f"Filled {_r['plan'].get('fill', 0)} field(s).")
-                if _r["plan"].get("sensitive"):
-                    _out.append("Left blank on purpose (demographic): "
-                                + ", ".join(_r["plan"]["sensitive"]))
-            if _r.get("screenshot"):
-                _out.append("Screenshot: " + _r["screenshot"])
-            return "\n".join(_out)
-
-        if name == "job_scout":
-            from . import jobscout as _js
-            _act = str(tool_input.get("action", "")).strip().lower()
-            if _act == "add":
-                _r = _js.add_roles(tool_input.get("roles") or [])
-                return (f"Recorded {_r['added']} new role(s); "
-                        f"{_r['total']} tracked. Score them next.")
-            if _act == "list":
-                _rs = _js.roles()
-                if not _rs:
-                    return "No roles tracked yet."
-                _out = []
-                for _r in _rs[-20:]:
-                    _f = _r.get("fit") or {}
-                    _out.append(f"[{_r['key']}] {_r['title']} @ "
-                                f"{_r.get('company', '?')} — {_r['stage']}"
-                                + (f", fit {_f.get('score')}"
-                                   f" ({_f.get('verdict')})" if _f else ""))
-                return "\n".join(_out)
-            if _act == "stage":
-                _r = _js.set_stage(str(tool_input.get("key", "")),
-                                   str(tool_input.get("stage", "")),
-                                   str(tool_input.get("note", "")))
-                return ("Updated." if _r.get("ok")
-                        else "Error: " + _r.get("error", ""))
-            if _act in ("score", "draft"):
-                _key = str(tool_input.get("key", "")).strip()
-                if not _key:
-                    return "Error: which role? Use action 'list' for keys."
-                if _act == "score":
-                    _r = _js.score_role(_key, brain)
-                    if not _r.get("ok"):
-                        return "Error: " + _r["error"]
-                    _f = _r["fit"]
-                    return (f"Fit {_f['score']}/100 ({_f['verdict']})\n"
-                            f"For: {'; '.join(_f['for'])}\n"
-                            f"Against: {'; '.join(_f['against'])}\n"
-                            f"Missing: {'; '.join(_f['missing'])}")
-                _r = _js.draft_application(_key, brain)
-                if not _r.get("ok"):
-                    return "Error: " + _r["error"]
-                _d = _r["draft"]
-                _c = _d["check"]
-                _msg = [f"Subject: {_d['subject']}", "", _d["body"]]
-                if _d.get("gaps"):
-                    _msg += ["", "Asked for, not in your profile: "
-                                 + "; ".join(_d["gaps"])]
-                if not _c["ok"]:
-                    _msg += ["", "⚠ VERIFY BEFORE SENDING — claims I can't "
-                                 "source from your profile:"]
-                    _msg += ["  - " + p["detail"] for p in _c["problems"][:6]]
-                _msg += ["", "Review it, then send it yourself — the agent "
-                             "does not send applications."]
-                return "\n".join(_msg)
-            return ("Error: action must be add, score, draft, list or "
-                    "stage.")
 
         if name == "run_skill":
             from . import skills as _sk
@@ -1515,6 +1401,10 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     "(cite the [source] when you use them):\n\n"
                     + "\n\n---\n\n".join(blocks))
 
+        if name == "career_lookup":
+            from . import career
+            return career.lookup(str(tool_input.get("query", "")))
+
         if name == "search_memory":
             hits = memory.search_memories(tool_input["query"], limit=8)
             if not hits:
@@ -1665,6 +1555,42 @@ def environment_summary() -> str:
         f"Python {platform.python_version()} | "
         f"cwd: {Path.cwd()} | home: {Path.home()}"
     )
+
+
+def run_held(intercept_id: str, memory: MemoryStore, console: Console) -> dict:
+    """Run a held call you approved — exactly the inputs you were shown.
+
+    Approving used to mark the call "approved" and nothing else: no code ever
+    ran it, so the email you said yes to was never sent, and the agent had
+    already been told to move on. Now the approval is the trigger. It runs
+    once (a second approval of the same call is refused), past the gate —
+    you are the gate it was waiting for — and the result is kept with the
+    record so you can see what happened."""
+    from . import intercepts as _ic
+    items = _ic.pending()
+    hit = next((i for i in items if i["id"] == intercept_id), None)
+    if hit is None:
+        return {"ok": False, "error": "no such held call"}
+    if hit.get("state") != "approved":
+        return {"ok": False, "error": f"it is {hit.get('state')}, not approved"}
+    if hit.get("ran_at"):
+        return {"ok": False, "error": "it has already run — nothing runs twice"}
+    hit["ran_at"] = _ic._iso()
+    _ic._save(items)                       # claimed before running: no double send
+    try:
+        out = _execute_tool_impl(hit["tool"], hit.get("args") or {}, memory, console,
+                                 auto_approve=True, session_id="approved:" + intercept_id)
+        res = out if isinstance(out, str) else str(out)
+        bad = res[:14].lower().startswith(("error:", "[tool error", "mcp tool error"))
+    except Exception as exc:
+        res, bad = f"{type(exc).__name__}: {exc}", True
+    items = _ic.pending()
+    hit = next((i for i in items if i["id"] == intercept_id), hit)
+    hit["result"] = res[:2000]
+    hit["state"] = "failed" if bad else "done"
+    _ic._save(items)
+    _ic._audit("ran" if not bad else "failed", f"{hit['tool']}: {hit['summary'][:120]}")
+    return {"ok": not bad, "state": hit["state"], "result": hit["result"], "id": intercept_id}
 
 
 def execute_tool(name: str, tool_input: dict, memory: MemoryStore,

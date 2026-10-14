@@ -6,7 +6,6 @@
    ========================================================================== */
 "use strict";
 
-const JOBS_APP_URL = "http://127.0.0.1:8766/";
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
@@ -438,6 +437,7 @@ function openConvMenu(conv, anchor) {
     return b;
   };
   menu.appendChild(mk("Rename", "", () => renameConversation(conv)));
+  menu.appendChild(mk("Export as Markdown", "", () => exportConversation(conv)));
   const lbl = el("div", "menu-label"); lbl.textContent = "Move to"; menu.appendChild(lbl);
   menu.appendChild(mk("No project", "", () => moveConversation(conv, null)));
   state.projects.forEach(p => menu.appendChild(mk(p.name, "", () => moveConversation(conv, p.id))));
@@ -448,6 +448,21 @@ function openConvMenu(conv, anchor) {
   menu.style.left = Math.min(r.left, window.innerWidth - 190) + "px";
   state._convMenu = menu;
   setTimeout(() => document.addEventListener("click", closeConvMenu, { once: true }), 0);
+}
+async function exportConversation(conv) {
+  try {
+    const r = await fetch("/api/conversations/" + encodeURIComponent(conv.id) + "/export");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const removed = +(r.headers.get("X-Secrets-Removed") || 0);
+    const name = ((r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/) || [])[1] || "conversation.md";
+    const url = URL.createObjectURL(await r.blob());
+    const a = el("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (typeof toast === "function")
+      toast(removed ? `Exported — ${removed} secret(s) blanked first.` : "Exported.");
+  } catch (e) {
+    if (typeof toast === "function") toast("Couldn't export: " + e.message); else alert(e.message);
+  }
 }
 function closeConvMenu() { if (state._convMenu) { state._convMenu.remove(); state._convMenu = null; } }
 
@@ -586,6 +601,21 @@ function renderTag(tag) {
     if (tot) parts.push(`${fmt(u.in)}→${fmt(u.out)} tok`);
   }
   t.innerHTML = parts.join('<span class="sep"> · </span>');
+  // why this engine: the rule that chose it (Auto routing), whether a local
+  // draft had to escalate, or a failover — routing you can see
+  const r = tag.route;
+  if (r && (r.rule || r.why)) {
+    const w = el("span", "msg-route");
+    w.textContent = (r.rule ? `rule “${r.rule}” → ${r.tier}` : r.tier) +
+      (r.why ? ` — ${r.why}` : "") + (r.escalated ? ` · local draft escalated (${r.escalated})` : "");
+    w.title = "Auto routing chose the engine for this reply. Change the rules in Routing & spend.";
+    t.appendChild(w);
+  }
+  if (tag.failover) {
+    const f = el("span", "msg-route warn");
+    f.textContent = "failover: " + tag.failover;
+    t.appendChild(f);
+  }
   return t;
 }
 
@@ -733,7 +763,8 @@ async function send(text) {
           paintToken(conv);
         } else if (data.type === "done") {
           aiMsg.text = data.reply || aiMsg.text;
-          aiMsg.tag = { engine: data.engine, model: data.model, usage: data.usage };
+          aiMsg.tag = { engine: data.engine, model: data.model, usage: data.usage,
+                        route: data.route, failover: data.failover };
           if (conv.id === state.activeId && conv._liveContent) {
             conv._liveContent.classList.remove("caret-blink");
             conv._liveContent.innerHTML = renderMarkdown(aiMsg.text);
@@ -1459,9 +1490,217 @@ function autoCard(title, armed, lines, onToggle, timing) {
   if (tm) { const l = el("div", "auto-card-line tm"); l.textContent = tm; c.appendChild(l); }
   return c;
 }
+/* ---------------- Routing & spend ----------------
+   The rules, the decisions, the month's spend and the evals were all built
+   with endpoints and no window: routing was something you took on trust. */
+function closeRouting() { const m = $("#routingModal"); if (m) { m.hidden = true; m.style.display = "none"; } }
+async function openRouting() {
+  const m = $("#routingModal");
+  m.hidden = false; m.style.display = "flex";
+  await drawRouting();
+}
+const _rj = (url, body) => fetch(url, body === undefined ? {} : {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+  .then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.detail || r.statusText); return j; });
+function rsec(host, title, intro) {
+  const sec = el("section", "rt-sec");
+  const h = el("h3"); h.textContent = title; sec.appendChild(h);
+  if (intro) { const p = el("p", "rt-intro"); p.textContent = intro; sec.appendChild(p); }
+  host.appendChild(sec);
+  return sec;
+}
+async function drawRouting() {
+  const host = $("#routingBody");
+  let rt = {}, cs = {}, ev = {};
+  try { [rt, cs, ev] = await Promise.all([_rj("/api/routing"), _rj("/api/costs"), _rj("/api/evals")]); }
+  catch (e) { host.textContent = "Couldn't load: " + e.message; return; }
+  host.innerHTML = "";
+
+  // where the work went
+  const u = rt.usage || {};
+  const s1 = rsec(host, "Where your turns went",
+    u.total ? `${u.total} routed turn(s) recently — ${u.local_share}% on your local model.` :
+              "No turns routed yet. Routing works when the engine is set to Auto and you have a local and a cloud engine.");
+  const tiers = rt.tiers || {};
+  const tl = el("div", "rt-tiers");
+  ["local", "cloud", "reasoning"].forEach((t) => {
+    const c = el("div", "rt-tier");
+    const b = el("b"); b.textContent = t;
+    const e = el("div"); e.textContent = tiers[t] || "—";
+    const n = el("div", "rt-n"); n.textContent = `${(u.by_tier || {})[t] || 0} turn(s)`;
+    c.append(b, e, n); tl.appendChild(c);
+  });
+  s1.appendChild(tl);
+  // local-first (Turbo): how often the local draft was good enough, and what
+  // that saved — measured, not promised
+  try {
+    const tb = await _rj("/api/turbo");
+    const line = el("p", "rt-intro");
+    line.textContent = !tb.enabled ? "Local first (Turbo) is off — Settings turns it on."
+      : !tb.turns ? `Local first is on${tb.usable ? "" : " but can't run: " + tb.why}. No turns tried locally yet.`
+      : `Local first: ${tb.local_only || 0} of ${tb.turns} turn(s) finished on your local model (${tb.hit_rate}%), `
+        + `${tb.escalated || 0} escalated. Net saving $${(tb.net_usd || 0).toFixed(2)} (${tb.basis}).`;
+    s1.appendChild(line);
+    (tb.categories || []).filter((c) => !c.still_trying).forEach((c) => {
+      const r = el("div", "rt-why");
+      r.textContent = `“${c.category}” stopped trying locally: ${c.won} of ${c.tried} local drafts were good enough.`;
+      s1.appendChild(r);
+    });
+  } catch (e) { /* turbo status is extra */ }
+
+  // the rules
+  const s2 = rsec(host, "The rules — first match wins", "Change which kind of engine each kind of work goes to, or switch a rule off. Unmatched work goes to your chosen engine.");
+  const rules = (rt.rules || []).map((r) => Object.assign({}, r));
+  const table = el("div", "rt-rules");
+  rules.forEach((r) => {
+    const row = el("div", "rt-rule" + (r.off ? " off" : ""));
+    const on = el("input"); on.type = "checkbox"; on.checked = !r.off;
+    on.addEventListener("change", () => { r.off = !on.checked; row.classList.toggle("off", r.off); });
+    const w = el("b"); w.textContent = r.when;
+    const sel = el("select"); sel.className = "model-select";
+    (rt.tier_names || ["local", "cloud", "reasoning"]).forEach((t) => {
+      const o = el("option"); o.value = t; o.textContent = t; if (t === r.tier) o.selected = true; sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => { r.tier = sel.value; });
+    const why = el("span", "rt-why"); why.textContent = r.why || "";
+    row.append(on, w, sel, why);
+    table.appendChild(row);
+  });
+  s2.appendChild(table);
+  const ra = el("div", "rt-acts");
+  const save = el("button", "btn primary"); save.textContent = "Save rules";
+  save.addEventListener("click", async () => { save.disabled = true;
+    try { await _rj("/api/routing/rules", { rules }); toast("Rules saved."); } catch (e) { toast(e.message, "bad"); }
+    save.disabled = false; });
+  const reset = el("button", "btn"); reset.textContent = "Back to the defaults";
+  reset.addEventListener("click", async () => { if (!confirm("Put the default rules back?")) return;
+    await _rj("/api/routing/reset", {}); drawRouting(); });
+  ra.append(save, reset); s2.appendChild(ra);
+
+  // try a message
+  const s3 = rsec(host, "What would this message do?", "");
+  const ta = el("textarea"); ta.className = "model-input rt-try"; ta.placeholder = "Paste a message — nothing is sent, it's only classified.";
+  const go = el("button", "btn"); go.textContent = "Check";
+  const out = el("div", "rt-out");
+  go.addEventListener("click", async () => {
+    try { const d = await _rj("/api/routing/test", { text: ta.value });
+      out.textContent = `${d.engine || "—"} (${d.tier}) — ` + (d.matched ? `rule “${d.rule}”: ${d.why}` : d.why);
+    } catch (e) { out.textContent = e.message; }
+  });
+  s3.append(ta, go, out);
+
+  // recent decisions
+  const rec = rt.recent || [];
+  if (rec.length) {
+    const s4 = rsec(host, "Recent decisions", "");
+    rec.slice(0, 10).forEach((d) => {
+      const r = el("div", "rt-dec");
+      r.textContent = `${d.at} — ${d.engine} (${d.tier})` + (d.rule ? ` · rule “${d.rule}”` : " · no rule matched");
+      s4.appendChild(r);
+    });
+  }
+
+  // spend
+  const b = cs.budget || {};
+  const s5 = rsec(host, `Spend in ${cs.month || "this month"}`,
+    `$${(cs.total_usd || 0).toFixed(2)} across ${cs.calls || 0} call(s). ${b.detail || ""}`);
+  const feats = Object.entries(cs.by_feature || {}).sort((a, x) => x[1].usd - a[1].usd);
+  feats.slice(0, 10).forEach(([f, v]) => {
+    const r = el("div", "rt-dec"); r.textContent = `${f}: $${v.usd.toFixed(2)} · ${v.calls} call(s)`; s5.appendChild(r);
+  });
+  Object.entries(cs.by_engine || {}).forEach(([e, v]) => {
+    const r = el("div", "rt-dec"); r.textContent = `${e}: $${v.usd.toFixed(2)} · ${v.calls} call(s)`; s5.appendChild(r);
+  });
+  if ((cs.unpriced_engines || []).length) {
+    const r = el("div", "rt-why"); r.textContent = "No price known for: " + cs.unpriced_engines.join(", ") + " — their spend shows as $0.";
+    s5.appendChild(r);
+  }
+
+  // evals
+  const s6 = rsec(host, "Is your local model good enough?",
+    `${ev.cases || 0} small test cases, one per kind of work. Run them on an engine and see which work is safe to move to it.`);
+  (ev.advice || []).forEach((a) => { const r = el("div", "rt-dec"); r.textContent = a; s6.appendChild(r); });
+  const es = el("select"); es.className = "model-select";
+  [...new Set([...(tiers.local_options || []), ...(tiers.cloud_options || [])])].forEach((n) => {
+    const o = el("option"); o.value = n; o.textContent = n; es.appendChild(o); });
+  const run = el("button", "btn"); run.textContent = "Run the tests";
+  const eo = el("div", "rt-out");
+  run.addEventListener("click", async () => {
+    if (!es.value) { eo.textContent = "No engine to test."; return; }
+    run.disabled = true; eo.textContent = "Running… (a minute or two on a local model)";
+    try { const r = await _rj("/api/evals/run", { engine: es.value });
+      eo.textContent = `${r.engine}: ${r.passed}/${r.total} passed in ${r.seconds}s. ` +
+        (r.safe_features.length ? `Safe for: ${r.safe_features.join(", ")}. ` : "") +
+        (r.unsafe_features.length ? `Keep off it: ${r.unsafe_features.join(", ")}.` : "");
+    } catch (e) { eo.textContent = e.message; }
+    run.disabled = false;
+  });
+  const er = el("div", "rt-acts"); er.append(es, run);
+  s6.append(er, eo);
+}
+
+// Calls that would change something outside this machine wait here with
+// their exact inputs. Approving runs them (once); refusing records why.
+async function loadHeld() {
+  const host = $("#heldList");
+  if (!host) return;
+  let d = {};
+  try { d = await fetch("/api/intercepts").then(r => r.json()); } catch (e) { return; }
+  const items = d.items || [];
+  const waiting = items.filter(i => i.state === "waiting");
+  $("#heldN").textContent = waiting.length ? `${waiting.length} waiting` : "nothing waiting";
+  host.innerHTML = "";
+  if (!items.length) {
+    const p = el("div", "out-empty");
+    p.textContent = "Nothing has been held. Sending mail, submitting forms or posting to a service waits here, with exactly what would be sent.";
+    host.appendChild(p);
+    return;
+  }
+  items.slice(0, 12).forEach(i => {
+    const row = el("div", "held-item " + i.state);
+    const h = el("div", "held-line");
+    const t = el("b"); t.textContent = i.tool;
+    const sm = el("span"); sm.textContent = " — " + i.summary;
+    h.append(t, sm);
+    row.appendChild(h);
+    const meta = el("div", "held-meta");
+    meta.textContent = `${i.at} · from ${i.source || "agent"} · ${i.why_held}` +
+      (i.state !== "waiting" ? ` · ${i.state}` : "");
+    row.appendChild(meta);
+    const det = el("details");
+    const sum = el("summary"); sum.textContent = "Exactly what would be sent";
+    const pre = el("pre"); pre.textContent = JSON.stringify(i.args, null, 2);
+    det.append(sum, pre);
+    row.appendChild(det);
+    if (i.result) {
+      const r = el("pre", "held-result"); r.textContent = i.result; row.appendChild(r);
+    }
+    if (i.state === "waiting") {
+      const acts = el("div", "held-acts");
+      const ok = el("button", "btn primary"); ok.textContent = "Approve and run";
+      const no = el("button", "btn"); no.textContent = "Refuse";
+      const decide = async (approve) => {
+        ok.disabled = no.disabled = true;
+        const note = approve ? "" : (prompt("Why not? (optional — the agent sees nothing of this)") || "");
+        const r = await fetch("/api/intercepts/decide", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: i.id, approve, note }) }).then(x => x.json()).catch(() => ({}));
+        if (approve && r.run && typeof toast === "function")
+          toast(r.run.ok ? "Approved and done." : "Approved, but it failed: " + (r.run.result || r.run.error || ""));
+        loadHeld();
+      };
+      ok.addEventListener("click", () => decide(true));
+      no.addEventListener("click", () => decide(false));
+      acts.append(ok, no);
+      row.appendChild(acts);
+    }
+    host.appendChild(row);
+  });
+}
+
 async function loadAutonomy() {
   const cards = $("#autoCards"); cards.innerHTML = "<div class='out-empty'>Loading…</div>";
   loadBudget();
+  loadHeld();
   try {
     const d = await fetch("/api/autonomy").then(r => r.json());
     cards.innerHTML = "";
@@ -1603,6 +1842,7 @@ function initFootGroups() {
 }
 function closeAllModals() {
   $("#engineMenu").hidden = true;
+  closeRouting();
   closeEngineModal();
   closeSettings();
   closeDocuments();
@@ -1625,6 +1865,11 @@ function closeAllModals() {
   closeSkills();
   closeTour();
   closeChallenges();
+  // these three were missing, so opening another panel over them left them
+  // open underneath — on a phone you closed one and found another
+  closeMl();
+  closeCodemap();
+  closePhone();
 }
 
 /* ------------------------------- feedback ------------------------------- */
@@ -1720,6 +1965,7 @@ function toast(msg, kind, opts) {
 const PALETTE_HINTS = {
   settingsBtn: "engine, model, spending cap, budget, cost, turbo, themes, dark mode, voice",
   enginesBtn: "add or switch engine, api keys, local models",
+  routingBtn: "which engine gets which work, and what it costs",
   memoryBtn: "what it remembers about you, skills, facts",
   documentsBtn: "upload pdfs, word, excel, search your own files, rag",
   schedBtn: "scheduled jobs, watchers, recurring work",
@@ -1756,17 +2002,31 @@ function paletteItems() {
   out.push(
     { name: "New conversation", group: "Do", hint: "start a fresh chat",
       run: () => newConversation() },
-    { name: "Jobs \u2014 find and apply", group: "Do",
-      hint: "roles, held drafts, auto-apply, cv \u2014 opens Agent Jo Jobs",
-      run: () => window.open(JOBS_APP_URL, "_blank", "noopener") },
     { name: "Verify the audit chain", group: "Do",
       hint: "prove the log wasn't altered",
       run: () => { $("#auditBtn").click(); setTimeout(() => {
         const b = $("#auditVerifyBtn"); if (b) b.click(); }, 300); } },
     { name: "Back up now", group: "Do", hint: "save everything it has learned",
       run: () => $("#backupBtn").click() });
+  // every theme, one keystroke away — the same choice as in Settings
+  const now = currentTheme();
+  Object.entries(THEMES).forEach(([key, t]) => {
+    out.push({ name: "Theme: " + t.label, group: "Look",
+               hint: (key === now ? "in use now · " : "") + (THEME_HINTS[key] || "colours and type"),
+               run: () => applyTheme(key) });
+  });
   return out;
 }
+// what to search for to find a theme in the palette
+const THEME_HINTS = {
+  synapse: "the main look, symbolic synapse website brand, archivo, cyan lattice",
+  glass: "the previous default, teal glass",
+  system: "follow windows light or dark mode",
+  "fluent-light": "light mode, bright",
+  fluent: "dark mode, classic grey",
+  instruments: "brass and verdigris, graphite",
+  midnight: "blue-black, aqua and periwinkle",
+};
 
 function openPalette() {
   _palItems = paletteItems();
@@ -2077,6 +2337,44 @@ async function loadMlSaved() {
           : `${m.test_score} against ${m.baseline} for guessing — does NOT `
             + `beat doing nothing`;
         row.append(t, w);
+        // what drives it, and its card — both built, neither shown before
+        const acts = el("div", "ml-acts");
+        const imp = el("button", "btn btn-mini"); imp.textContent = "What drives it";
+        const out = el("div", "ml-imp");
+        imp.addEventListener("click", async () => {
+          imp.disabled = true; out.textContent = "Measuring…";
+          try {
+            const r = await fetch("/api/models/importance?name=" + encodeURIComponent(m.name));
+            const j = await r.json();
+            if (!r.ok) throw new Error(j.detail || "couldn't measure");
+            out.innerHTML = "";
+            const cap = el("div", "log-meta"); cap.textContent = "Measured by " + j.measured_by + ".";
+            out.appendChild(cap);
+            (j.features || []).slice(0, 10).forEach((f) => {
+              const line = el("div", "ml-bar");
+              const lab = el("span"); lab.textContent = f.feature;
+              const bar = el("i"); bar.style.width = Math.max(2, Math.round(f.weight * 100)) + "%";
+              const pct = el("b"); pct.textContent = Math.round(f.weight * 100) + "%";
+              line.append(lab, bar, pct); out.appendChild(line);
+            });
+            if (j.note) { const n = el("div", "log-meta"); n.textContent = j.note; out.appendChild(n); }
+          } catch (e) { out.textContent = e.message; }
+          imp.disabled = false;
+        });
+        const card = el("button", "btn btn-mini"); card.textContent = "Model card";
+        card.title = "What it was trained on, how it scored, and its limits — to keep with the model";
+        card.addEventListener("click", async () => {
+          try {
+            const r = await fetch("/api/models/card?name=" + encodeURIComponent(m.name));
+            const j = await r.json();
+            if (!r.ok) throw new Error(j.detail || "no card");
+            const url = URL.createObjectURL(new Blob([JSON.stringify(j, null, 2)], { type: "application/json" }));
+            const a = el("a"); a.href = url; a.download = `${m.name}-model-card.json`;
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+          } catch (e) { toast(e.message, "bad"); }
+        });
+        acts.append(imp, card);
+        row.append(acts, out);
         host.appendChild(row);
       });
     }
@@ -3599,17 +3897,22 @@ function showDraft(d) {
    participate in the light/dark switch; pretending otherwise would produce
    an unreadable half-theme. */
 const THEMES = {
-  // "System" in dark mode is Glass now. The older dark themes stay one click
-  // away in Settings, so nobody loses a look they chose.
+  // The main look (171): symbolicsynapse.co.za's. A skin over Glass rather
+  // than a theme of its own: Glass's layout, phone and panel fixes all still
+  // apply, and the skin only changes colour, type and texture (data-skin,
+  // set by paintTheme here and by prepaint.js before the first paint).
+  synapse: { label: "Symbolic Synapse (dark)", fixed: "glass", skin: "synapse" },
+  // The other looks stay one click away in Settings, so nobody loses one
+  // they chose. "System" follows Windows: the main look when it's dark.
   glass: { label: "Glass (dark)", fixed: "glass" },
-  system: { label: "System (follow Windows)", dark: "glass", light: "fluent-light" },
+  system: { label: "System (follow Windows)", dark: "synapse", light: "fluent-light" },
   "fluent-light": { label: "Light", fixed: "fluent-light" },
   fluent: { label: "Dark (classic)", fixed: "fluent" },
   instruments: { label: "Instruments (dark)", fixed: "instruments" },
   midnight: { label: "Midnight (dark)", fixed: "midnight" },
 };
 // What a fresh install opens on, and what an unknown choice falls back to.
-const DEFAULT_THEME = "glass";
+const DEFAULT_THEME = "synapse";
 let _themeMedia = null;
 
 function currentTheme() {
@@ -3631,29 +3934,61 @@ function currentTheme() {
     // "System" from before is moved once; choosing it again afterwards sticks.
     if (!localStorage.getItem("agentjo-theme-glass-default")) {
       if ((localStorage.getItem("agentjo-theme") || "system") === "system") {
-        localStorage.setItem("agentjo-theme", DEFAULT_THEME);
+        localStorage.setItem("agentjo-theme", "glass");
       }
       localStorage.setItem("agentjo-theme-glass-default", "1");
+    }
+    // Symbolic Synapse became the main look (171). Anyone on the previous
+    // default, Glass, or on nothing yet, moves to it once. Another theme
+    // picked on purpose is left alone, and so is Glass picked again later.
+    if (!localStorage.getItem("agentjo-theme-synapse-default")) {
+      const was = localStorage.getItem("agentjo-theme");
+      if (!was || was === "glass") localStorage.setItem("agentjo-theme", DEFAULT_THEME);
+      localStorage.setItem("agentjo-theme-synapse-default", "1");
     }
     return localStorage.getItem("agentjo-theme") || DEFAULT_THEME;
   }
   catch (e) { return DEFAULT_THEME; }
 }
-function resolveTheme(choice) {
-  const t = THEMES[choice] || THEMES[DEFAULT_THEME];
-  if (t.fixed) return t.fixed;
+// The theme a choice comes to right now: "System" follows Windows to one of
+// the others, anything unknown falls back to the default.
+function themeFor(choice) {
+  const key = THEMES[choice] ? choice : DEFAULT_THEME;
+  const t = THEMES[key];
+  if (t.fixed) return key;
   const prefersDark = window.matchMedia
     && window.matchMedia("(prefers-color-scheme: dark)").matches;
   return prefersDark ? t.dark : t.light;
 }
+// what it paints: html's data-theme (a skin is drawn over its base theme)
+function resolveTheme(choice) {
+  return (THEMES[themeFor(choice)] || THEMES[DEFAULT_THEME]).fixed;
+}
+// The browser's own colour around the app (the title bar of the installed
+// app, a phone's status bar) follows the skin; the markup's value otherwise.
+const SKIN_CHROME = { synapse: "#03060B" };
 function paintTheme(choice) {
   const resolved = resolveTheme(choice);
+  const root = document.documentElement;
   // "instruments" is what :root already defines, so it needs no attribute
   if (resolved === "instruments") {
-    document.documentElement.removeAttribute("data-theme");
+    root.removeAttribute("data-theme");
   } else {
-    document.documentElement.setAttribute("data-theme", resolved);
+    root.setAttribute("data-theme", resolved);
   }
+  const skin = (THEMES[themeFor(choice)] || {}).skin || "";
+  if (skin) root.setAttribute("data-skin", skin);
+  else root.removeAttribute("data-skin");
+  try {
+    const chrome = document.querySelector('meta[name="theme-color"][media*="dark"]');
+    const base = chrome && (chrome.getAttribute("data-base") || chrome.getAttribute("content"));
+    if (base) {
+      chrome.setAttribute("data-base", base);
+      chrome.setAttribute("content", SKIN_CHROME[skin] || base);
+    }
+  } catch (e) { /* the browser's own colour stays as it was */ }
+  // decoration: whatever happens to it, the app still starts
+  try { synapseSkin(skin === "synapse"); } catch (e) { /* the skin's CSS still applies */ }
   // a theme can change the tile size (Glass does), and the first layout can
   // run before the theme is painted — so lay the tiles out again, next frame
   if (typeof layoutTiles === "function") {
@@ -3662,18 +3997,13 @@ function paintTheme(choice) {
     next(() => { try { layoutTiles(); } catch (e) {} });
   }
 }
-// The look, separate from the theme: "new" is build 152 on — slim alerts,
-// teal buttons, a tidier phone layout, no picture on the welcome — and
-// "previous" is the page as it was before. Both are kept, chosen in Settings,
-// and remembered on this computer. prepaint.js applies it before first paint.
-function currentLook() {
-  try { return localStorage.getItem("agentjo-look") === "previous" ? "previous" : "new"; }
-  catch (e) { return "new"; }
-}
-function applyLook(choice) {
-  const look = choice === "previous" ? "previous" : "new";
-  try { localStorage.setItem("agentjo-look", look); } catch (e) { /* not saved */ }
-  if (document.documentElement) document.documentElement.setAttribute("data-look", look);
+// The look. There were two, "new" and "previous", with a switch in Settings;
+// they looked almost the same, so the switch went and the previous look is
+// the only one (with the picture on the welcome). prepaint.js sets it too.
+function currentLook() { return "previous"; }
+function applyLook() {
+  try { localStorage.removeItem("agentjo-look"); } catch (e) { /* nothing saved */ }
+  if (document.documentElement) document.documentElement.setAttribute("data-look", "previous");
 }
 
 function applyTheme(choice) {
@@ -3691,6 +4021,284 @@ function applyTheme(choice) {
       else if (_themeMedia.addListener) _themeMedia.addListener(onChange);
     }
   }
+}
+
+/* ---------------------------- Symbolic Synapse ---------------------------- */
+// The skin's two moving parts, and only while it's on:
+//   - behind Agent Jo's picture on the welcome, a turning lattice sphere
+//     with filaments of light leaving it — the hero of symbolicsynapse.co.za
+//     ("lattice: rules and structure; filaments: learning"). Drawn in 2D on
+//     one small canvas, no WebGL and no library, and only while the welcome
+//     is on screen and the window is visible; with reduced motion it is drawn
+//     once and stays still;
+//   - a soft light under the pointer on cards (mouse and pen, not touch).
+// Left alone for two minutes, the lattice holds still (the last frame stays)
+// until you next move the mouse or type: no reason to spend a laptop's
+// battery on a window nobody is looking at.
+const _syn = { on: false, canvas: null, ctx: null, raf: 0, last: 0, input: 0,
+               lat: null, fils: null, seen: true, watching: false };
+const SYN_IDLE_MS = 120000;
+const SYN_RGB = { steel: [46, 111, 174], cyan: [47, 211, 227], edge: [58, 132, 200] };
+
+function synapseSkin(on) {
+  _syn.on = !!on;
+  if (!_syn.on) {
+    _synStop();
+    if (_syn.canvas) { _syn.canvas.remove(); _syn.canvas = null; _syn.ctx = null; }
+    return;
+  }
+  _syn.input = performance.now();
+  _synWatch();
+  _synKick();
+}
+function _synWake() {
+  _syn.input = performance.now();
+  if (_syn.on && !_syn.raf) _synKick();
+}
+function _synWatch() {
+  if (_syn.watching) return;
+  _syn.watching = true;
+  document.addEventListener("visibilitychange", _synKick);
+  window.addEventListener("resize", _synKick);
+  ["pointermove", "pointerdown", "keydown", "wheel"].forEach((ev) =>
+    document.addEventListener(ev, _synWake, { passive: true }));
+  const empty = document.getElementById("emptyState");
+  if (empty && typeof MutationObserver === "function") {
+    new MutationObserver(_synKick).observe(empty, { attributes: true, attributeFilter: ["class"] });
+  }
+  try {
+    if (matchMedia("(hover: hover)").matches) {
+      document.addEventListener("pointermove", _synGlow, { passive: true });
+    }
+  } catch (e) { /* no media queries: no light */ }
+}
+function _synGlow(e) {
+  if (!_syn.on || e.pointerType === "touch" || !e.target || !e.target.closest) return;
+  try {
+    const card = e.target.closest(".suggest-card, .dash-tile, .tf-item");
+    if (!card) return;
+    const r = card.getBoundingClientRect();
+    card.style.setProperty("--mx", Math.round(e.clientX - r.left) + "px");
+    card.style.setProperty("--my", Math.round(e.clientY - r.top) + "px");
+  } catch (err) { /* only a light: nothing depends on it */ }
+}
+function _synMount() {
+  if (_syn.canvas && _syn.canvas.isConnected) return _syn.canvas;
+  const mark = document.querySelector("#emptyState .empty-mark");
+  if (!mark || typeof mark.insertBefore !== "function") return null;
+  const c = document.createElement("canvas");
+  if (typeof c.getContext !== "function") return null;
+  c.className = "syn-lattice";
+  c.setAttribute("aria-hidden", "true");
+  mark.insertBefore(c, mark.firstChild);
+  _syn.canvas = c;
+  _syn.ctx = c.getContext("2d");
+  if (typeof IntersectionObserver === "function") {
+    new IntersectionObserver((entries) => {
+      _syn.seen = entries.some((x) => x.isIntersecting);
+      _synKick();
+    }).observe(c);
+  }
+  return c;
+}
+function _synRunnable() {
+  const empty = document.getElementById("emptyState");
+  return _syn.on && !!_syn.ctx && !document.hidden && _syn.seen
+    && !!empty && !empty.classList.contains("hidden");
+}
+// Called from observers and input events: decoration, so it never throws
+// into them (a page without a canvas just has no lattice).
+function _synKick() {
+  if (!_syn.on) return;
+  try { _synKickNow(); } catch (e) { _synStop(); }
+}
+function _synKickNow() {
+  if (!_synMount() || !_synRunnable()) { _synStop(); return; }
+  // no wider than the welcome column: a canvas past its edge would let the
+  // conversation scroll sideways
+  const empty = document.getElementById("emptyState");
+  try {
+    const cs = getComputedStyle(empty);
+    const room = empty.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    if (room > 0) _syn.canvas.style.width = Math.min(560, Math.floor(room)) + "px";
+  } catch (e) { /* the CSS width stands */ }
+  if (_reducedMotion()) { _synStop(); _synFrame(0, true); return; }
+  if (!_syn.raf) _syn.raf = requestAnimationFrame(_synTick);
+}
+function _synStop() {
+  if (_syn.raf) cancelAnimationFrame(_syn.raf);
+  _syn.raf = 0;
+}
+function _synTick(now) {
+  _syn.raf = 0;
+  if (!_synRunnable() || now - _syn.input > SYN_IDLE_MS) return;
+  if (now - _syn.last >= 50) {             // it moves slowly: 20 frames a second is smooth
+    _syn.last = now;
+    try { _synFrame(now, false); } catch (e) { return; }
+  }
+  _syn.raf = requestAnimationFrame(_synTick);
+}
+function _synUnit(p) {
+  const l = Math.hypot(p[0], p[1], p[2]) || 1;
+  return [p[0] / l, p[1] / l, p[2] / l];
+}
+// The site's lattice: hexagons (and twelve pentagons) on a sphere — the dual
+// of an icosahedron split twice. 320 nodes, 480 edges, built once.
+function _synLattice() {
+  const t = (1 + Math.sqrt(5)) / 2;
+  const v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t],
+             [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(_synUnit);
+  let f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4],
+           [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8],
+           [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  for (let s = 0; s < 2; s++) {
+    const mid = new Map(), next = [];
+    const m = (a, b) => {
+      const k = a < b ? a + "," + b : b + "," + a;
+      if (!mid.has(k)) {
+        v.push(_synUnit([(v[a][0] + v[b][0]) / 2, (v[a][1] + v[b][1]) / 2, (v[a][2] + v[b][2]) / 2]));
+        mid.set(k, v.length - 1);
+      }
+      return mid.get(k);
+    };
+    f.forEach(([a, b, c]) => {
+      const ab = m(a, b), bc = m(b, c), ca = m(c, a);
+      next.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]);
+    });
+    f = next;
+  }
+  const nodes = f.map(([a, b, c]) => _synUnit([v[a][0] + v[b][0] + v[c][0],
+    v[a][1] + v[b][1] + v[c][1], v[a][2] + v[b][2] + v[c][2]]));
+  const owner = new Map(), edges = [];
+  f.forEach((tri, i) => {
+    for (let k = 0; k < 3; k++) {
+      const a = tri[k], b = tri[(k + 1) % 3], key = a < b ? a + "," + b : b + "," + a;
+      if (owner.has(key)) edges.push([owner.get(key), i]); else owner.set(key, i);
+    }
+  });
+  return { nodes, edges };
+}
+// Filaments leave the sphere's sides and drift outwards; the same ones every
+// time (a fixed seed), so the picture is steady between visits.
+function _synFilaments(n) {
+  let s = 20260614;
+  const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const right = i % 2 === 0;
+    const a = (right ? 0.32 : Math.PI - 0.32) + (rnd() - 0.5) * (right ? 1.1 : -1.1);
+    out.push({ a, reach: 0.5 + rnd() * 0.5, droop: rnd() * 0.75 - 0.15,
+               wave: rnd() * Math.PI * 2, speed: 0.05 + rnd() * 0.07, phase: rnd() });
+  }
+  return out;
+}
+function _synBez(u, x0, y0, x1, y1, x2, y2, x3, y3) {
+  const w = 1 - u, a = w * w * w, b = 3 * w * w * u, c = 3 * w * u * u, d = u * u * u;
+  return [a * x0 + b * x1 + c * x2 + d * x3, a * y0 + b * y1 + c * y2 + d * y3];
+}
+function _synFrame(now, still) {
+  const c = _syn.canvas, ctx = _syn.ctx;
+  if (!c || !ctx) return;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!_syn.lat) _syn.lat = _synLattice();
+  if (!_syn.fils) _syn.fils = _synFilaments(12);
+  const t = still ? 3.1 : now / 1000;
+  const mark = c.parentElement;
+  let halo = 28;
+  try { halo = parseFloat(getComputedStyle(mark).getPropertyValue("--syn-halo")) || 28; } catch (e) {}
+  const cx = w / 2, cy = h / 2;
+  const R = Math.max(20, Math.min(h / 2 - 3, (mark ? mark.clientWidth / 2 : 30) + halo));
+
+  // a steel glow under the sphere, as under the site's mark
+  const glow = ctx.createRadialGradient(cx, cy + R * 0.2, R * 0.2, cx, cy + R * 0.2, R * 1.7);
+  glow.addColorStop(0, "rgba(19, 120, 160, 0.22)");
+  glow.addColorStop(1, "rgba(19, 120, 160, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, w, h);
+
+  // filaments first: they run behind the sphere
+  ctx.lineCap = "round";
+  _syn.fils.forEach((f) => {
+    const sway = still ? 0 : Math.sin(t * 0.55 + f.wave) * 0.06;
+    const a = f.a + sway;
+    const x0 = cx + Math.cos(a) * R * 0.94, y0 = cy + Math.sin(a) * R * 0.94;
+    const dir = Math.cos(a) >= 0 ? 1 : -1;
+    const room = Math.max(10, (w / 2 - R - 8) * f.reach);
+    const x3 = x0 + dir * room;
+    const y3 = Math.max(6, Math.min(h - 6, y0 + (f.droop + sway) * (h / 2 - 8)));
+    const x1 = x0 + dir * room * 0.32, y1 = y0 + Math.sin(a) * room * 0.18;
+    const x2 = x0 + dir * room * 0.68, y2 = y3 - (f.droop + sway) * 14;
+    const g = ctx.createLinearGradient(x0, y0, x3, y3);
+    g.addColorStop(0, "rgba(230, 250, 255, 0.5)");
+    g.addColorStop(0.4, "rgba(47, 211, 227, 0.3)");
+    g.addColorStop(1, "rgba(46, 111, 174, 0)");
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+    ctx.stroke();
+    if (!still) {                           // a pulse travelling outwards
+      const u = (t * f.speed + f.phase) % 1;
+      const p = _synBez(u, x0, y0, x1, y1, x2, y2, x3, y3);
+      const k = Math.sin(Math.PI * u);
+      const rg = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], 7);
+      rg.addColorStop(0, `rgba(230, 250, 255, ${(0.9 * k).toFixed(3)})`);
+      rg.addColorStop(0.35, `rgba(47, 211, 227, ${(0.45 * k).toFixed(3)})`);
+      rg.addColorStop(1, "rgba(47, 211, 227, 0)");
+      ctx.fillStyle = rg;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  // the sphere, turning slowly and tipped towards you; the far side fades
+  const ay = t * 0.16, ax = -0.38;
+  const sy = Math.sin(ay), cyy = Math.cos(ay), sx = Math.sin(ax), cxx = Math.cos(ax);
+  const P = _syn.lat.nodes.map(([x, y, z]) => {
+    const x1 = x * cyy + z * sy, z1 = -x * sy + z * cyy;
+    const y2 = y * cxx - z1 * sx, z2 = y * sx + z1 * cxx;
+    const k = 1 + z2 * 0.1;
+    return [cx + x1 * R * k, cy + y2 * R * k, z2];
+  });
+  const B = 5;
+  const lines = Array.from({ length: B }, () => new Path2D());
+  _syn.lat.edges.forEach(([i, j]) => {
+    const p = P[i], q = P[j];
+    const b = Math.min(B - 1, Math.floor((((p[2] + q[2]) / 2 + 1) / 2) * B));
+    lines[b].moveTo(p[0], p[1]);
+    lines[b].lineTo(q[0], q[1]);
+  });
+  ctx.lineWidth = 1;
+  lines.forEach((path, b) => {
+    const d = (b + 0.5) / B;
+    ctx.strokeStyle = `rgba(${SYN_RGB.edge.join(",")}, ${(0.07 + 0.55 * d * d).toFixed(3)})`;
+    ctx.stroke(path);
+  });
+  const dots = Array.from({ length: B }, () => new Path2D());
+  P.forEach(([x, y, z]) => {
+    const d = (z + 1) / 2;
+    if (d < 0.3) return;                      // the back is lost in the fog
+    const b = Math.min(B - 1, Math.floor(d * B));
+    const r = 0.5 + d * 1.1;
+    dots[b].moveTo(x + r, y);
+    dots[b].arc(x, y, r, 0, Math.PI * 2);
+  });
+  dots.forEach((path, b) => {
+    const d = (b + 0.5) / B;
+    const col = SYN_RGB.steel.map((s, i) => Math.round(s + (SYN_RGB.cyan[i] - s) * d));
+    ctx.fillStyle = `rgba(${col.join(",")}, ${(0.2 + 0.8 * d * d).toFixed(3)})`;
+    ctx.fill(path);
+  });
 }
 
 /* -------------------------------- motion -------------------------------- */
@@ -4012,9 +4620,23 @@ async function loadCrew() {
         } catch (e) { $("#crewStatus").textContent = "Schedule change failed."; }
       });
       act.appendChild(sch);
+      // edit the brief, the engine and the words that route work here — the
+      // endpoint existed and the window never offered it
+      const ed = el("button", "btn ghost btn-mini"); ed.textContent = "Edit";
+      ed.addEventListener("click", () => { row.after(crewEditor(mem)); ed.disabled = true; });
+      const rm = el("button", "btn ghost btn-mini"); rm.textContent = "Remove";
+      rm.addEventListener("click", async () => {
+        if (!confirm(`Remove ${mem.name} from the crew? Their past reports stay in the log.`)) return;
+        await fetch("/api/crew/member/" + encodeURIComponent(mem.name), { method: "DELETE" });
+        loadCrew();
+      });
+      act.append(ed, rm);
       row.append(head, meta, brief, act);
       list.appendChild(row);
     });
+    const add = el("button", "btn btn-mini"); add.textContent = "+ Add a specialist";
+    add.addEventListener("click", () => { add.after(crewEditor(null)); add.disabled = true; });
+    list.appendChild(add);
     if (d.runs && d.runs.length) {
       const h = el("div", "log-meta");
       h.style.marginTop = "8px"; h.textContent = "Recent runs";
@@ -4034,6 +4656,47 @@ async function loadCrew() {
       });
     }
   } catch (e) { list.innerHTML = "<div class='out-empty'>Could not load.</div>"; }
+}
+// one member's brief, engine and routing words, as a small form
+function crewEditor(mem) {
+  const box = el("div", "crew-edit");
+  const field = (label, node) => { const w = el("label", "crew-field"); const t = el("span"); t.textContent = label; w.append(t, node); return w; };
+  const name = el("input"); name.className = "model-input"; name.value = mem ? mem.name : ""; name.disabled = !!mem;
+  name.placeholder = "e.g. Legal";
+  const role = el("input"); role.className = "model-input"; role.value = mem ? (mem.role || "") : "";
+  role.placeholder = "what they do, in a few words";
+  const brief = el("textarea"); brief.className = "model-input crew-brief"; brief.value = mem ? (mem.brief || "") : "";
+  brief.placeholder = "Their standing brief: what they're for, how they work, what good output looks like.";
+  const eng = el("select"); eng.className = "model-select";
+  ["Auto"].concat(state.engines || []).forEach((n) => {
+    const nm = typeof n === "string" ? n : (n.name || "");
+    if (!nm) return;
+    const o = el("option"); o.value = nm; o.textContent = nm;
+    if (nm === ((mem && mem.engine) || "Auto")) o.selected = true;
+    eng.appendChild(o);
+  });
+  const kw = el("input"); kw.className = "model-input"; kw.value = mem ? (mem.keywords || []).join(", ") : "";
+  kw.placeholder = "words that send work to them: contract, clause, NDA";
+  const out = el("div", "log-meta");
+  const save = el("button", "btn primary btn-mini"); save.textContent = mem ? "Save" : "Add";
+  save.addEventListener("click", async () => {
+    if (!name.value.trim()) { out.textContent = "Give them a name."; return; }
+    if (brief.value.trim().length < 20) { out.textContent = "Write a brief — a sentence or two at least."; return; }
+    save.disabled = true;
+    try {
+      const r = await fetch("/api/crew/member", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.value.trim(), role: role.value.trim(), brief: brief.value.trim(),
+          engine: eng.value || "Auto", keywords: kw.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      loadCrew();
+    } catch (e) { out.textContent = e.message; save.disabled = false; }
+  });
+  const cancel = el("button", "btn ghost btn-mini"); cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => loadCrew());
+  const acts = el("div", "mcp-actions"); acts.append(save, cancel);
+  box.append(field("Name", name), field("Role", role), field("Brief", brief), field("Engine", eng),
+             field("Routing words", kw), acts, out);
+  return box;
 }
 function crewEngine() {
   const s = $("#crewEngine");
@@ -4829,7 +5492,7 @@ async function loadModelPickers() {
   const thInfo = el("div", "set-info");
   const thNm = el("div", "set-name"); thNm.textContent = "Theme";
   const thDs = el("div", "set-desc");
-  thDs.textContent = "System follows Windows and switches with it. Light and Dark pin it. Instruments and Midnight are dark-only palettes.";
+  thDs.textContent = "Symbolic Synapse is the main look: the colours, type and lattice of symbolicsynapse.co.za. Glass is the same layout in teal. System follows Windows and switches with it: Symbolic Synapse when it's dark, Light when it's light. Light and Dark pin it. Instruments and Midnight are dark-only palettes.";
   thInfo.append(thNm, thDs);
   const thCtrl = el("div", "set-control");
   const thSel = el("select"); thSel.id = "model_THEME"; thSel.className = "model-select";
@@ -4842,23 +5505,125 @@ async function loadModelPickers() {
   thCtrl.appendChild(thSel);
   thRow.append(thInfo, thCtrl);
   box.appendChild(thRow);
-  const lkRow = el("div", "set-row");
-  const lkInfo = el("div", "set-info");
-  const lkNm = el("div", "set-name"); lkNm.textContent = "Look";
-  const lkDs = el("div", "set-desc");
-  lkDs.textContent = "New: slim alerts, teal buttons, a tidier phone layout and no picture on the welcome. Previous: how it looked before. Switch any time; it's remembered on this computer.";
-  lkInfo.append(lkNm, lkDs);
-  const lkCtrl = el("div", "set-control");
-  const lkSel = el("select"); lkSel.id = "model_LOOK"; lkSel.className = "model-select";
-  [["new", "New"], ["previous", "Previous"]].forEach(([value, label]) => {
-    const op = el("option"); op.value = value; op.textContent = label;
-    if (value === currentLook()) op.selected = true;
-    lkSel.appendChild(op);
+
+  // the phone companion: approve held calls and pause schedules from your phone
+  const phRow = el("div", "set-row");
+  const phInfo = el("div", "set-info");
+  const phNm = el("div", "set-name"); phNm.textContent = "Phone companion";
+  const phDs = el("div", "set-desc");
+  phDs.textContent = "Approve or refuse what's waiting for your OK, see your scheduled tasks and pause them — from your phone. It can't chat, read your files or change settings.";
+  phInfo.append(phNm, phDs);
+  const phCtrl = el("div", "set-control");
+  phCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:280px";
+  phRow.append(phInfo, phCtrl);
+  box.appendChild(phRow);
+  const drawPhone = async () => {
+    let st = {};
+    try { st = await fetch("/api/phone").then((r) => r.json()); } catch (e) { return; }
+    phCtrl.innerHTML = "";
+    const btns = el("div"); btns.style.cssText = "display:flex;gap:6px";
+    const tog = el("button"); tog.className = "btn btn-mini" + (st.enabled ? "" : " primary");
+    tog.textContent = st.enabled ? "Turn off" : "Turn on";
+    tog.addEventListener("click", async () => {
+      tog.disabled = true;
+      await fetch("/api/phone", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !st.enabled }) });
+      drawPhone();
+    });
+    btns.appendChild(tog);
+    if (st.enabled) {
+      const rot = el("button"); rot.className = "btn btn-mini"; rot.textContent = "New key";
+      rot.title = "The old link stops working at once";
+      rot.addEventListener("click", async () => {
+        if (!confirm("Make a new key? Your phone's current link stops working; scan again.")) return;
+        await fetch("/api/phone/rotate", { method: "POST" }); drawPhone();
+      });
+      btns.appendChild(rot);
+    }
+    phCtrl.appendChild(btns);
+    if (st.error) { const e = el("div", "set-desc"); e.textContent = st.error; phCtrl.appendChild(e); }
+    (st.links || []).forEach((l) => {
+      const w = el("div", "phone-link");
+      const q = el("div", "phone-qr"); q.innerHTML = l.qr || "";    // SVG from agent/qr.py
+      const t = el("div", "set-desc");
+      t.textContent = l.kind === "tailscale" ? "Anywhere, via Tailscale (encrypted)."
+        : "On this Wi-Fi only, and not encrypted on it: fine at home, not on shared Wi-Fi.";
+      w.append(q, t);
+      phCtrl.appendChild(w);
+    });
+    if (st.enabled && (st.links || []).length) {
+      const n = el("div", "set-desc");
+      n.textContent = "Scan with your phone's camera. Windows may ask to let Python through the firewall on private networks — allow it.";
+      phCtrl.appendChild(n);
+    }
+  };
+  drawPhone();
+  // updates: one click, and only releases signed with this copy's key
+  // (agent/updater.py)
+  const upRow = el("div", "set-row");
+  const upInfo = el("div", "set-info");
+  const upNm = el("div", "set-name"); upNm.textContent = "Updates";
+  const upDs = el("div", "set-desc");
+  upDs.textContent = "Paste the address of your release's latest.json. Only releases signed with this copy's key are installed; Roll back undoes the last one.";
+  upInfo.append(upNm, upDs);
+  const upCtrl = el("div", "set-control");
+  upCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:280px";
+  const upSrc = el("input"); upSrc.className = "model-input"; upSrc.id = "updSource";
+  upSrc.placeholder = "https://…/latest.json";
+  const upBtns = el("div"); upBtns.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+  const mk = (t, primary) => { const b = el("button"); b.className = "btn btn-mini" + (primary ? " primary" : ""); b.textContent = t; return b; };
+  const upCheck = mk("Check for updates"), upGo = mk("Install update", true), upBack = mk("Roll back");
+  upGo.hidden = true; upBack.hidden = true;
+  const upNote = el("div", "set-desc"); upNote.id = "updNote";
+  upBtns.append(upCheck, upGo, upBack);
+  upCtrl.append(upSrc, upBtns, upNote);
+  upRow.append(upInfo, upCtrl);
+  box.appendChild(upRow);
+  const upPost = async (path, body) => {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+    return j;
+  };
+  fetch("/api/updates").then((r) => r.json()).then((st) => {
+    upSrc.value = st.source || "";
+    upBack.hidden = !st.can_roll_back;
+    upNote.textContent = `This copy: ${st.build}.` + (st.can_verify ? ""
+      : " It has no signing key yet, so it can't install updates: see SIGNING.md.") +
+      (st.last_install && st.last_install.to ? ` Last update: ${st.last_install.from} → ${st.last_install.to}.` : "");
+  }).catch(() => {});
+  upSrc.addEventListener("change", () => upPost("/api/updates/source", { source: upSrc.value }).catch(() => {}));
+  upCheck.addEventListener("click", async () => {
+    upCheck.disabled = true;
+    try {
+      await upPost("/api/updates/source", { source: upSrc.value });
+      const c = await upPost("/api/updates/check");
+      upGo.hidden = !c.newer;
+      upNote.textContent = c.newer ? `New: ${c.latest} (you have ${c.current}). ${c.notes || ""}`
+                                   : `Up to date: ${c.current}.`;
+    } catch (e) { upNote.textContent = e.message; }
+    upCheck.disabled = false;
   });
-  lkSel.addEventListener("change", (e) => applyLook(e.target.value));
-  lkCtrl.appendChild(lkSel);
-  lkRow.append(lkInfo, lkCtrl);
-  box.appendChild(lkRow);
+  upGo.addEventListener("click", async () => {
+    if (!confirm("Install the update? It's checked against your signing key first; the files it replaces are kept so you can roll back.")) return;
+    upGo.disabled = true; upNote.textContent = "Downloading and checking the signature…";
+    try {
+      const x = await upPost("/api/updates/install");
+      upNote.textContent = `${x.message} (${x.from} → ${x.to}${x.packages ? "; " + x.packages : ""})`;
+      upGo.hidden = true; upBack.hidden = false;
+      showToast("Updated. Restart Agent Jo to run the new version.");
+    } catch (e) { upNote.textContent = e.message; showToast(e.message, true); }
+    upGo.disabled = false;
+  });
+  upBack.addEventListener("click", async () => {
+    if (!confirm("Roll back the last update?")) return;
+    try {
+      const x = await upPost("/api/updates/rollback");
+      upNote.textContent = x.message; upBack.hidden = true;
+      showToast("Rolled back. Restart Agent Jo.");
+    } catch (e) { upNote.textContent = e.message; }
+  });
   const blRow = el("div", "set-row");
   const blInfo = el("div", "set-info");
   const blNm = el("div", "set-name"); blNm.textContent = "Blender path";
@@ -6152,6 +6917,8 @@ function paintDashboard(d) {
         row.append(body, x, go);
         // every item is a doorway to the panel that resolves it
         row.addEventListener("click", () => {
+          if (i.url) { window.open(i.url, "_blank", "noopener"); return; }
+          if (!i.panel) return;               // "#" alone isn't a selector: it threw
           const btn = $("#" + i.panel);
           if (btn) btn.click();
         });
@@ -6438,6 +7205,9 @@ $("#projectFilter").addEventListener("change", async (e) => {
     .catch(() => {});
   initFootGroups();
   $("#enginesBtn").addEventListener("click", openEngineModal);
+  $("#routingBtn").addEventListener("click", openRouting);
+  $("#closeRoutingModal").addEventListener("click", closeRouting);
+  $("#routingModal").addEventListener("click", (e) => { if (e.target.id === "routingModal") closeRouting(); });
   $("#enableLocalBtn").addEventListener("click", enableLocalEngines);
   $("#closeEngineModal").addEventListener("click", closeEngineModal);
   $("#engineModal").addEventListener("click", (e) => { if (e.target === $("#engineModal")) closeEngineModal(); });

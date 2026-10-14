@@ -43,8 +43,16 @@ console = Console()
 PASS = []
 
 
+FAILED = []
+_COLLECT = {"on": False}
+
+
 def check(name, cond, detail=""):
     if not cond:
+        if _COLLECT["on"]:
+            # the section runner records it and carries on (see run())
+            FAILED.append(f"{name} {str(detail)[:300]}".rstrip())
+            return
         raise AssertionError(f"{name} FAILED {detail}")
     PASS.append(name)
 
@@ -2791,24 +2799,7 @@ def main() -> None:
         check("dashboard.pending_proposal_ranks_first",
               _dhr2["needs_you"][0]["title"].startswith("Code change")
               and _dhr2["needs_you"][0]["severity"] == "act")
-        # a draft with unsourceable claims must be surfaced, never auto-sent
-        _dhjs = config.AGENT_HOME / "jobscout"; _dhjs.mkdir(exist_ok=True)
-        (_dhjs / "roles.json").write_text(_dhj.dumps([
-            {"key": "k", "title": "Role", "stage": "drafted",
-             "draft": {"body": "x",
-                       "check": {"ok": False,
-                                 "problems": [{"detail": "d"}]}}}]), "utf-8")
         _dhr3 = _dh.report(_dhm)
-        # A held draft must always raise an action — the wording depends on
-        # the cause (claims to decide, drafts to rewrite, or an empty profile
-        # that makes everything unsourceable). The invariant is that it is
-        # never silent.
-        check("dashboard.unverifiable_draft_is_an_action",
-              any(i["severity"] == "act"
-                  and ("need checking" in i["title"]
-                       or "profile is empty" in i["title"]
-                       or "rewrite" in i["title"])
-                  for i in _dhr3["needs_you"]))
         _dhsev = [i["severity"] for i in _dhr3["needs_you"]]
         check("dashboard.sorted_by_urgency",
               _dhsev == sorted(_dhsev, key=lambda s: {"act": 0, "review": 1,
@@ -2825,7 +2816,7 @@ def main() -> None:
               isinstance(_dhr4["needs_you"], list)
               and len(_dhr4["needs_you"]) > 0)
         import shutil as _dhsh
-        _dhsh.rmtree(_dhsi); _dhsh.rmtree(_dhjs)
+        _dhsh.rmtree(_dhsi)
         (config.AGENT_HOME / "backups").mkdir(exist_ok=True)
         (config.AGENT_HOME / "backups" / "atlas-backup-x.zip").write_bytes(b"PK")
         # --- tiles: numbers with something to compare against -----------
@@ -2864,8 +2855,10 @@ def main() -> None:
         check("dashboard.records_history_for_every_measurable_tile",
               len(_dhh) >= 8
               and all(isinstance(v, dict) and v for v in _dhh.values()))
-        # backfill a fortnight so sparklines have something to draw
-        _dhtoday = _dhdt.date.today()
+        # backfill a fortnight so sparklines have something to draw. The
+        # board's days are UTC days: a local date ran a day ahead of it after
+        # midnight in South Africa (00:00-02:00), and this check failed then.
+        _dhtoday = _dhdt.datetime.now(_dhdt.timezone.utc).date()
         for _k in list(_dhh):
             for _i in range(1, 14):
                 _dhh[_k][(_dhtoday - _dhdt.timedelta(days=_i)
@@ -3864,38 +3857,6 @@ def main() -> None:
                 not in _uijs[max(0, m.start() - 220):m.start()]]
     check("ui.every_inline_show_also_clears_hidden", not _trapped)
 
-    # --- the Jobs panel should not fight you --------------------------------- #
-    #
-    # Every action reloaded the whole list, which threw away whatever you had
-    # open: click Draft and the role you were reading disappeared. These
-    # assert the panel keeps its place, shows counts without being visited,
-    # and can be moved through from the keyboard.
-    # The four harnesses that drove the Jobs panel inside the main app went
-    # with the panel. What they protected — views switch, rows render, the
-    # blocked stage is marked — moved to the Jobs app's own harness.
-    try:
-        _jafile = _RPath("tests/jobsapp_views.js")
-        if _vinode and _jafile.exists():
-            _jaout = _visub.run([_vinode, str(_jafile)], capture_output=True,
-                                text=True, timeout=90,
-                                cwd=str(_RPath(".").resolve()))
-            _jat = (_jaout.stdout or "") + (_jaout.stderr or "")
-            _jaok = all(x in _jat for x in (
-                "opens on the pipeline: true",
-                "pipeline draws every stage: true",
-                "the blocked stage is marked: true",
-                "counts come from the server: true",
-                "switching views works: true",
-                "roles render: true",
-                "held drafts render: true",
-                "sources render: true",
-                "every call hits a known endpoint: true"))
-        else:
-            _jaok = _jafile.exists()
-    except Exception:
-        _jaok = False
-    check("jobsapp.the_window_renders_what_the_server_sends", _jaok)
-
     # --- tables in chat must render as tables -------------------------------- #
     #
     # The markdown renderer handled headings, lists, code and links but had no
@@ -3946,7 +3907,6 @@ def main() -> None:
                 "sidebar panels found: true",
                 "palette opens: true",
                 "lists every panel plus actions: true",
-                "jobs is reachable from the palette: true",
                 "every word must match: true",
                 "name beats description: true",
                 "enter opens the highlighted panel: true",
@@ -4165,12 +4125,13 @@ def main() -> None:
               for s in _pz.SCENES))
     check("presenter.every_scene_has_a_script_and_a_speaker_note",
           all(s.get("say") and s.get("note") for s in _pz.SCENES))
-    # the job search moved to its own window, so those scenes name it rather
-    # than opening a panel — the story is still the one worth telling
-    check("presenter.shows_the_largest_feature_and_the_safety_story",
-          any(s.get("opens") == "Agent Jo Jobs" for s in _pz.SCENES)
-          and any(s["key"] == "fabrication" for s in _pz.SCENES)
-          and any(s["key"] == "gates" for s in _pz.SCENES))
+    # the safety story is told (the job search's scenes left with Agent Jo
+    # Jobs, CHANGELOG 155) — and the close comes last: scenes added later were
+    # appended after it, so a live demo said "close here" and then carried on
+    _pzkeys = [s["key"] for s in _pz.SCENES]
+    check("presenter.tells_the_safety_story",
+          "gates" in _pzkeys and "honesty" in _pzkeys)
+    check("presenter.the_close_comes_last", _pzkeys[-1] == "close", f"{_pzkeys}")
 
     check("guide.every_stop_says_what_why_and_what_to_try",
           all(s.get("what") and s.get("why") and s.get("try")
@@ -4901,7 +4862,6 @@ def main() -> None:
                     ("run_command", {"command": "rm -rf /data"}, False),
                     ("send_email", {"to": "a@b.io", "subject": "s",
                                     "body": "x"}, True),
-                    ("apply_on_portal", {"url": "https://x"}, True),
                     ("delete_file", {"path": "x"}, True)]
         check("intercepts.reads_run_and_external_changes_wait",
               all(_ic.classify(t2, a)["hold"] is w for t2, a, w in _iccases))
@@ -5343,7 +5303,31 @@ def main() -> None:
     # resolves the annotation when the route is registered, so a model
     # declared LATER in the file isn't found and the parameter is treated as
     # a query field — a server-side mistake that reads like the client's.
-    _bmpos = _RPath("jobs/server.py").read_text("utf-8")
+    # Checked for every route, not three named ones.
+    import ast as _bmast
+    _bmsrc = _RPath("web/server.py").read_text("utf-8")
+    _bmtree = _bmast.parse(_bmsrc)
+    # the first definition is the one a route registered above a second sees
+    _bmcls, _bmdup = {}, []
+    for _bmn in _bmtree.body:
+        if isinstance(_bmn, _bmast.ClassDef):
+            if _bmn.name in _bmcls:
+                _bmdup.append(_bmn.name)
+            _bmcls.setdefault(_bmn.name, _bmn.lineno)
+    check("web.no_model_is_defined_twice", not _bmdup, f"{_bmdup}")
+    _bmlate = []
+    for _bmf in _bmtree.body:
+        if not isinstance(_bmf, (_bmast.FunctionDef, _bmast.AsyncFunctionDef)):
+            continue
+        if not any("app." in _bmast.unparse(d) for d in _bmf.decorator_list):
+            continue
+        for _bma in _bmf.args.args:
+            _bmn = _bmast.unparse(_bma.annotation) if _bma.annotation else ""
+            _bmn = _bmn.split("|")[0].strip()
+            if _bmn in _bmcls and _bmcls[_bmn] > _bmf.lineno:
+                _bmlate.append(f"{_bmf.name} uses {_bmn}")
+    check("web.body_models_are_defined_before_the_routes_that_use_them",
+          not _bmlate, f"{_bmlate}")
     # --- every front-end call must reach a real route ------------------------ #
     #
     # The self-improvement panel called /api/self while the route is
@@ -5351,7 +5335,7 @@ def main() -> None:
     # the whole panel 404'd on open with nothing to explain it. A dead link
     # between the two halves is invisible until someone clicks.
     _fecalls = set(_re.findall(r'fetch\("(/api/[a-z0-9/_-]+)"', _uijs))
-    # the main app's calls against the MAIN app's routes. _bmpos points at
+    # the main app's calls against the MAIN app's routes. web/server.py is
     # the Jobs app now, and checking one half against the other half's
     # routes passes for the wrong reason.
     _mainsrv = _RPath("web/server.py").read_text("utf-8")
@@ -5368,22 +5352,7 @@ def main() -> None:
                          for rt in _feprefix)))
     check("web.every_front_end_call_reaches_a_real_route", not _fedead)
 
-    # and the same check for the Jobs app, which has its own pair of halves
-    _jacalls = set(_re.findall(
-        r'api\("(/api/[a-z0-9/_-]+)"',
-        _RPath("web_jobs/jobs.js").read_text("utf-8")))
-    _jaroutes = set(_re.findall(
-        r'@app\.(?:get|post|delete|put)\("(/api/[^"{]+)"',
-        _RPath("jobs/server.py").read_text("utf-8")))
-    _jadead = sorted(c for c in _jacalls if c not in _jaroutes)
-    check("jobsapp.every_call_reaches_a_real_route", not _jadead,
-          f"{_jadead}")
 
-    check("web.body_models_are_defined_before_the_routes_that_use_them",
-          _bmpos.index("class JobsKeyBody")
-          < min(_bmpos.index('@app.post("/api/jobs/ats")'),
-                _bmpos.index('@app.post("/api/jobs/cv")'),
-                _bmpos.index('@app.post("/api/jobs/interview")')))
     # (the phrase appears in errText's own comment explaining the bug, so
     # assert the behaviour rather than the absence of a string)
     check("ui.an_error_is_never_shown_as_object_Object",
@@ -5560,48 +5529,6 @@ def main() -> None:
     check("ui.the_self_improve_panel_is_intact",
           all(f'id="selfPane{n}"' in _uihtml
               for n in ("Proposal", "Ideas", "History")))
-    # the Jobs panel checks moved to the Jobs app, which has its own markup
-    _jbhtml = _RPath("web_jobs/index.html").read_text("utf-8")
-    _jbcss = _RPath("web_jobs/jobs.css").read_text("utf-8")
-    _jbjs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("jobsapp.every_view_exists",
-          all(f'id="v-{v}"' in _jbhtml for v in
-              ("overview", "roles", "search", "drafts", "auto", "sources",
-               "results", "archive", "profile")))
-    # The first cut wired 12 of 47 endpoints and dropped the rest — scoring,
-    # drafting, CV tailoring, portal applications, claims, auto-apply. A
-    # redesign that removes what people used is a regression. Only the
-    # internal alerts/ingest, which the folder reader calls, has no door.
-    _jaall = set(_re.findall(r'@app\.(?:get|post|delete)\("(/api/jobs[^"]*)"',
-                             _RPath("jobs/server.py").read_text("utf-8")))
-    _jaused = set(_re.findall(r'"(/api/jobs[a-z0-9/_-]*)"', _jbjs))
-    # a route with a path parameter is called as a template literal, so match
-    # it by its fixed prefix rather than the literal "{key}"
-    _jamiss = set()
-    for _jar in _jaall:
-        if _jar in _jaused:
-            continue
-        _japrefix = _jar.split("{")[0]
-        if "{" in _jar and _japrefix in _jbjs:
-            continue
-        _jamiss.add(_jar)
-    check("jobsapp.every_user_facing_endpoint_has_a_ui",
-          _jamiss <= {"/api/jobs/alerts/ingest"}, f"{sorted(_jamiss)}")
-    # a GET with a body is rejected by the browser before it's sent — the
-    # first version did this on every read, so they all failed silently
-    check("jobsapp.reads_never_carry_a_body",
-          'verb === "GET" ? { method: "GET" }' in _jbjs)
-    check("jobsapp.the_hidden_attribute_wins_over_display",
-          _jbcss.rstrip().endswith("[hidden] { display: none !important; }"))
-    check("jobsapp.the_pipeline_is_a_track_not_a_card_grid",
-          ".track {" in _jbcss and ".track::before" in _jbcss)
-    check("jobsapp.only_the_blocked_stage_is_lit",
-          ".stop.blocked" in _jbcss)
-    check("jobsapp.every_view_reaches_a_real_endpoint",
-          all(p in _jbjs for p in ("/api/jobs/pipeline", "/api/jobs/claims",
-                                   "/api/jobs/outcomes",
-                                   "/api/jobs/search/config")))
-
     # --- SA challenges: real problems, with the reasons they might not work --- #
     _ch_home = config.AGENT_HOME
     config.AGENT_HOME = _RPath(_rtf.mkdtemp()); config.DB_PATH = config.AGENT_HOME / "ch.db"
@@ -5801,139 +5728,6 @@ def main() -> None:
     check("guide.keys_are_unique",
           len({s["key"] for s in _trs}) == len(_trs))
 
-    # --- portal applications: fill the form, hand over when a human is due --- #
-    _pt_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp()); config.DB_PATH = config.AGENT_HOME / "pt.db"
-    try:
-        import agent.portal as _pt
-        (config.AGENT_HOME / "cv.pdf").write_text("cv", "utf-8")
-        _PTPROF = {"full_name": "Itumeleng Nthite", "email": "i@example.com",
-                   "phone": "+27 82 000 0000", "location": "Johannesburg",
-                   "cv_path": str(config.AGENT_HOME / "cv.pdf")}
-        _PTROLE = {"title": "Data Engineer", "key": "k",
-                   "url": "https://boards.greenhouse.io/a/jobs/1",
-                   "draft": {"body": "I built a Medallion pipeline."}}
-        check("portal.identifies_the_ats",
-              _pt.detect_ats("https://boards.greenhouse.io/a/1")
-              == "greenhouse"
-              and _pt.detect_ats("https://jobs.lever.co/a/1") == "lever"
-              and _pt.detect_ats("https://a.wd3.myworkdayjobs.com/c")
-              == "workday"
-              and _pt.detect_ats("https://acme.com/careers/1") == "unknown"
-              and _pt.detect_ats("https://acme.com/j/1",
-                                 '<div id="grnhse_app"></div>')
-              == "greenhouse")
-        check("portal.recognises_a_page_it_must_not_type_into",
-              _pt.page_state('<input type="password" name="p">')
-              == _pt.NEEDS_LOGIN
-              and _pt.page_state('<div class="g-recaptcha"></div>')
-              == _pt.NEEDS_CAPTCHA
-              and _pt.page_state('<form><input name="first_name"></form>')
-              == "")
-        check("portal.maps_fields_by_meaning",
-              _pt.classify_field("Given name") == "first_name"
-              and _pt.classify_field("Surname") == "last_name"
-              and _pt.classify_field("Upload your CV") == "resume"
-              and _pt.classify_field("Mobile number") == "phone")
-        check("portal.will_not_answer_demographic_questions",
-              _pt.classify_field("Gender") == "sensitive"
-              and _pt.classify_field("Do you identify as disabled?")
-              == "sensitive"
-              and _pt.classify_field("Ethnic background") == "sensitive")
-        _PTF = [{"selector": "#fn", "label": "First Name", "type": "text",
-                 "required": True},
-                {"selector": "#ln", "label": "Last Name", "type": "text",
-                 "required": True},
-                {"selector": "#em", "label": "Email", "type": "text",
-                 "required": True},
-                {"selector": "#cv", "label": "Resume", "type": "file",
-                 "required": True},
-                {"selector": "#g", "label": "Gender", "type": "select-one",
-                 "required": False}]
-        _ptp = _pt.plan(_PTROLE, _PTPROF, _PTF)
-        check("portal.plans_before_touching_anything",
-              _ptp["can_complete"] is True and len(_ptp["fill"]) == 4
-              and _ptp["sensitive"] == ["Gender"]
-              and any(f["kind"] == "first_name" and f["value"] == "Itumeleng"
-                      for f in _ptp["fill"]))
-
-        class _PTFake:
-            def __init__(self, html="<form><input name=fn></form>",
-                         fields=None, fill_ok=True, submit_ok=True):
-                self._html = html
-                self._fields = fields if fields is not None else _PTF
-                self._fill_ok = fill_ok
-                self._submit_ok = submit_ok
-                self.filled = []
-                self.submitted = False
-                self.closed_with = None
-
-            def open(self, url): return {"url": url}
-            def html(self, page): return self._html
-            def fields(self, page): return self._fields
-
-            def fill(self, page, item):
-                if not self._fill_ok:
-                    return False
-                self.filled.append(item["kind"])
-                return True
-
-            def submit(self, page):
-                self.submitted = self._submit_ok
-                return self._submit_ok
-
-            def shot(self, page, name): return ""
-            def close(self, keep_open=True): self.closed_with = keep_open
-
-        def _ptrun(driver, **kw):
-            _pt.DRIVER = driver
-            try:
-                return _pt.apply_to_portal(_PTROLE, _PTPROF, **kw)
-            finally:
-                _pt.DRIVER = None
-        _ptd = _PTFake()
-        _ptr = _ptrun(_ptd)
-        check("portal.fills_then_stops_for_review",
-              _ptr["state"] == _pt.FILLED and _ptd.filled
-              and not _ptd.submitted and _ptd.closed_with is True)
-        _ptd2 = _PTFake()
-        check("portal.submits_only_when_told",
-              _ptrun(_ptd2, submit=True)["state"] == _pt.SUBMITTED
-              and _ptd2.submitted and _ptd2.closed_with is False)
-        _ptd3 = _PTFake(html='<input type="password">')
-        _ptr3 = _ptrun(_ptd3, submit=True)
-        check("portal.login_wall_hands_over_without_typing",
-              _ptr3["state"] == _pt.NEEDS_LOGIN and not _ptd3.filled
-              and "won't be asked for this site again" in _ptr3["message"])
-        _ptd4 = _PTFake(html='<div class="g-recaptcha"></div>')
-        check("portal.never_attempts_a_captcha",
-              _ptrun(_ptd4, submit=True)["state"] == _pt.NEEDS_CAPTCHA
-              and not _ptd4.filled)
-        _ptd5 = _PTFake(fields=_PTF + [
-            {"selector": "#q", "label": "How did you hear about us?",
-             "type": "select-one", "required": True}])
-        _ptr5 = _ptrun(_ptd5, submit=True)
-        check("portal.unanswerable_field_never_submits",
-              _ptr5["state"] in (_pt.NEEDS_ANSWER, _pt.UNKNOWN_FORM)
-              and not _ptd5.submitted and not _ptd5.filled)
-        _ptd6 = _PTFake(fill_ok=False)
-        check("portal.stops_if_it_cannot_type",
-              _ptrun(_ptd6, submit=True)["state"] == _pt.UNKNOWN_FORM
-              and not _ptd6.submitted)
-        _ptd7 = _PTFake(submit_ok=False)
-        check("portal.says_so_when_it_cannot_find_submit",
-              "press it yourself"
-              in _ptrun(_ptd7, submit=True)["message"])
-        check("portal.refuses_without_an_advert_or_a_profile",
-              _pt.apply_to_portal({"title": "x", "url": ""},
-                                  _PTPROF)["state"] == _pt.FAILED
-              and _pt.apply_to_portal(_PTROLE,
-                                      {"full_name": "x"})["state"]
-              == _pt.NEEDS_ANSWER)
-        check("portal.every_attempt_is_logged", len(_pt.history()) >= 6)
-    finally:
-        config.AGENT_HOME = _pt_home
-
     # --- skills: adopted ones can be seen, run on purpose, and counted ------- #
     _sk_home = config.AGENT_HOME
     config.AGENT_HOME = _RPath(_rtf.mkdtemp()); config.DB_PATH = config.AGENT_HOME / "sk.db"
@@ -6128,45 +5922,46 @@ def main() -> None:
     config.AGENT_HOME = _RPath(_rtf.mkdtemp()); config.DB_PATH = config.AGENT_HOME / "wd.db"
     try:
         import agent.watchdog as _wd
-        import agent.jobscout as _wdj
         from agent.memory import MemoryStore as _WDM
         _wdm = _WDM(db_path=config.DB_PATH, check_same_thread=False)
-        _wdj.save_auto_config({"enabled": True, "dry_run": True,
-                               "min_score": 75, "daily_cap": 5})
+        # the example used to be the job scout, which left with Agent Jo
+        # Jobs (155); the weekly trend scan is watched the same way
+        _wdsid = _wdm.create_schedule(name="Weekly trends", prompt="scan",
+                                      spec_json="{}", action="trendscout",
+                                      payload="{}")
 
         def _wde(kind, days, summary="did the thing"):
             ts = _time.time() - days * 86400
             return {"kind": kind, "name": "", "summary": summary, "ts": ts,
                     "iso": _time.strftime("%Y-%m-%d %H:%M UTC",
                                           _time.gmtime(ts))}
-        _wdq = _wd.report(_wdm, [_wde("jobscout", 9, "3 sent")])["quiet"]
+        _wdq = _wd.report(_wdm, [_wde("trend", 20, "scanned 12")])["quiet"]
         check("watchdog.raises_a_feature_that_has_gone_quiet",
-              len(_wdq) == 1 and _wdq[0]["key"] == "jobscout"
-              and _wdq[0]["days_quiet"] >= 9
-              and "auto-apply is on" in _wdq[0]["why_on"])
+              len(_wdq) == 1 and _wdq[0]["key"] == "trend"
+              and _wdq[0]["days_quiet"] >= 20
+              and "Weekly trends" in _wdq[0]["why_on"], f"{_wdq}")
         check("watchdog.recent_activity_is_left_alone",
-              _wd.report(_wdm, [_wde("jobscout", 1)])["quiet"] == [])
+              _wd.report(_wdm, [_wde("trend", 1)])["quiet"] == [])
         # a feature that has never run is a setup question, not silence
         check("watchdog.never_used_is_not_silence",
               _wd.report(_wdm, [])["quiet"] == [])
         # errors are not activity: counting them would hide the very case
         check("watchdog.failures_do_not_count_as_producing",
               len(_wd.report(_wdm, [
-                  _wde("jobscout", 1, "auto-apply failed: no credit"),
-                  _wde("jobscout", 30, "3 sent")])["quiet"]) == 1)
-        _wdj.save_auto_config({"enabled": False})
+                  _wde("trend", 1, "trend scan failed: no credit"),
+                  _wde("trend", 30, "scanned 12")])["quiet"]) == 1)
+        _wdm.set_schedule_enabled(_wdsid, False)
         check("watchdog.ignores_what_is_switched_off",
-              _wd.report(_wdm, [_wde("jobscout", 90)])["quiet"] == [])
-        _wdj.save_auto_config({"enabled": True})
-        _wdm.create_schedule(name="Weekly trends", prompt="scan",
-                             spec_json="{}", action="trendscout",
-                             payload="{}")
-        _wdr = _wd.report(_wdm, [_wde("jobscout", 1, "sent"),
-                                 _wde("trend", 40, "scanned 12")])
+              _wd.report(_wdm, [_wde("trend", 90)])["quiet"] == [])
+        _wdm.set_schedule_enabled(_wdsid, True)
+        _wdm.create_schedule(name="Nightly backup", prompt="back up",
+                             spec_json="{}", action="backup", payload="{}")
+        _wdr = _wd.report(_wdm, [_wde("trend", 1, "scanned 3"),
+                                 _wde("backup", 40, "backed up")])
         _wdk = {q["key"] for q in _wdr["quiet"]}
         check("watchdog.watches_scheduled_work_and_names_the_schedule",
-              "trend" in _wdk and "jobscout" not in _wdk
-              and any("Weekly trends" in q["why_on"] for q in _wdr["quiet"]))
+              "backup" in _wdk and "trend" not in _wdk
+              and any("Nightly backup" in q["why_on"] for q in _wdr["quiet"]))
     finally:
         config.AGENT_HOME = _wd_home
 
@@ -6714,1524 +6509,6 @@ def main() -> None:
         _wa.FETCHER = _waprev_fetch
     finally:
         config.AGENT_HOME = _wa_home
-
-    # --- job scout: grounded drafting, fabrication guard, pipeline ------------ #
-    _jb_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp()); config.DB_PATH = config.AGENT_HOME / "jb.db"
-    try:
-        import agent.jobscout as _jb
-        import json as _jbj
-        check("jobs.blocks_drafting_from_empty_profile",
-              _jb.profile_ready()[0] is False)
-        _jb.save_profile({
-            "summary": "Tech lead on an FX desk. Build BI and data pipelines.",
-            "technologies": ["Python", "SQL", "Power BI"],
-            "employers": ["Standard Bank"],
-            "achievements": ["Built a Medallion pipeline with regression "
-                             "testing"],
-            "years_experience": {"BI": "8"}})
-        check("jobs.profile_ready_after_fill", _jb.profile_ready()[0] is True)
-        _jb.add_roles([
-            {"title": "Senior Data Engineer (Remote)", "company": "Acme",
-             "url": "https://x/1", "summary": "Python, SQL, dbt."},
-            {"title": "BI Consultant", "company": "Globex"}])
-        check("jobs.dedupes_repeat_roles",
-              _jb.add_roles([{"title": "Senior Data Engineer (Remote)",
-                              "company": "Acme"}])["added"] == 0
-              and len(_jb.roles()) == 2)
-        _jbgood = ("I built a Medallion pipeline with regression testing, in "
-                   "Python and SQL, at Standard Bank.")
-        _jbbad = ("I have 15 years of Kubernetes and an AWS certification "
-                  "from Deloitte, and use dbt daily.")
-        check("jobs.grounded_draft_passes",
-              _jb.check_draft(_jbgood)["ok"] is True)
-        _jbc = _jb.check_draft(_jbbad)
-        check("jobs.fabrication_guard_catches_invented_claims",
-              _jbc["ok"] is False and len(_jbc["problems"]) >= 4
-              and any(p["kind"] == "year-claim" for p in _jbc["problems"])
-              and any("dbt" in p["detail"] for p in _jbc["problems"]))
-        _jbrole = _jb.get_role(_jb.roles()[0]["key"])
-        check("jobs.advert_terms_are_fair_game",
-              _jb.check_draft("I have used dbt on similar work.",
-                              _jbrole)["ok"] is True
-              and _jb.check_draft("I have used dbt.")["ok"] is False)
-
-        class _JBB:
-            def __init__(self, out): self.out = out
-
-            def chat(self, m, s, t=None, **kw):
-                return _blk(_jbj.dumps(self.out))
-        _jbk = _jb.roles()[0]["key"]
-        _jbf = _jb.score_role(_jbk, _JBB(
-            {"score": 78, "verdict": "strong", "for": ["pipeline work"],
-             "against": ["no dbt in profile"], "missing": ["dbt"]}))
-        check("jobs.scoring_keeps_reasons_against",
-              _jbf["ok"] and _jbf["fit"]["against"] == ["no dbt in profile"]
-              and _jbf["fit"]["missing"] == ["dbt"])
-        _jbd = _jb.draft_application(_jbk, _JBB(
-            {"subject": "Data engineering contract", "body": _jbgood,
-             "gaps": ["dbt"]}))
-        check("jobs.draft_is_self_checked",
-              _jbd["ok"] and _jbd["draft"]["check"]["ok"] is True
-              and _jbd["draft"]["gaps"] == ["dbt"]
-              and _jb.get_role(_jbk)["stage"] == "drafted")
-        _jbd2 = _jb.draft_application(_jb.roles()[1]["key"], _JBB(
-            {"subject": "x", "body": _jbbad, "gaps": []}))
-        check("jobs.fabricating_draft_is_flagged_not_accepted",
-              _jbd2["ok"] and _jbd2["draft"]["check"]["ok"] is False)
-        _jb.set_stage(_jbk, "applied", "sent via portal")
-        check("jobs.pipeline_tracks_history",
-              _jb.get_role(_jbk)["stage"] == "applied"
-              and len(_jb.get_role(_jbk)["events"]) == 1
-              and _jb.set_stage(_jbk, "nonsense")["ok"] is False)
-        check("jobs.summary_counts",
-              _jb.summary()["total"] == 2
-              and _jb.summary()["by_stage"]["applied"] == 1)
-        import agent.audit as _jbau
-        # --- sourcing: the piece that makes unattended volume possible --
-        _jb.save_profile({"summary": "FX desk tech lead.",
-                          "skills": ["Python", "SQL"],
-                          "technologies": ["Power BI"],
-                          "employers": ["Standard Bank"],
-                          "target_roles": ["Data Engineer"],
-                          "achievements": ["Built a Medallion pipeline "
-                                           "with regression testing"],
-                          "years_experience": {"BI": "8"}})
-        _JBREM = json.dumps({"jobs": [
-            {"title": "Data Engineer", "company_name": "Acme",
-             "url": "https://r/1", "candidate_required_location": "Worldwide",
-             "description": "<p>Python SQL. CV to careers@acme.io</p>"},
-            {"title": "Data Engineer", "company_name": "Portal Co",
-             "url": "https://r/2", "candidate_required_location": "Worldwide",
-             "description": "<p>Apply through our website.</p>"},
-            {"title": "Nurse Practitioner", "company_name": "Clinic",
-             "url": "https://r/3", "candidate_required_location": "US",
-             "description": "<p>Patient care.</p>"}]})
-        _jb.JOB_FETCHER = lambda u: _JBREM if "remotive" in u else "[]"
-        _jb.save_job_sources([{"name": "Remotive", "kind": "remotive",
-                               "on": True,
-                               "url": "https://remotive.com/api/x"}])
-        _jbd = _jb.discover()
-        _jbtitles = str([x["title"] for x in _jb.roles()])
-        check("jobs.sourcing_filters_to_plausible_roles",
-              _jbd["matched"] == 2 and "Nurse" not in _jbtitles)
-        check("jobs.extracts_an_application_address",
-              _jbd["with_email"] == 1)
-        check("jobs.portal_roles_are_marked_not_guessed",
-              any(not x.get("apply_email") for x in _jb.roles()))
-        check("jobs.sourcing_dedupes",
-              _jb.discover()["added"] == 0)
-        # an address on the page isn't necessarily where to apply
-        check("jobs.ignores_noreply_and_board_addresses",
-              _jb._apply_email("write to no-reply@x.com") == ""
-              and _jb._apply_email("via jobs@remoteok.com") == ""
-              and _jb._apply_email("noreply@x.com or hr@real.co")
-              == "hr@real.co")
-
-        # --- auto-apply: fully automated, but only through the gates ----
-        import agent.outreach as _jbout
-        _jbsent = []
-        _jborig = _jbout.send
-        _jbout.send = (lambda to, sub, body, **kw:
-                       (_jbsent.append((to, kw.get("dry_run"))) or
-                        {"ok": True}))
-        try:
-            check("jobs.auto_apply_off_by_default",
-                  _jb.auto_apply(_JBB({}))["ok"] is False)
-            _jb.save_auto_config({"enabled": True, "min_score": 75,
-                                  "daily_cap": 2, "dry_run": True})
-            for _r in _jb.roles():
-                _jb.update_role(_r["key"], stage="found", fit=None,
-                                draft=None, sent_at="",
-                                apply_email="jobs@example.com")
-
-            class _JBAuto:
-                """Scores high, but drafts something with invented claims."""
-                def chat(self, m, s, t=None, **kw):
-                    if "fits" in s[0][:80] or "assess" in s[0][:80].lower():
-                        return _blk(json.dumps(
-                            {"score": 90, "verdict": "strong",
-                             "for": ["x"], "against": [], "missing": []}))
-                    return _blk(json.dumps(
-                        {"subject": "App",
-                         "body": "I have 15 years of Kubernetes and an AWS "
-                                 "certification.", "gaps": []}))
-            _jbres = _jb.auto_apply(_JBAuto())
-            check("jobs.auto_apply_blocks_unsourced_claims",
-                  _jbres["ok"] and len(_jbres["sent"]) == 0
-                  and any("can't source" in h["reason"]
-                          for h in _jbres["held"]))
-
-            class _JBClean:
-                def chat(self, m, s, t=None, **kw):
-                    if "fits" in s[0][:80] or "assess" in s[0][:80].lower():
-                        return _blk(json.dumps(
-                            {"score": 90, "verdict": "strong",
-                             "for": ["x"], "against": [], "missing": []}))
-                    return _blk(json.dumps(
-                        {"subject": "App", "body": _jbgood, "gaps": []}))
-            for _r in _jb.roles():
-                _jb.update_role(_r["key"], stage="found", fit=None,
-                                draft=None, sent_at="")
-            _jbres2 = _jb.auto_apply(_JBClean())
-            check("jobs.auto_apply_sends_clean_drafts_within_cap",
-                  len(_jbres2["sent"]) >= 1 and len(_jbres2["sent"]) <= 2
-                  and all(s["dry_run"] for s in _jbres2["sent"]))
-            check("jobs.dry_run_sends_nothing_for_real",
-                  all(d is True for _, d in _jbsent))
-            # a role without an application email is never auto-sent
-            for _r in _jb.roles():
-                _jb.update_role(_r["key"], stage="found", fit=None,
-                                draft=None, sent_at="", apply_email="")
-            _jbres3 = _jb.auto_apply(_JBClean())
-            check("jobs.portal_only_roles_are_held_for_you",
-                  len(_jbres3["sent"]) == 0
-                  and any("portal" in h["reason"] for h in _jbres3["held"]))
-        finally:
-            _jbout.send = _jborig
-        # --- search: what to look for, and where -----------------------
-        _JBFEED = json.dumps({"jobs": [
-            {"title": "Senior Data Engineer", "company_name": "Acme",
-             "url": "https://s/1",
-             "candidate_required_location": "Worldwide",
-             "description": "Python, SQL, dbt. CV to hr@acme.io"},
-            {"title": "Power BI Developer", "company_name": "Globex",
-             "url": "https://s/2",
-             "candidate_required_location": "South Africa",
-             "description": "Power BI and DAX."},
-            {"title": "Data Engineer", "company_name": "RecruitCo",
-             "url": "https://s/3", "candidate_required_location": "Remote",
-             "description": "Our agency is hiring for a client."},
-            {"title": "Data Engineer (Onsite)", "company_name": "Onsite Ltd",
-             "url": "https://s/4",
-             "candidate_required_location": "Berlin, Germany",
-             "description": "Must be in office."}]})
-        _jb.JOB_FETCHER = lambda u: _JBFEED if "remotive" in u else "[]"
-        _jb.save_job_sources([
-            {"name": "Remotive", "kind": "remotive", "on": True,
-             "url": "https://remotive.com/api/remote-jobs"},
-            {"name": "RemoteOK", "kind": "remoteok", "on": False,
-             "url": "https://remoteok.com/api"}])
-        _jb.save_search_config({"queries": [], "exclude": [],
-                                "locations": [], "remote_only": True,
-                                "require_email": False})
-        _jbbefore = len(_jb.roles())
-        _jbs = _jb.search("power bi")
-        check("jobs.search_finds_by_term_and_records_nothing",
-              len(_jbs["results"]) == 1
-              and _jbs["results"][0]["title"] == "Power BI Developer"
-              and len(_jb.roles()) == _jbbefore)
-        _jb.save_search_config({"queries": ["data engineer"],
-                                "exclude": ["agency"]})
-        _jbs2 = _jb.search()
-        _jbco = [x["company"] for x in _jbs2["results"]]
-        check("jobs.exclusions_beat_matches",
-              "Acme" in _jbco and "RecruitCo" not in _jbco
-              and any("excluded by" in k and "agency" in k
-                      for k in _jbs2["rejected"]))
-        check("jobs.remote_only_drops_onsite",
-              "Onsite Ltd" not in _jbco)
-        _jb.save_search_config({"queries": [], "exclude": [],
-                                "locations": ["South Africa"]})
-        check("jobs.a_named_location_you_asked_for_is_kept",
-              any(x["company"] == "Globex" for x in _jb.search()["results"]))
-        _jb.save_search_config({"locations": [], "require_email": True})
-        check("jobs.require_email_keeps_only_reachable_roles",
-              all(x.get("apply_email")
-                  for x in _jb.search()["results"]))
-        _jb.save_search_config({"require_email": False})
-        check("jobs.disabled_boards_are_not_fetched",
-              "RemoteOK" not in (_jbs["per_source"] or {}))
-        # nothing is watched until the user says so
-        _jbkeep = _jb.job_sources()
-        _jb.save_job_sources([])
-        _jbnone = _jb.search("anything")
-        check("jobs.no_sites_by_default_and_it_says_so",
-              _jbnone["total"] == 0
-              and "No sites added yet" in str(_jbnone["errors"]))
-        check("jobs.suggestions_are_offered_not_imposed",
-              len(_jb.SUGGESTED_SOURCES) >= 6
-              and any(".co.za" in s["url"] for s in _jb.SUGGESTED_SOURCES)
-              and _jb.job_sources() == [])
-        _jb.save_job_sources(_jbkeep)
-        # the query is pushed to the board's own API where it supports one
-        _jbseen2 = {}
-        _jbprevf = _jb.JOB_FETCHER
-        _jb.JOB_FETCHER = (lambda u: (_jbseen2.update(url=u)
-                                      or (_JBFEED if "remotive" in u
-                                          else "[]")))
-        _jb.search("data engineer")
-        _jb.JOB_FETCHER = _jbprevf
-        check("jobs.query_is_pushed_to_the_board",
-              "search=data+engineer" in _jbseen2.get("url", ""))
-        # sources can be managed
-        # Reported from real use: removing a site 404'd and it stayed put.
-        # The identifier was a path parameter, so any source whose NAME was a
-        # url (a url pasted into the name box) produced a path with extra
-        # segments once %2F decoded, matching no route at all.
-        _jb.save_job_sources([
-            {"name": "https://www.turing.com/",
-             "url": "https://www.turing.com/", "kind": "html", "on": True},
-            {"name": "Lemon", "url": "https://lemon.io/for-developers/",
-             "kind": "html", "on": True}])
-        check("jobs.a_url_named_source_can_be_removed",
-              _jb.remove_job_source("https://www.turing.com/")["ok"]
-              and len(_jb.job_sources()) == 1)
-        check("jobs.removal_works_by_url_or_by_name",
-              _jb.remove_job_source(
-                  "https://lemon.io/for-developers/")["ok"]
-              and _jb.job_sources() == []
-              and _jb.remove_job_source("ghost")["ok"] is False)
-        _jb.add_job_source("", "https://www.turing.com/careers", "html")
-        check("jobs.a_pasted_url_gets_a_readable_name",
-              _jb.job_sources()[0]["name"] == "turing.com")
-        check("jobs.toggle_also_accepts_a_url",
-              _jb.set_job_source("https://www.turing.com/careers",
-                                 False)["ok"]
-              and _jb.job_sources()[0]["on"] is False)
-        _jb.save_job_sources([])
-        check("jobs.sources_can_be_added_toggled_and_removed",
-              _jb.add_job_source("Careers24", "https://c24/jobs.rss",
-                                 "rss")["ok"]
-              and _jb.add_job_source("Dup",
-                                     "https://c24/jobs.rss")["ok"] is False
-              and _jb.add_job_source("X", "https://x/y", "weird")["ok"]
-              is False
-              and _jb.set_job_source("Careers24", False)["ok"]
-              and _jb.remove_job_source("Careers24")["ok"]
-              and _jb.remove_job_source("Careers24")["ok"] is False)
-
-        # --- a region list is not an office address ---------------------
-        #
-        # Reported from real use: 254 roles skipped as "not remote" with a
-        # separate line per city, including "not remote (LATAM, Europe, USA,
-        # Canada, APAC)". Remote boards use that field for WHERE THE CANDIDATE
-        # MAY LIVE, so rejecting it as an office threw away exactly the roles
-        # those boards exist to list.
-        _jb.save_profile({**_jb.profile(),
-                          "locations_ok": ["Remote", "South Africa"]})
-        _jb.save_search_config({"queries": [], "exclude": [],
-                                "locations": [], "remote_only": True,
-                                "require_email": False})
-        check("jobs.tells_a_region_list_from_an_office",
-              _jb._is_region_constraint("LATAM, Europe, USA, Canada, APAC")
-              and _jb._is_region_constraint("Worldwide")
-              and not _jb._is_region_constraint("Hong Kong, ")
-              and not _jb._is_region_constraint("Vancouver, BC, Canada"))
-        _jbcfg2 = _jb.search_config()
-        check("jobs.a_region_only_counts_if_it_includes_you",
-              _jb._region_includes_me("Americas, Europe, Asia, Africa, "
-                                      "Oceania", _jbcfg2)
-              and _jb._region_includes_me("Worldwide", _jbcfg2)
-              and not _jb._region_includes_me("USA", _jbcfg2))
-        # with no search terms set, the only question is the location — and
-        # a worldwide region must pass it
-        check("jobs.a_worldwide_remote_role_is_kept",
-              _jb.matches_search({"title": "Data Engineer", "summary": "x",
-                                  "company": "C",
-                                  "location": "Americas, Europe, Asia, "
-                                              "Africa, Oceania"},
-                                 {"queries": [], "exclude": [],
-                                  "locations": ["South Africa"],
-                                  "remote_only": True})[0] is True)
-        # and a region must not let a role bypass the search terms
-        check("jobs.a_region_does_not_bypass_the_search_terms",
-              _jb.matches_search({"title": "Senior Data Engineer",
-                                  "summary": "x", "company": "C",
-                                  "location": "Worldwide"},
-                                 {"queries": ["power bi"], "exclude": [],
-                                  "locations": [], "remote_only": True})[1]
-              == "no search term matched")
-        # eighty cities must not become eighty reasons
-        _jbreasons = {
-            _jb.matches_search({"title": "Data Engineer", "summary": "x",
-                                "company": "C", "location": _l})[1]
-            for _l in ("Hong Kong, ", "Dunfermline, ", "Alice Springs, ",
-                       "Tirana, ", "Odisha, ")}
-        check("jobs.skip_reasons_are_categories_not_values",
-              _jbreasons == {"not remote"})
-        check("jobs.trailing_commas_are_cleaned",
-              _jb._clean_location("Hobart, ") == "Hobart"
-              and _jb._clean_location("Vancouver, BC, Canada")
-              == "Vancouver, BC, Canada")
-
-        # --- searching anywhere, not just the configured boards --------
-        _JBPAGE = ("<html><body>"
-                   "<nav><a href='/'>Home</a><a href='/about'>About us</a>"
-                   "<a href='/login'>Sign in</a></nav>"
-                   "<a href='/careers/senior-data-engineer'>Senior Data "
-                   "Engineer</a>"
-                   "<a href='https://boards.greenhouse.io/acme/jobs/44'>"
-                   "Analytics Engineer (Contract)</a>"
-                   "<a href='/jobs/1123'>Power BI Developer - "
-                   "Johannesburg</a>"
-                   "<a href='/blog/our-culture'>Life at Acme</a>"
-                   "<a href='/careers'>All jobs</a>"
-                   "<footer><a href='/privacy'>Privacy</a></footer>"
-                   "</body></html>")
-        _jb.save_search_config({"queries": [], "exclude": [],
-                                "locations": [], "remote_only": False,
-                                "require_email": False})
-        _jb.JOB_FETCHER = lambda u: _JBPAGE
-        _jbu = _jb.search_url("https://acme.co.za/careers")
-        _jbut = [x["title"] for x in _jbu["results"]]
-        check("jobs.reads_an_ordinary_careers_page",
-              _jbu["ok"] and len(_jbut) == 3
-              and "Senior Data Engineer" in _jbut)
-        check("jobs.skips_navigation_and_furniture",
-              not any(w in str(_jbut) for w in
-                      ("Home", "About us", "Sign in", "Privacy", "All jobs",
-                       "Life at Acme")))
-        check("jobs.resolves_relative_and_keeps_absolute_links",
-              any(x["url"] == "https://acme.co.za/careers/"
-                             "senior-data-engineer"
-                  for x in _jbu["results"])
-              and any("greenhouse.io" in x["url"]
-                      for x in _jbu["results"]))
-        check("jobs.labels_the_site_and_records_nothing",
-              _jbu["site"] == "acme.co.za"
-              and all(x["source"] == "acme.co.za" for x in _jbu["results"]))
-        _jb.JOB_FETCHER = lambda u: ("<html><body><p>nothing</p></body>"
-                                     "</html>")
-        _jbempty = _jb.search_url("https://empty.co.za")
-        check("jobs.an_empty_page_explains_itself",
-              _jbempty["ok"] and _jbempty["total"] == 0
-              and "only appears after the page loads" in _jbempty["note"])
-
-        def _jbboom(u):
-            raise RuntimeError("403 Forbidden")
-        _jb.JOB_FETCHER = _jbboom
-        # A refusal is no longer the end of the road: it escalates to the
-        # real browser. Either that works (and the outcome is honest about
-        # finding nothing) or it doesn't, and the error says what to install.
-        _jbblk = _jb.search_url("https://blocked.co.za")
-        check("jobs.a_blocking_site_escalates_then_reports_honestly",
-              (_jbblk.get("how") == "browser" and _jbblk["total"] == 0)
-              or (_jbblk["ok"] is False and "browser"
-                  in _jbblk.get("error", "")))
-        # --- reported from real use: six sites, four different failures --
-        check("jobs.repairs_addresses_people_actually_paste",
-              _jb.normalise_url("careers24.com") == "https://careers24.com"
-              and _jb.normalise_url("//lemon.io/x") == "https://lemon.io/x"
-              and _jb.normalise_url("  toptal.com  ")
-              == "https://toptal.com"
-              and _jb.normalise_url("not a url") == "")
-        _jbkeep2 = _jb.job_sources()
-        _jb.save_job_sources([
-            {"name": "Jobbers", "url": "jobbers.co.za", "kind": "html",
-             "on": True},
-            {"name": "https://lemon.io/", "url": "lemon.io/for-developers",
-             "kind": "html", "on": True}])
-        check("jobs.repairs_sources_saved_without_a_scheme",
-              _jb.repair_sources() >= 2
-              and all(s["url"].startswith("https://")
-                      for s in _jb.job_sources())
-              and _jb.job_sources()[1]["name"] == "lemon.io")
-        check("jobs.fetch_errors_say_what_to_do",
-              "Use browser" in _jb._explain_fetch_error(
-                  "HTTPStatusError: Client error '403 Forbidden'")
-              and "Use browser" in _jb._explain_fetch_error(
-                  "RemoteProtocolError: Server disconnected")
-              and "repaired" in _jb._explain_fetch_error(
-                  "UnsupportedProtocol: missing an 'http://' protocol")
-              and "isn't there" in _jb._explain_fetch_error(
-                  "HTTPStatusError: 404 Not Found"))
-        check("jobs.sends_browser_headers",
-              "Mozilla/5.0" in _jb.BROWSER_HEADERS["User-Agent"]
-              and "Accept-Language" in _jb.BROWSER_HEADERS)
-        # a refusal should escalate to the real browser on its own
-        import agent.portal as _jbpt
-        _jbcalls = []
-
-        def _jbblocked(u):
-            _jbcalls.append("direct")
-            raise RuntimeError("Client error '403 Forbidden'")
-
-        class _JBDrv:
-            def open(self, url):
-                _jbcalls.append("browser")
-                return {"u": url}
-
-            def html(self, page):
-                return ("<html><body><a href='/jobs/1'>Senior Data "
-                        "Engineer</a><a href='/jobs/2'>BI Analyst</a>"
-                        "</body></html>")
-
-            def close(self, keep_open=True): pass
-        _jbprev3 = _jb.JOB_FETCHER
-        _jb.JOB_FETCHER = _jbblocked
-        _jbpt.DRIVER = _JBDrv()
-        _jb.save_search_config({"queries": [], "exclude": [],
-                                "locations": [], "remote_only": False,
-                                "require_email": False})
-        try:
-            _jbesc = _jb.search_url("careers24.com")
-            check("jobs.a_blocked_site_escalates_to_the_browser",
-                  _jbcalls == ["direct", "browser"]
-                  and _jbesc["ok"] and _jbesc["total"] == 2
-                  and _jbesc["how"] == "browser"
-                  and _jbesc["url"].startswith("https://"))
-        finally:
-            _jbpt.DRIVER = None
-            _jb.JOB_FETCHER = _jbprev3
-        _jb.save_job_sources(_jbkeep2)
-
-        check("jobs.rejects_something_that_is_not_a_url",
-              _jb.search_url("just some words")["ok"] is False)
-        check("jobs.any_page_can_become_a_source",
-              _jb.add_job_source("Acme careers",
-                                 "https://acme.co.za/careers",
-                                 "html")["ok"] is True)
-        _jb.remove_job_source("Acme careers")
-
-        # --- an empty profile is one problem, not forty ------------------
-        _jbprof_before = _jb.profile()
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "banned_claims": [],
-                         "ignored_roles": []})
-        _jb.save_profile({"summary": "", "skills": [], "technologies": [],
-                          "employers": [], "achievements": [],
-                          "years_experience": {}})
-        _jb.add_roles([{"title": f"Role {i}", "company": f"C{i}",
-                        "summary": "x"} for i in range(9)])
-        for _r in _jb.roles():
-            _b = "I have deep Databricks and Azure experience across 8 years."
-            _jb.update_role(_r["key"], stage="drafted",
-                            draft={"subject": "A", "body": _b,
-                                   "check": _jb.check_draft(_b, _r)})
-        _jbep = _jb.held_claims()
-        check("jobs.an_empty_profile_is_reported_as_one_problem",
-              _jbep["profile_empty"] is True and _jbep["count"] == 9
-              and _jbep["distinct"] == 0 and _jbep["claims"] == []
-              and _jbep["would_be_claims"] > 0)
-        import agent.dashboard as _jbd2
-        check("dashboard.names_the_empty_profile_rather_than_the_symptoms",
-              any("profile is empty" in i["title"]
-                  and "build my job profile" in i["why"]
-                  for i in _jbd2._job_items()))
-        _jb.save_profile(_jbprof_before)
-        for _r in _jb.roles():
-            _d = _r["draft"]
-            _d["check"] = _jb.check_draft(_d["body"], _r)
-            _jb.update_role(_r["key"], draft=_d)
-        _jbep2 = _jb.held_claims()
-        check("jobs.with_a_profile_the_real_claims_appear",
-              _jbep2["profile_empty"] is False and _jbep2["distinct"] > 0
-              and any(c["term"] in ("Azure", "Databricks")
-                      for c in _jbep2["claims"]))
-        _jb.save_roles([])
-
-        # --- finding boards, and proving they work before adding them ----
-        import agent.boards as _bd
-        import agent.portal as _bdp
-        _jb.save_profile({**_jb.profile(),
-                          "skills": ["Python", "SQL"],
-                          "technologies": ["Power BI", "Databricks"],
-                          "target_roles": ["Data Engineer"],
-                          "location": "Johannesburg",
-                          "locations_ok": ["Remote", "South Africa"]})
-        _jb.save_job_sources([])
-        check("boards.reads_what_you_do_and_where_you_can_work",
-              "data" in _bd.profile_focus(_jb.profile())
-              and {"south africa", "worldwide"}
-              <= set(_bd.profile_regions(_jb.profile())))
-        _bds = _bd.suggest()
-        check("boards.suggests_only_places_you_could_work",
-              len(_bds) >= 5 and all(b["why"] for b in _bds)
-              and all(any(r in _bd.profile_regions(_jb.profile())
-                          for r in b["regions"]) for b in _bds))
-        _bd.CATALOGUE.append({"name": "USA Only", "kind": "rss",
-                              "url": "https://usa/x",
-                              "regions": ["united states"],
-                              "focus": ["data"], "about": "US roles"})
-        check("boards.excludes_somewhere_you_cannot_work",
-              not any(b["name"] == "USA Only" for b in _bd.suggest()))
-        _bd.CATALOGUE.pop()
-        # a board is only worth adding if it actually returns roles
-        _BDFEED = ('<?xml version="1.0"?><rss><channel><item><title>Senior '
-                   'Data Engineer</title><link>https://x/1</link>'
-                   '<description>d</description></item></channel></rss>')
-        _BDCATS = ('<html><body><a href="/jobs">All jobs</a>'
-                   '<a href="/careers">Vacancies</a></body></html>')
-
-        def _bdfetch(u):
-            if "good" in u:
-                return _BDFEED
-            if "empty" in u:
-                return _BDCATS
-            raise RuntimeError("403 Forbidden")
-
-        class _BDDead:
-            def open(self, u):
-                raise RuntimeError("no browser here")
-
-            def html(self, p):
-                return ""
-
-            def close(self, keep_open=True):
-                pass
-        _bdprev, _jb.JOB_FETCHER = _jb.JOB_FETCHER, _bdfetch
-        _bdprevd, _bdp.DRIVER = _bdp.DRIVER, _BDDead()
-        try:
-            check("boards.a_working_feed_validates",
-                  _bd.validate("https://good/f", "rss")["ok"] is True)
-            _bdv = _bd.validate("https://empty/f", "html")
-            check("boards.a_page_of_category_links_is_rejected",
-                  _bdv["ok"] is False
-                  and "built in the browser" in _bdv["why"])
-            check("boards.a_blocking_site_is_rejected_with_a_reason",
-                  bool(_bd.validate("https://blocked/f", "rss").get("why")))
-            _bd.CATALOGUE.insert(0, {
-                "name": "Good Board", "kind": "rss", "url": "https://good/f",
-                "regions": ["south africa", "worldwide"],
-                "focus": ["data", "software", "analytics"], "about": "x"})
-            _bd.CATALOGUE.insert(1, {
-                "name": "Blocked Board", "kind": "rss",
-                "url": "https://blocked/f",
-                "regions": ["south africa", "worldwide"],
-                "focus": ["data", "software", "analytics"], "about": "x"})
-            try:
-                _bdr = _bd.auto_add(limit=2)
-                check("boards.only_what_works_is_added",
-                      any(a["name"] == "Good Board" for a in _bdr["added"])
-                      and any(x["name"] == "Blocked Board" and x["why"]
-                              for x in _bdr["rejected"])
-                      and any(s2["name"] == "Good Board"
-                              for s2 in _jb.job_sources()))
-                check("boards.reports_what_it_found_and_is_honest_about_visas",
-                      _bdr["added"][0]["found"] >= 1
-                      and _bdr["added"][0]["sample"]
-                      and "isn't something this can check" in _bdr["note"])
-            finally:
-                _bd.CATALOGUE.pop(0)
-                _bd.CATALOGUE.pop(0)
-            _jbprof2 = _jb.profile()
-            _jb.save_profile({"skills": [], "technologies": [],
-                              "target_roles": []})
-            check("boards.an_empty_profile_is_refused_with_guidance",
-                  _bd.auto_add()["ok"] is False)
-            _jb.save_profile(_jbprof2)
-        finally:
-            _jb.JOB_FETCHER = _bdprev
-            _bdp.DRIVER = _bdprevd
-
-        # --- running without you ----------------------------------------
-        #
-        # From a real machine: 70 drafts held, 0 sent, and no way to see WHICH
-        # step was blocking. Every piece existed; none of them joined up.
-        _jb.save_profile({**_jb.profile(),
-                          "target_roles": ["Data Engineer", "BI Consultant"],
-                          "technologies": ["Power BI", "Databricks"],
-                          "skills": ["Python", "SQL"]})
-        check("jobs.knows_what_to_search_for_without_being_told",
-              _jb.derive_queries()[:2] == ["Data Engineer", "BI Consultant"]
-              and _jb.derive_queries({"technologies": ["Power BI"],
-                                      "skills": ["SQL"]})[:2]
-              == ["Power BI", "SQL"])
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([
-            {"title": "Senior Data Engineer (Remote)", "company": "Acme",
-             "url": "https://a/1", "summary": "x"},
-            {"title": "Data Engineer", "company": "Acme", "url": "https://b/1",
-             "summary": "a longer advert", "apply_email": "jobs@acme.io"},
-            {"title": "Data Engineer III", "company": "Acme",
-             "url": "https://c/1", "summary": "x"},
-            {"title": "BI Consultant", "company": "Globex",
-             "url": "https://d/1", "summary": "x"}])
-        _jbd3 = _jb.dedupe_roles()
-        check("jobs.the_same_vacancy_on_three_boards_is_one_vacancy",
-              _jbd3["ok"] and _jbd3["removed"] == 2 and len(_jb.roles()) == 2)
-        check("jobs.dedupe_keeps_the_copy_it_can_apply_to",
-              [r for r in _jb.roles()
-               if r["company"] == "Acme"][0].get("apply_email")
-              == "jobs@acme.io"
-              and _jb.dedupe_roles()["ok"] is False)
-        # the free screen, before anything is paid for
-        check("jobs.prescreens_for_free_before_paying_to_score",
-              _jb.prescreen({"title": "Data Engineer",
-                             "summary": "Python, SQL, Power BI, Databricks, "
-                                        "dbt on Azure"})["pass"] is True
-              and _jb.prescreen({"title": "SRE",
-                                 "summary": "Kubernetes, Terraform, Go, "
-                                            "Prometheus, Istio, ArgoCD"}
-                                )["pass"] is False)
-        check("jobs.a_vague_advert_is_not_judged_on_keywords",
-              _jb.prescreen({"title": "Engineer",
-                             "summary": "Join our team."})["pass"] is True)
-        # and the blockage is visible rather than deduced
-        _jb.save_roles([])
-        _jb.add_roles([{"title": f"Role {i}", "company": f"C{i}",
-                        "summary": "x", "url": f"https://x/{i}"}
-                       for i in range(6)])
-        for _r in _jb.roles():
-            _jb.update_role(_r["key"], stage="drafted",
-                            draft={"body": "b",
-                                   "check": {"ok": False,
-                                             "problems": [{"detail": "x"}]}})
-        _jbp2 = _jb.pipeline()
-        check("jobs.the_pipeline_shows_where_it_is_stuck",
-              _jbp2["stages"]["held"] == 6 and _jbp2["total"] == 6
-              and _jbp2["blocked_at"] == "held"
-              and "can't support" in _jbp2["why"]
-              and _jbp2["sent"] == 0)
-
-        # --- CV work: match, tailor, prepare — inventing nothing ---------
-        import agent.cv as _cvm
-        _CVPROF = {"full_name": "Itumeleng Nthite", "email": "i@x.com",
-                   "phone": "+27 82", "location": "Johannesburg",
-                   "skills": ["Python", "SQL"],
-                   "technologies": ["Power BI", "Databricks"],
-                   "employers": ["Standard Bank"],
-                   "achievements": ["Built a Medallion pipeline with "
-                                    "regression testing"],
-                   "years_experience": {"BI": "8"}}
-        _CVROLE = {"title": "Senior Data Engineer", "company": "Acme",
-                   "summary": "We need Python, SQL, dbt and Airflow on Azure "
-                              "Databricks. 5+ years required. Snowflake a "
-                              "plus. BSc preferred."}
-        _cvs = _cvm.ats_scan(_CVROLE, _CVPROF)
-        check("cv.ats_scan_matches_what_you_can_evidence",
-              {"python", "sql", "databricks"} <= set(_cvs["matched"])
-              and {"dbt", "airflow", "snowflake"} <= set(_cvs["missing"]))
-        check("cv.ats_scan_reads_years_and_degree",
-              _cvs["years_required"] == 5 and _cvs["years_ok"] is True
-              and _cvs["degree_mentioned"] is True)
-        check("cv.ats_scan_is_honest_about_what_it_measures",
-              "not whether you'd do the job" in _cvs["note"]
-              and any("dbt" in a for a in _cvs["advice"]))
-        _CVGOOD = {"headline": "Data Engineer — Python, SQL, Databricks",
-                   "summary": "Eight years in BI.",
-                   "key_skills": ["Python", "SQL", "Power BI", "Databricks"],
-                   "experience": [{"employer": "Standard Bank",
-                                   "role": "Tech Lead",
-                                   "bullets": ["Built a Medallion pipeline "
-                                               "with regression testing"]}],
-                   "left_out": ["dbt", "Airflow"]}
-        _CVBAD = {**_CVGOOD,
-                  "key_skills": ["Python", "Kubernetes", "Snowflake"],
-                  "experience": [{"employer": "Google", "role": "Engineer",
-                                  "bullets": ["10 years of Airflow"]}]}
-
-        class _CVBrain:
-            def __init__(self, payload):
-                self.p = payload
-
-            def chat(self, m, s, t=None, **kw):
-                return _blk(json.dumps(self.p))
-        _cvr = _cvm.tailor_cv(_CVROLE, _CVPROF, _CVBrain(_CVGOOD))
-        check("cv.an_honest_tailored_cv_passes",
-              _cvr["ok"] and _cvr["cv"]["check"]["ok"] is True
-              and _cvr["cv"]["left_out"] == ["dbt", "Airflow"])
-        _cvr2 = _cvm.tailor_cv(_CVROLE, _CVPROF, _CVBrain(_CVBAD))
-        _cvp = {p["term"].lower()
-                for p in _cvr2["cv"]["check"]["problems"]}
-        check("cv.invented_tools_employers_and_years_are_caught",
-              "kubernetes" in _cvp and "snowflake" in _cvp
-              and "google" in _cvp
-              and any("10 year" in x for x in _cvp))
-        _cvtxt = _cvm.render_cv(_cvr["cv"], _CVPROF)
-        check("cv.renders_a_usable_document",
-              "Itumeleng Nthite" in _cvtxt and "i@x.com" in _cvtxt
-              and all(h in _cvtxt for h in
-                      ("SUMMARY", "KEY SKILLS", "EXPERIENCE")))
-        _cvsave = _cvm.save_cv(_CVROLE, _cvr["cv"], _CVPROF)
-        check("cv.is_saved_where_you_can_attach_it",
-              _cvsave["ok"] and _RPath(_cvsave["path"]).exists())
-        _CVIV = {"questions": [
-            {"question": "Describe a pipeline you built.",
-             "answer_from_profile": "The Medallion pipeline at Standard Bank.",
-             "gap": ""},
-            {"question": "How have you used dbt?",
-             "answer_from_profile": "", "gap": "No dbt in your profile."}],
-            "ask_them": ["Who owns data quality?"]}
-        _cviv = _cvm.interview_prep(_CVROLE, _CVPROF, _CVBrain(_CVIV))
-        check("cv.interview_prep_cites_your_evidence_and_names_gaps",
-              _cviv["ok"] and len(_cviv["questions"]) == 2
-              and _cviv["gaps"] == ["No dbt in your profile."]
-              and _cviv["ask_them"] == ["Who owns data quality?"])
-
-        # --- category links are not vacancies ----------------------------
-        #
-        # From the real trail: "Data analysts @ —", "Data analyst jobs @ —",
-        # "Power BI specialists @ —". Those are links to MORE LISTINGS that
-        # the HTML extractor read as adverts; each was tracked and drafted
-        # against, producing letters addressed to nobody.
-        check("jobs.category_links_are_not_roles",
-              all(_jb._is_category_link(x) for x in
-                  ("Data analysts", "Data analyst jobs",
-                   "Power BI specialists", "Data Analyst jobs in Gauteng",
-                   "All jobs", "Browse vacancies", "Latest opportunities")))
-        check("jobs.real_adverts_still_survive",
-              not any(_jb._is_category_link(t2, c2) for t2, c2 in (
-                  ("Senior Data Engineer", "Acme"),
-                  ("Data Engineer III", ""),
-                  ("Analytics Engineer (Contract)", "Globex"),
-                  ("Business Intelligence Specialist", "Initech"),
-                  ("Data Analyst, Reporting Partnerships", "Doximity"))))
-        check("jobs.something_with_nothing_to_apply_to_is_refused",
-              _jb._looks_like_a_real_role(
-                  {"title": "Senior Data Engineer"}) is False
-              and _jb._looks_like_a_real_role(
-                  {"title": "Senior Data Engineer",
-                   "url": "https://x/1"}) is True)
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jbadd = _jb.add_roles([
-            {"title": "Data analysts", "summary": "x"},
-            {"title": "Data analyst jobs", "summary": "x"},
-            {"title": "Senior Data Engineer", "company": "Acme",
-             "url": "https://x/1"}])
-        check("jobs.only_real_vacancies_are_tracked",
-              _jbadd["added"] == 1
-              and _jb.roles()[0]["title"] == "Senior Data Engineer")
-        # and the ones already tracked can be cleaned out
-        _jb.save_roles(_jb.roles() + [
-            {"key": "junk-1", "title": "Power BI specialists", "stage": "found"},
-            {"key": "junk-2", "title": "Data analyst jobs", "stage": "found"}])
-        _jbpr = _jb.prune_junk()
-        check("jobs.existing_junk_can_be_pruned",
-              _jbpr["ok"] and _jbpr["removed"] == 2
-              and len(_jb.roles()) == 1
-              and _jb.prune_junk()["ok"] is False)
-
-        # --- removing roles ---------------------------------------------
-        #
-        # The subtlety: deleting a role you've decided against is pointless if
-        # the next scan finds it again tomorrow, so removal is remembered.
-        # Housekeeping (clearing out closed roles) is not a decision about the
-        # role, so it isn't.
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([
-            {"title": "Data Engineer", "company": "Acme", "summary": "SQL"},
-            {"title": "BI Lead", "company": "Globex", "summary": "Power BI"},
-            {"title": "Analytics Engineer", "company": "Initech",
-             "summary": "dbt"}])
-        _jbk = _jb.roles()[0]["key"]
-        _jbrm = _jb.remove_role(_jbk)
-        check("jobs.a_role_can_be_removed",
-              _jbrm["ok"] and len(_jb.roles()) == 2
-              and _jb.remove_role("ghost")["ok"] is False)
-        _jb.add_roles([{"title": "Data Engineer", "company": "Acme",
-                        "summary": "SQL"}])
-        check("jobs.a_removed_role_does_not_come_back",
-              _jbk in _jb.ignored_keys() and len(_jb.roles()) == 2)
-        _jb.unignore(_jbk)
-        _jb.add_roles([{"title": "Data Engineer", "company": "Acme",
-                        "summary": "SQL"}])
-        check("jobs.a_removal_can_be_undone",
-              any(x["key"] == _jbk for x in _jb.roles()))
-        _jb.update_role(_jb.roles()[0]["key"], stage="closed")
-        _jbign = len(_jb.ignored_keys())
-        _jbcl = _jb.clear_roles(stage="closed")
-        check("jobs.bulk_clear_by_stage_is_not_a_rejection",
-              _jbcl["ok"] and _jbcl["removed"] == 1
-              and len(_jb.ignored_keys()) == _jbign)
-        check("jobs.refuses_to_wipe_everything_blindly",
-              _jb.clear_roles()["ok"] is False)
-        _jbkeys = [x["key"] for x in _jb.roles()]
-        check("jobs.roles_can_be_removed_in_bulk",
-              _jb.remove_roles(_jbkeys)["ok"] and _jb.roles() == []
-              and _jb.remove_roles(["nope"])["ok"] is False)
-        # leave the fixture usable for the blocks that follow — they need
-        # roles to draft against, and this one deliberately empties the list
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([
-            {"title": "Data Engineer", "company": "Acme", "summary": "x",
-             "apply_email": "a@a.io"},
-            {"title": "Analytics Engineer", "company": "Globex",
-             "summary": "x", "apply_email": "b@b.io"},
-            # deliberately no address: later blocks rely on there being a
-            # portal-only role to hold back
-            {"title": "BI Lead", "company": "Initech", "summary": "x"}])
-
-        # --- reviewing what the guard held back -------------------------
-        #
-        # Reported from real use: "9 draft(s) make a claim I couldn't source"
-        # with no way to see WHICH claims. The guard was right to hold them;
-        # it just gave no handle on the door.
-        for _r in _jb.roles():
-            _jb.update_role(_r["key"], stage="found", draft=None)
-        _jb.save_profile({"summary": "FX desk tech lead",
-                          "skills": ["Python", "SQL"],
-                          "technologies": ["Power BI"],
-                          "employers": ["Standard Bank"],
-                          "target_roles": ["Data Engineer"],
-                          "achievements": ["Built a Medallion pipeline"],
-                          "years_experience": {"BI": "8"}})
-        _jbbodies = [
-            "I have used Databricks and dbt extensively on pipelines.",
-            "I built dbt models at scale for analytics teams.",
-            "I led BI delivery using Power BI and SQL."]
-        for _r, _body in zip(_jb.roles()[:3], _jbbodies):
-            _jb.update_role(_r["key"], stage="drafted",
-                            draft={"subject": "App", "body": _body,
-                                   "check": _jb.check_draft(_body, _r)})
-        _jbh = _jb.held_claims()
-        # the messages use curly quotes; extracting the term from them with
-        # \u escapes inside a RAW string matched a literal backslash, so every
-        # term came back empty and the tab reported "9 held / 0 to decide"
-        check("jobs.extracts_the_claimed_term_from_the_message",
-              _jb._claim_term(
-                  {"detail": "mentions \u201cDatabricks\u201d, which isn't "
-                             "in your profile"}) == "Databricks"
-              and _jb._claim_term(
-                  {"detail": "claims '8 years' - not in your profile"})
-              == "8 years"
-              and _jb._claim_term({"detail": "no quotes here"}) == "")
-        # the drafts themselves must come back, with what blocks each one
-        _jbhd = _jb.held_claims()
-        # --- job alerts: the route the boards actually support -----------
-        #
-        # PNet, Careers24 and CareerJunction all block automated readers, and
-        # are entitled to. All of them will email you the same listings if you
-        # save a search as an alert. That route doesn't break when they change
-        # their markup, and it's what they want you to use.
-        import agent.jobalerts as _ja
-        _JAPNET = {"from": "alerts@pnet.co.za",
-                   "subject": "5 new Data Engineer jobs",
-                   "html": '<html><body>'
-                           '<a href="https://www.pnet.co.za/unsubscribe">'
-                           'Unsubscribe</a>'
-                           '<a href="https://www.pnet.co.za/jobs/1">Senior '
-                           'Data Engineer</a> - Standard Bank, Johannesburg'
-                           '<a href="https://www.pnet.co.za/jobs/2">BI '
-                           'Developer</a> at Discovery, Sandton'
-                           '<a href="https://www.pnet.co.za/jobs/1">Senior '
-                           'Data Engineer</a>'
-                           '<a href="https://www.pnet.co.za/s">View all jobs'
-                           '</a>'
-                           '<a href="https://facebook.com/pnet">Follow us</a>'
-                           '</body></html>'}
-        _jar = _ja.parse_alert(_JAPNET)
-        check("alerts.reads_a_board_alert_email",
-              _jar["board"] == "PNet" and _jar["count"] == 2
-              and _jar["roles"][0]["url"].endswith("/jobs/1"))
-        check("alerts.ignores_navigation_social_and_unsubscribe",
-              not any(x["title"] in ("View all jobs", "Follow us",
-                                     "Unsubscribe")
-                      for x in _jar["roles"]))
-        check("alerts.picks_up_the_employer_without_swallowing_the_city",
-              _jar["roles"][0]["company"] == "Standard Bank")
-        _jau = _ja.parse_alert({"from": "jobs@someboard.io",
-                                "html": '<a href="https://someboard.io/j/9">'
-                                        'Analytics Engineer</a> at Acme'})
-        check("alerts.an_unknown_board_still_works",
-              _jau["count"] == 1 and _jau["board"] == "someboard.io")
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jai = _ja.ingest([_JAPNET, _jau and {"from": "jobs@someboard.io",
-                                              "html": '<a href="https://s.io/9">'
-                                                      'Analytics Engineer</a>'},
-                           {"from": "x@y.com", "html": "<p>nothing</p>"}])
-        check("alerts.ingests_a_batch_into_tracked_roles",
-              _jai["ok"] and _jai["added"] == 3
-              and _jai["by_board"].get("PNet") == 2
-              and _jai["messages_without_jobs"] == 1)
-        check("alerts.an_empty_batch_is_refused_clearly",
-              _ja.ingest([])["ok"] is False)
-        # a parser with nothing feeding it is not a feature: three ways in
-        _JARAW = ("From: alerts@pnet.co.za\nSubject: 4 new jobs\n\n"
-                  '<html><body><a href="https://www.pnet.co.za/jobs/7">Lead '
-                  'Data Engineer</a> - Nedbank'
-                  '<a href="https://www.pnet.co.za/unsubscribe">Unsubscribe'
-                  '</a></body></html>')
-        _japaste = _ja.from_raw(_JARAW)
-        check("alerts.a_pasted_email_is_enough",
-              _japaste["count"] == 1 and _japaste["board"] == "PNet"
-              and _japaste["subject"] == "4 new jobs")
-        check("alerts.a_fragment_without_headers_still_parses",
-              _ja.from_raw('<a href="https://x.io/1">Senior BI Developer</a> '
-                           'at Acme', "jobs@x.io")["count"] == 1)
-        import email.message as _jaem
-        _jam = _jaem.EmailMessage()
-        _jam["From"] = "alerts@careers24.com"
-        _jam["Subject"] = "Your job matches"
-        _jam.set_content("plain")
-        _jam.add_alternative('<a href="https://careers24.com/j/3">Data '
-                             'Warehouse Engineer</a> at Absa', subtype="html")
-        _jad = _ja.alerts_dir()
-        (_jad / "alert1.eml").write_bytes(bytes(_jam))
-        _jaf = _ja.ingest_folder()
-        check("alerts.an_eml_dropped_in_the_folder_is_read",
-              _jaf["ok"] and _jaf["added"] == 1
-              and _jaf["by_board"].get("Careers24") == 1)
-        check("alerts.processed_files_are_kept_not_deleted",
-              (_jad / "processed" / "alert1.eml").exists())
-        check("alerts.an_empty_folder_says_where_to_put_them",
-              "No .eml files in" in _ja.ingest_folder()["error"])
-        check("alerts.the_guide_covers_the_boards_that_block_us",
-              {g["board"] for g in _ja.setup_guide()}
-              >= {"PNet", "Careers24", "CareerJunction"})
-        # pacing: a reader, not a load generator
-        _jbgap, _jb.POLITE_GAP = _jb.POLITE_GAP, 0.3
-        try:
-            _t0 = _time.time()
-            _jb._pace("https://paced.example/1")
-            _jb._pace("https://paced.example/2")
-            _jbsame = _time.time() - _t0
-            _t1 = _time.time()
-            _jb._pace("https://other.example/1")
-            _jbother = _time.time() - _t1
-            check("jobs.requests_to_one_host_are_paced",
-                  _jbsame >= 0.28 and _jbother < 0.1)
-        finally:
-            _jb.POLITE_GAP = _jbgap
-
-        # --- the archive, and applying by hand ---------------------------
-        #
-        # Closed roles cluttered a list they were no longer part of, but
-        # deleting them loses the record — you want to know you'd already
-        # seen a company. And the pipeline assumed it did the applying, so a
-        # role you applied to yourself sat looking untouched: no follow-up
-        # clock, and a real chance of applying twice.
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb._save_archive([])
-        _jb.add_roles([{"title": f"Data Engineer {i}", "company": f"Firm {i}",
-                        "url": f"https://x/{i}", "summary": "Python SQL",
-                        "apply_email": f"{i}@x.io"} for i in range(6)])
-        _arr = _jb.roles()
-        _jb.mark_closed(_arr[0]["key"], "the page says closed", expired=True)
-        _jb.mark_closed(_arr[1]["key"], "not interested")
-        _jb.update_role(_arr[2]["key"], stage="applied",
-                        applied_at="2026-06-01 09:00 UTC",
-                        added_at="2026-06-01 09:00 UTC")
-        _ara = _jb.archive_closed()
-        check("jobs.archiving_moves_closed_roles_without_deleting_them",
-              _ara["ok"] and _ara["moved"] == 2 and len(_jb.roles()) == 4
-              and len(_jb.archived()) == 2
-              and _jb.archive_closed()["ok"] is False)
-        check("jobs.the_archive_records_why_each_one_went",
-              all(x["why"] for x in _jb.archive_summary()["roles"]))
-        _ara2 = _jb.archive_closed(also_applied_before_days=30)
-        check("jobs.old_applications_can_be_swept_too",
-              _ara2["ok"] and _ara2["moved"] == 1
-              and "no reply after 30 days"
-              in str(_jb.archive_summary()["by_reason"]))
-        _ark = _jb.archived()[0]["key"]
-        _aru = _jb.unarchive(_ark)
-        check("jobs.an_archived_role_can_come_back",
-              _aru["ok"] and any(r["key"] == _ark for r in _jb.roles())
-              and _jb.get_role(_ark)["stage"] == "found"
-              and not _jb.get_role(_ark).get("expired")
-              and not any(x["key"] == _ark for x in _jb.archived())
-              and _jb.unarchive("nope")["ok"] is False)
-        # applying by hand
-        _arlive = [r for r in _jb.roles()
-                   if _jb.role_state(r)["bucket"]
-                   not in ("applied", "waiting")][0]
-        _arm = _jb.mark_applied(_arlive["key"], how="on their portal")
-        check("jobs.an_application_you_made_yourself_is_recorded",
-              _arm["ok"]
-              and _jb.get_role(_arlive["key"])["stage"] == "applied"
-              and _jb.get_role(_arlive["key"])["applied_how"]
-              == "on their portal"
-              and _jb.role_state(
-                  _jb.get_role(_arlive["key"]))["bucket"] == "applied")
-        check("jobs.it_will_not_let_you_apply_twice",
-              _jb.mark_applied(_arlive["key"])["ok"] is False
-              and _jb.mark_applied("ghost")["ok"] is False)
-        check("jobs.a_hand_application_counts_against_the_day",
-              _jb._sent_today() >= 1)
-
-        # --- one answer to "what state is this role in" ------------------
-        #
-        # The same bug three times: the Held tab said 9 while the list showed
-        # nothing; the dashboard reported "needs checking" for claims already
-        # decided; the tab said 15 held beside an empty panel. Each time a
-        # COUNT was computed one way and a LIST another. Four callers now read
-        # role_state(), and this asserts they agree — which is the test that
-        # would have caught all three.
-        _jb.save_auto_config({"enabled": True, "dry_run": True,
-                              "min_score": 75, "daily_cap": 10})
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([{"title": f"Data Engineer {i}", "company": f"Firm {i}",
-                        "url": f"https://x/{i}",
-                        "summary": "Python SQL Power BI"} for i in range(10)])
-        _agr = _jb.roles()
-        _agok = {"body": "b", "check": {"ok": True}}
-        _agbad = {"body": "b", "check": {"ok": False,
-                                         "problems": [{"detail": "x"}]}}
-        _jb.update_role(_agr[0]["key"], stage="drafted",
-                        apply_email="a@a.io", fit={"score": 88},
-                        draft=dict(_agok))
-        _jb.update_role(_agr[1]["key"], stage="drafted",
-                        apply_email="b@b.io", fit={"score": 88},
-                        draft=dict(_agok))
-        _jb.update_role(_agr[2]["key"], stage="drafted", fit={"score": 88},
-                        draft=dict(_agbad))
-        _jb.update_role(_agr[3]["key"], stage="drafted", fit={"score": 88},
-                        draft=dict(_agbad))
-        _jb.update_role(_agr[4]["key"], stage="drafted",
-                        apply_email="e@e.io", fit={"score": 88},
-                        draft={**_agok, "needs_redraft": True,
-                               "redraft_reason": "says Xactly"})
-        _jb.update_role(_agr[5]["key"], stage="drafted", fit={"score": 88},
-                        draft=dict(_agok))
-        _jb.update_role(_agr[6]["key"], fit={"score": 30})
-        _jb.update_role(_agr[7]["key"], stage="applied")
-        _jb.update_role(_agr[8]["key"], stage="closed", expired=True)
-
-        _agc = _jb.counts()
-        _agpipe = _jb.pipeline()
-        _agheld = _jb.held_claims()
-        _agprev = _jb.auto_preview()
-        _agheld_n = _agc["held"] + _agc["needs_redraft"]
-        check("jobs.every_role_lands_in_exactly_one_bucket",
-              sum(_agc.values()) == len(_jb.roles()) == 10)
-        check("jobs.the_pipeline_agrees_with_the_counts",
-              _agpipe["stages"]["held"] == _agheld_n
-              and _agpipe["stages"]["found"] == _agc["found"])
-        # the pairing that broke three times
-        check("jobs.the_held_tab_agrees_with_the_held_count",
-              _agheld["count"] == _agheld_n
-              and len(_agheld["held"]) == _agheld_n)
-        check("jobs.the_preview_agrees_with_both",
-              len(_agprev["would_hold"]) == _agheld_n
-              and len(_agprev["would_send"]) == _agc["drafted"])
-        # a draft the app flagged for rewriting must never be sent — the
-        # preview counts by the same gate the run uses, so this holds both
-        check("jobs.a_draft_flagged_for_rewriting_is_never_sent",
-              all(w["title"] != "Data Engineer 4"
-                  for w in _agprev["would_send"]))
-        check("jobs.only_a_sendable_role_is_marked_sendable",
-              [s["title"] for s in _jb.states() if s["can_send"]]
-              == ["Data Engineer 0", "Data Engineer 1"])
-        check("jobs.every_state_explains_itself",
-              all(s["why"] for s in _jb.states()))
-
-        # --- learning from what actually happened ------------------------
-        #
-        # The pipeline acted and never looked back. The hard part isn't the
-        # counting — it's refusing to over-read it. Five applications with two
-        # replies is a 40% rate AND completely consistent with a board that
-        # converts at 8%. A tool that prints "40%" there is worse than silent,
-        # because you'll act on it.
-        import agent.outcomes as _oc
-
-        def _ocrole(src, score, stage, how="by email", _n=[0]):
-            _n[0] += 1
-            return {"key": f"o{_n[0]}", "title": f"Role {_n[0]}",
-                    "source": src, "fit": {"score": score}, "stage": stage,
-                    "applied_how": how,
-                    "applied_at": "2026-08-01 09:00 UTC",
-                    "replied_at": ("2026-08-06 09:00 UTC"
-                                   if stage != "applied" else "")}
-
-        _p1, _lo1, _hi1 = _oc.wilson(1, 1)
-        _p2, _lo2, _hi2 = _oc.wilson(2, 5)
-        check("outcomes.a_rate_carries_the_range_it_could_really_be",
-              _p1 == 1.0 and _lo1 < 0.3
-              and abs(_p2 - 0.4) < 0.01 and _lo2 < 0.2 and _hi2 > 0.7)
-        # too few to say anything
-        _ocfew = ([_ocrole("LinkedIn", 90, "responded") for _ in range(2)]
-                  + [_ocrole("LinkedIn", 85, "applied") for _ in range(3)])
-        _ocf = _oc.findings(_oc.analyse(_ocfew))
-        check("outcomes.it_refuses_to_conclude_from_five_applications",
-              _ocf[0]["kind"] == "not yet"
-              and "too few" in _ocf[0]["what"]
-              and "more" in _ocf[0]["why"])
-        # a real, separated difference
-        _ocstrong = ([_ocrole("Remotive", 90, "responded") for _ in range(20)]
-                     + [_ocrole("Remotive", 88, "applied") for _ in range(20)]
-                     + [_ocrole("PNet", 60, "applied") for _ in range(30)])
-        _ockinds = {f["kind"] for f in _oc.findings(_oc.analyse(_ocstrong))}
-        check("outcomes.a_real_difference_is_stated_with_confidence",
-              "a source is better" in _ockinds and "scoring works" in _ockinds)
-        # overlapping rates must be called unproven, not reported as a finding
-        _ocmix = ([_ocrole("X", 90, "responded" if i < 5 else "applied")
-                   for i in range(20)]
-                  + [_ocrole("X", 60, "responded" if i < 5 else "applied")
-                     for i in range(20)])
-        _ocmixf = [f for f in _oc.findings(_oc.analyse(_ocmix))
-                   if "scoring" in f["kind"]]
-        check("outcomes.overlapping_rates_are_called_unproven",
-              _ocmixf and _ocmixf[0]["kind"] == "scoring unproven"
-              and _ocmixf[0]["confident"] is False
-              and "Don't raise" in _ocmixf[0]["do"])
-        # the finding that matters most: a score that predicts the opposite
-        _ocback = ([_ocrole("X", 90, "responded" if i < 1 else "applied")
-                    for i in range(24)]
-                   + [_ocrole("X", 60, "responded" if i < 16 else "applied")
-                      for i in range(24)])
-        _ocbf = [f for f in _oc.findings(_oc.analyse(_ocback))
-                 if "scoring" in f["kind"]]
-        check("outcomes.a_backwards_score_is_reported_not_hidden",
-              _ocbf and _ocbf[0]["kind"] == "scoring is backwards"
-              and _ocbf[0]["confident"] is True)
-        _oca = _oc.analyse(_ocstrong)
-        check("outcomes.every_row_says_whether_it_is_conclusive",
-              all("conclusive" in r and "reading" in r
-                  for r in _oca["by_source"] + _oca["by_score"]
-                  + _oca["by_method"]))
-        check("outcomes.nothing_sent_means_nothing_claimed",
-              _oc.analyse([])["sent"] == 0
-              and _oc.findings(_oc.analyse([]))[0]["kind"] == "not yet")
-
-        # --- what the next unattended run would do -----------------------
-        #
-        # The panel showed the gates and a Run button: the rules, but not the
-        # consequence. Deciding whether to turn rehearsal off is a decision
-        # about THIS list, so work it out first — locally, spending nothing.
-        _jb.save_auto_config({"enabled": True, "dry_run": True,
-                              "min_score": 75, "daily_cap": 2,
-                              "require_clean_check": True})
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([
-            {"title": "Data Engineer A", "company": "Acme",
-             "apply_email": "a@a.io", "url": "u1",
-             "summary": "Python SQL Power BI Databricks"},
-            {"title": "Data Engineer B", "company": "Beta",
-             "apply_email": "b@b.io", "url": "u2",
-             "summary": "Python SQL Power BI"},
-            {"title": "Data Engineer C", "company": "Cee",
-             "apply_email": "c@c.io", "url": "u3",
-             "summary": "Python SQL Databricks"},
-            {"title": "Portal Only", "company": "Dee", "url": "u4",
-             "summary": "Python SQL Power BI"},
-            {"title": "Bad Fit", "company": "Eee", "apply_email": "e@e.io",
-             "url": "u5",
-             "summary": "Kubernetes Terraform Go Istio ArgoCD Prometheus"},
-            {"title": "Unscored", "company": "Eff", "apply_email": "f@f.io",
-             "url": "u6", "summary": "Python SQL Power BI"}])
-        _pvr = _jb.roles()
-        # drafting always sets the stage, so the fixture must too — a draft
-        # attached to a role still marked "found" is a state the app never
-        # actually produces
-        for _r3 in _pvr[:4]:
-            _jb.update_role(_r3["key"], stage="drafted",
-                            fit={"score": 85, "verdict": "good"},
-                            draft={"subject": "App",
-                                   "body": "I used Power BI at Standard Bank.",
-                                   "check": {"ok": True, "problems": []}})
-        _jb.update_role(_pvr[2]["key"], stage="drafted",
-                        draft={"subject": "App", "body": "x",
-                               "check": {"ok": False,
-                                         "problems": [{"detail": "x"}]}})
-        _pv = _jb.auto_preview()
-        check("jobs.preview_sorts_every_role_into_what_would_happen",
-              [x["title"] for x in _pv["would_send"]]
-              == ["Data Engineer A", "Data Engineer B"]
-              and [x["title"] for x in _pv["would_hold"]]
-              == ["Data Engineer C"]
-              and _pv["no_address"] == ["Portal Only"]
-              and [x["title"] for x in _pv["screened_out"]] == ["Bad Fit"]
-              and _pv["needs_scoring"] == ["Unscored"])
-        check("jobs.preview_respects_the_daily_cap",
-              len(_pv["would_send"]) <= _pv["daily_cap"])
-        check("jobs.preview_says_plainly_what_would_happen",
-              "send 2" in _pv["summary"]
-              and "nothing leaves" in _pv["summary"])
-        _jb.save_auto_config({**_jb.auto_config(), "enabled": False})
-        check("jobs.preview_is_clear_when_auto_apply_is_off",
-              "Auto-apply is off" in _jb.auto_preview()["summary"])
-        _jb.save_auto_config({**_jb.auto_config(), "enabled": True})
-
-        # --- adverts that have closed ------------------------------------
-        #
-        # A vacancy is perishable and nothing noticed, so a role found in July
-        # looked exactly like one found this morning. The distinction that
-        # matters: a page SAYING it is closed is evidence; a page that will
-        # not load is not. Treating a 403 as "expired" would quietly delete
-        # live roles — a worse fault than leaving a dead one listed.
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": []})
-        _jb.add_roles([
-            {"title": "Closed Role", "company": "A",
-             "url": "https://closed/1", "summary": "x"},
-            {"title": "Gone Role", "company": "B", "url": "https://gone/1",
-             "summary": "x"},
-            {"title": "Blocked Role", "company": "C",
-             "url": "https://blocked/1", "summary": "x"},
-            {"title": "Open Role", "company": "D", "url": "https://open/1",
-             "summary": "x"}])
-        _EXOPEN = ("<html><body>"
-                   + "We are hiring a data engineer. " * 30 + "</body></html>")
-
-        def _exfetch(u):
-            if "closed" in u:
-                return ("<html><body>This job has closed.</body></html>")
-            if "gone" in u:
-                raise RuntimeError("HTTPStatusError: 404 Not Found")
-            if "blocked" in u:
-                raise RuntimeError("HTTPStatusError: 403 Forbidden")
-            return _EXOPEN
-        _exprev, _jb.JOB_FETCHER = _jb.JOB_FETCHER, _exfetch
-        try:
-            _exstates = {r["title"]: _jb.check_expiry(r)["state"]
-                         for r in _jb.roles()}
-            check("jobs.a_page_that_says_it_is_closed_is_closed",
-                  _exstates["Closed Role"] == "closed"
-                  and _exstates["Gone Role"] == "closed")
-            check("jobs.a_blocked_page_is_unknown_not_closed",
-                  _exstates["Blocked Role"] == "unknown"
-                  and _exstates["Open Role"] == "open")
-            _exs = _jb.sweep_expired()
-            check("jobs.a_sweep_closes_only_what_it_can_prove",
-                  {c["title"] for c in _exs["closed"]}
-                  == {"Closed Role", "Gone Role"}
-                  and any(u["title"] == "Blocked Role"
-                          for u in _exs["unknown"]))
-            _exclosed = [r for r in _jb.roles() if r.get("expired")]
-            check("jobs.an_expired_role_records_when_and_why",
-                  len(_exclosed) == 2
-                  and all(r.get("closed_at") and r.get("closed_reason")
-                          and r.get("stage") == "closed" for r in _exclosed))
-            # old and untouched is a label, not a verdict
-            _exk = [r for r in _jb.roles() if r["title"] == "Open Role"][0]
-            _jb.update_role(_exk["key"], added_at="2026-01-01 00:00 UTC",
-                            stage="found")
-            check("jobs.an_old_unapplied_advert_is_flagged_stale",
-                  _jb.looks_stale(_jb.get_role(_exk["key"])) is True)
-            _jb.update_role(_exk["key"], stage="applied")
-            check("jobs.one_you_applied_to_is_not_stale",
-                  _jb.looks_stale(_jb.get_role(_exk["key"])) is False)
-        finally:
-            _jb.JOB_FETCHER = _exprev
-        # leave roles the later blocks can draft against: this one replaces
-        # the list wholesale, and the held-drafts checks need drafted roles
-        _jb.save_roles([])
-        _jb.save_config({**_jb.load_config(), "ignored_roles": [],
-                         "banned_claims": []})
-        _jb.add_roles([
-            {"title": "Data Engineer", "company": "Acme", "summary": "x",
-             "apply_email": "a@a.io", "url": "https://x/1"},
-            {"title": "Analytics Engineer", "company": "Globex",
-             "summary": "x", "apply_email": "b@b.io", "url": "https://x/2"},
-            {"title": "BI Lead", "company": "Initech", "summary": "x",
-             "url": "https://x/3"}])
-        for _r2, _b2 in zip(_jb.roles(),
-                            ["I have used Databricks and dbt on pipelines.",
-                             "I built dbt models at scale.",
-                             "I led BI delivery using Power BI and SQL."]):
-            _jb.update_role(_r2["key"], stage="drafted",
-                            draft={"subject": "App", "body": _b2,
-                                   "check": _jb.check_draft(_b2, _r2)})
-
-        # --- an engine refusal is not a malformed request ----------------
-        #
-        # Reported from real use: fifteen identical "400 Bad Request" lines
-        # while scoring. The request was fine — the engine refused — and the
-        # provider's own wording ("invalid x-api-key") reached nobody.
-        check("jobs.engine_errors_are_explained_not_echoed",
-              "API key was rejected" in _jb._explain_engine_error(
-                  "AuthenticationError: 401 invalid x-api-key")
-              and "no credit" in _jb._explain_engine_error(
-                  "Your credit balance is too low"))
-
-        check("jobs.held_drafts_carry_their_text_and_reasons",
-              all("body" in h and "problems" in h for h in _jbhd["held"])
-              and "drafted_ready" in _jbhd)
-        check("jobs.shows_which_claims_are_holding_drafts",
-              _jbh["count"] >= 2 and _jbh["distinct"] >= 1
-              and any(c["term"] == "dbt" for c in _jbh["claims"]))
-        # the two dbt drafts may share a title in this fixture, and roles are
-        # deduped by title — assert it spans more than one draft, not a count
-        check("jobs.groups_a_claim_across_every_draft_that_makes_it",
-              len(next(c for c in _jbh["claims"]
-                       if c["term"] == "dbt")["roles"]) >= 1
-              and _jbh["count"] >= 2)
-        check("jobs.case_duplicates_are_merged",
-              len({c["term"].lower() for c in _jbh["claims"]})
-              == len(_jbh["claims"]))
-        _jbconf = _jb.confirm_claim("dbt", "technologies")
-        check("jobs.confirming_records_it_and_rechecks_locally",
-              "dbt" in _jb.profile()["technologies"]
-              and _jbconf["ok"] and "cleared" in _jbconf)
-        check("jobs.confirming_actually_frees_drafts",
-              _jb.held_claims()["count"] < _jbh["count"]
-              or _jb.held_claims()["distinct"] < _jbh["distinct"])
-        check("jobs.confirming_rejects_an_unknown_field",
-              _jb.confirm_claim("x", "nonsense")["ok"] is False)
-        # Reported from real use: dismissing a claim left it in the list and
-        # the draft still held. Recording the decision wasn't enough — the
-        # draft still says the word, so it needs rewriting, and the next
-        # draft must not bring it back.
-        _jbdis = _jb.dismiss_claim("Databricks")
-        _jbafter = _jb.held_claims()
-        check("jobs.a_dismissed_claim_is_remembered",
-              "Databricks" in _jb.banned_claims())
-        check("jobs.a_dismissed_claim_leaves_the_list",
-              "databricks" not in [c["term"].lower()
-                                   for c in _jbafter["claims"]])
-        check("jobs.dismissal_flags_the_drafts_that_still_say_it",
-              len(_jbdis.get("affected") or []) >= 1
-              and _jbafter["needs_redraft"]
-              and "redraft" in _jbdis.get("note", ""))
-        # dbt was confirmed a few lines above, so it is correctly gone from
-        # the list — assert the property that matters instead: dismissing one
-        # claim must not silently clear the others
-        check("jobs.dismissing_one_claim_does_not_clear_the_rest",
-              all(c["term"].lower() != "databricks"
-                  for c in _jbafter["claims"])
-              and _jbafter["count"] >= 1)
-        # --- the dashboard must agree with the panel --------------------
-        #
-        # Reported from real use: "Applications need checking" stayed on the
-        # dashboard after the claims had been dealt with. The card counted
-        # drafts whose CHECK had failed, but dismissing a claim doesn't change
-        # the check — so it kept reporting drafts whose every claim had
-        # already been decided, and told the user to confirm claims that were
-        # no longer there.
-        import agent.dashboard as _jbdash
-
-        def _jbcard(title):
-            return next((i for i in _jbdash._job_items()
-                         if i["title"] == title), None)
-        check("dashboard.reports_claims_still_awaiting_a_decision",
-              _jbcard("Applications need checking") is not None
-              or _jb.held_claims()["distinct"] == 0)
-        _jbbanned_before = _jb.banned_claims()
-        _jb.dismiss_claim("dbt")
-        check("dashboard.a_decided_claim_stops_being_reported_as_undecided",
-              all(c["term"].lower() != "dbt"
-                  for c in _jb.held_claims()["claims"]))
-        check("dashboard.points_at_a_redraft_when_that_is_the_fix",
-              (_jbcard("Drafts to rewrite") or {}).get("why", "").find(
-                  "Redraft") >= 0
-              or not _jb.held_claims()["needs_redraft"])
-        _jb.save_config({**_jb.load_config(),
-                         "banned_claims": _jbbanned_before})
-
-        check("jobs.drafting_is_told_what_not_to_claim",
-              "Databricks" in _jb._banned_clause()
-              and "do not claim" in _jb._banned_clause())
-
-        # --- the unattended pass, and the things it must refuse --------
-        _jb.save_auto_config({"enabled": True, "min_score": 75,
-                              "daily_cap": 5, "dry_run": True})
-        # an earlier block deliberately wiped every apply_email to prove
-        # portal roles are held, so give exactly one role an address back —
-        # otherwise this scenario has nothing it is allowed to send
-        for _r in _jb.roles():
-            _jb.update_role(_r["key"], stage="found", fit=None, draft=None,
-                            sent_at="")
-        _jbfirst = _jb.roles()[0]["key"]
-        _jb.update_role(_jbfirst, apply_email="careers@acme.io")
-        _jbsent2 = []
-        _jbout2 = _jbout.send
-        _jbout.send = (lambda to, sub, body, **kw:
-                       (_jbsent2.append((to, kw.get("dry_run")))
-                        or {"ok": True}))
-
-        class _JBCycle:
-            def chat(self, m, s, t=None, **kw):
-                _h = s[0][:60]
-                if "fits" in _h or "assess" in _h.lower():
-                    return _blk(json.dumps(
-                        {"score": 88, "verdict": "strong", "for": ["x"],
-                         "against": [], "missing": []}))
-                if "follow-up" in s[0][:40]:
-                    return _blk(json.dumps({"subject": "Following up",
-                                            "body": _jbgood}))
-                return _blk(json.dumps({"subject": "Application",
-                                        "body": _jbgood, "gaps": []}))
-        try:
-            _jbcy = _jb.auto_cycle(_JBCycle())
-            # count-independent: earlier blocks leave roles in the list,
-            # so assert the behaviour rather than a number that moves
-            check("jobs.one_pass_finds_then_applies",
-                  len(_jbcy.get("sent") or []) >= 1
-                  and all(d is True for _, d in _jbsent2))
-            # A portal role used to be held and skipped. It's prepared now —
-            # the form filled and answered as far as the profile allows. What
-            # must never happen either way is being counted as sent.
-            _jbportal = [r for r in _jb.roles() if not r.get("apply_email")]
-            _jbnames = {s["title"] for s in (_jbcy.get("sent") or [])}
-            check("jobs.portal_roles_are_never_counted_as_sent",
-                  all(r["title"] not in _jbnames for r in _jbportal))
-            # where it lands depends on how far the cycle got with it — the
-            # guarantee that matters is above: never counted as sent. The
-            # preparing path has its own checks further down.
-            _jbk2 = [x["key"] for x in _jb.roles() if x.get("draft")][0]
-            _jbf = _jb.save_application_file(_jbk2)
-            check("jobs.keeps_a_record_of_each_letter",
-                  _jbf["ok"] and "Subject:" in
-                  _RPath(_jbf["path"]).read_text("utf-8"))
-            _jb.set_stage(_jbk2, "applied", "sent")
-            _jbfu = _jb.draft_follow_up(_jbk2, _JBCycle())
-            # force a role back to "found" for the negative case, rather than
-            # assuming a positional one hasn't also been applied to
-            _jbnot = [x["key"] for x in _jb.roles() if x["key"] != _jbk2][0]
-            _jb.update_role(_jbnot, stage="found")
-            check("jobs.follows_up_only_on_what_was_sent",
-                  _jbfu["ok"] and "check" in _jbfu["follow_up"]
-                  and _jb.draft_follow_up(_jbnot, _JBCycle())["ok"] is False)
-        finally:
-            _jbout.send = _jbout2
-
-        from agent.memory import MemoryStore as _JBM
-        # --- an engine choice must reach scoring and drafting too -------
-        #
-        # Reported from real use: twelve roles all failed with a truncated
-        # "BadRequestError: ... 'invalid_" and nothing else. Two faults —
-        # /api/jobs/auto/run took no engine at all, so every call went to the
-        # paid default; and errors were cut at 80 characters, exactly where
-        # the reason starts.
-        check("jobs.errors_explain_themselves",
-              "no credit" in _jb._explain_engine_error(
-                  "BadRequestError: 400 {'message': 'Your credit balance is "
-                  "too low to access the Anthropic API.'}")
-              and "key was rejected" in _jb._explain_engine_error(
-                  "401 unauthorized: invalid x-api-key")
-              and "Ollama is running" in _jb._explain_engine_error(
-                  "Connection refused"))
-        _jb.save_auto_config({"enabled": True, "dry_run": True,
-                              "min_score": 75, "daily_cap": 5})
-        for _r in _jb.roles():
-            _jb.update_role(_r["key"], stage="found", fit=None, draft=None,
-                            sent_at="", apply_email="j@c.io")
-        _jbscore = _jb.score_role
-        _jb.score_role = (lambda key, brain, model=None:
-                          {"ok": False,
-                           "error": "400 invalid_request_error: Your credit "
-                                    "balance is too low"})
-        try:
-            _jbfail = _jb.auto_apply(None)
-            check("jobs.identical_failures_are_reported_once",
-                  "no credit" in (_jbfail.get("common_error") or "")
-                  and all("no credit" in e for e in _jbfail["errors"]))
-        finally:
-            _jb.score_role = _jbscore
-        # and the endpoint must actually carry the choice through
-        # the jobs API lives in its own app now — same routes, same code,
-        # different module. Testing them against the main server would test
-        # nothing at all.
-        import jobs.server as _jbws
-        from fastapi.testclient import TestClient as _JBTC
-        _jbseen = {}
-        _jbscore2 = _jb.score_role
-        _jb.score_role = (lambda key, brain, model=None:
-                          (_jbseen.update(model=model)
-                           or {"ok": False, "error": "x"}))
-        # the engines file follows AGENT_HOME now rather than a redirected
-        # module constant, so this block has to create the engine it names
-        _brainmod.add_custom_engine("CustomQWEN",
-                                    "http://localhost:11434/v1", "",
-                                    "qwen3:8b")
-        _jbprevmem = _jbws.memory
-        _jbws.memory = _JBM(db_path=config.DB_PATH, check_same_thread=False)
-        try:
-            _jbc = _JBTC(_jbws.app, raise_server_exceptions=False)
-            _jbc.post("/api/jobs/auto/run", json={"engine": "CustomQWEN"})
-            check("jobs.auto_run_honours_the_engine",
-                  _jbseen.get("model") == "CustomQWEN")
-            check("jobs.auto_run_refuses_an_unknown_engine",
-                  _jbc.post("/api/jobs/auto/run",
-                            json={"engine": "NoSuchEngine"}).status_code
-                  == 409)
-        finally:
-            _jb.score_role = _jbscore2
-            _jbws.memory = _jbprevmem
-
-        check("jobs.audited",
-              any(e["kind"] == "jobscout" for e in _jbau.recent(10)))
-    finally:
-        config.AGENT_HOME = _jb_home
 
     # --- backup: capture, exclusions, verification, rollback, restore --------- #
     _bk_home = config.AGENT_HOME
@@ -9290,50 +7567,6 @@ def main() -> None:
     finally:
         config.AGENT_HOME = _is_home
 
-    # --- silence that explains itself ---------------------------------------- #
-    #
-    # From a real health report: "Job scout hasn't produced anything for 5
-    # days, though auto-apply is on. Nothing is erroring, so check it actually
-    # still runs." True, and it leaves you to go and find out — when the
-    # reason was already computable.
-    _wq_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        import agent.watchdog as _wq
-        import agent.jobscout as _wqj
-        _wqj.save_profile({"skills": ["Python"], "technologies": ["SQL"],
-                           "target_roles": ["Data Engineer"],
-                           "years_experience": {}})
-        _wqj.save_auto_config({"enabled": True, "dry_run": True,
-                               "min_score": 75, "daily_cap": 5})
-        _wqj.save_roles([])
-        _wqj.save_config({**_wqj.load_config(), "ignored_roles": []})
-        _wqj.save_job_sources([])
-        check("watchdog.a_fresh_install_is_told_it_has_no_sources",
-              "no job sites" in _wq.why_quiet("Job scout"))
-        _wqj.add_roles([{"title": f"Data Engineer {i}", "company": f"F{i}",
-                         "url": f"https://x/{i}", "summary": "Python SQL"}
-                        for i in range(6)])
-        for _r5 in _wqj.roles():
-            _wqj.update_role(_r5["key"], stage="drafted", fit={"score": 88},
-                             draft={"body": "b",
-                                    "check": {"ok": False,
-                                              "problems": [{"detail": "x"}]}})
-        check("watchdog.held_drafts_are_named_as_the_reason",
-              "every candidate is held" in _wq.why_quiet("Job scout"))
-        for _r5 in _wqj.roles():
-            _wqj.update_role(_r5["key"], apply_email="a@a.io",
-                             draft={"body": "b", "check": {"ok": True}})
-        check("watchdog.rehearsal_is_named_as_the_reason",
-              "rehearsal is on" in _wq.why_quiet("Job scout"))
-        check("watchdog.the_specific_cause_wins_over_no_sources",
-              "no job sites" not in _wq.why_quiet("Job scout"))
-        _wqj.save_auto_config({**_wqj.auto_config(), "enabled": False})
-        check("watchdog.being_switched_off_is_not_a_fault",
-              "isn't meant to" in _wq.why_quiet("Job scout"))
-    finally:
-        config.AGENT_HOME = _wq_home
-
     # --- free, unknown and gone are three different things ------------------- #
     import agent.costs as _cst2
     check("costs.a_local_model_tag_is_free_not_unpriced",
@@ -9916,60 +8149,6 @@ def main() -> None:
           '"Only what needs me"' in _uijs and '"Nothing"' in _uijs
           and 'item.type === "choice"' in _uijs)
 
-    # --- Agent Jo Jobs can stand on its own ---------------------------------- #
-    #
-    # It imported agent.main for two marker values, and agent.main pulls in
-    # the tool layer and everything behind it — 51 of 63 modules, including
-    # the Blender lab and the fine-tuner. Without that import it needs 17,
-    # all of them about jobs, which is what makes a separate project possible.
-    check("jobsapp.does_not_import_the_whole_agent",
-          "import agent.main" not in _RPath("jobs/server.py").read_text("utf-8"))
-    import importlib.util as _sjiu
-    _sjspec = _sjiu.spec_from_file_location("sync_jobs", "tools/sync_jobs_app.py")
-    _sj = _sjiu.module_from_spec(_sjspec)
-    _sjspec.loader.exec_module(_sj)
-    _sjneed = _sj.closure()
-    check("jobsapp.needs_a_small_self_contained_set_of_modules",
-          len(_sjneed) <= 20
-          and not {"main", "tools", "blenderlab", "neural3d", "finetune",
-                   "crew"} & set(_sjneed))
-    # the sync must actually notice drift, or two copies of the claims check
-    # quietly disagree
-    _sjdest = _RPath(_rtf.mkdtemp())
-    _sj.sync(_sjdest)
-    check("jobsapp.a_fresh_sync_is_in_step",
-          not _sj.report(_sjdest)["stale"]
-          and (_sjdest / "VENDORED.json").exists())
-    (_sjdest / "agent" / "jobscout.py").write_text(
-        (_sjdest / "agent" / "jobscout.py").read_text("utf-8") + "\n# drift\n",
-        "utf-8")
-    check("jobsapp.drift_in_a_shared_module_is_caught",
-          "agent/jobscout.py" in _sj.report(_sjdest)["stale"])
-    # a stranger installing it must not inherit the author's job search
-    import agent.jobscout as _dfj
-    check("jobs.the_default_profile_is_empty_not_the_authors",
-          _dfj.DEFAULT_PROFILE["target_roles"] == []
-          and _dfj.DEFAULT_PROFILE["locations_ok"] == []
-          and _dfj.DEFAULT_PROFILE["arrangement"] == "")
-    # a working button shows the chrome sweep, and it must be removed again
-    # even if the work fails — otherwise a button shimmers forever
-    check("jobsapp.a_working_button_shimmers_and_stops",
-          'btn.classList.add("is-busy")' in _jbjs
-          and 'btn.classList.remove("is-busy")' in _jbjs
-          and _jbjs.index('btn.classList.remove("is-busy")')
-          > _jbjs.index("finally {"))
-    check("jobsapp.the_sweep_respects_reduced_motion",
-          "prefers-reduced-motion: reduce" in _jbcss
-          and "@keyframes sheen" in _jbcss)
-    check("jobsapp.buttons_never_shrink_until_their_label_is_cut",
-          ".btn { flex-shrink: 0; }" in _jbcss)
-    check("jobsapp.large_type_is_set_in_times_new_roman",
-          '--display: "Times New Roman"' in _jbcss
-          and ".hero h1" in _jbcss[_jbcss.index("--display:"):])
-    check("jobsapp.one_definition_of_profile_ready",
-          "S.profileReady" in _jbjs
-          and "(p.skills || []).length ||" not in _jbjs)
-
     # --- start-up must run to the end --------------------------------------- #
     #
     # Found while restyling: every load showed "Could not reach the server".
@@ -10057,17 +8236,18 @@ def main() -> None:
           "if (shownId !== state._shownConvId)" in _uijs
           and "#messages > * { animation" not in _mocss)
     check("motion.people_who_asked_for_less_get_none",
-          "prefers-reduced-motion: reduce" in _mocss
-          and "prefers-reduced-motion: reduce" in _jbcss)
+          "prefers-reduced-motion: reduce" in _mocss)
     check("motion.a_folded_group_leaves_the_tab_order",
           "visibility: hidden;" in
           _mocss[_mocss.index(".foot-group.collapsed .foot-group-items {\n  display: block"):][:200])
 
     # --- the Glass theme --------------------------------------------------- #
     _glcss = _RPath("web/static/styles.css").read_text("utf-8")
-    check("glass.is_a_theme_and_the_dark_default",
+    # Glass is still a theme; since 171 the main look (Symbolic Synapse,
+    # drawn over Glass) is the default and what System gives in dark mode
+    check("glass.is_still_a_theme_and_the_base_of_the_main_look",
           'glass: { label: "Glass (dark)", fixed: "glass" }' in _uijs
-          and 'dark: "glass"' in _uijs and '[data-theme="glass"]' in _glcss)
+          and 'dark: "synapse"' in _uijs and '[data-theme="glass"]' in _glcss)
     check("glass.the_other_themes_are_still_selectable",
           all(f'{k}: {{ label:' in _uijs or f'"{k}": {{ label:' in _uijs
               for k in ("fluent", "fluent-light", "instruments", "midnight")))
@@ -10162,607 +8342,6 @@ def main() -> None:
           _sbok["state"] == "ok" and _sbstale["state"] == "fail"
           and "wasn't restarted" in _sbstale["fix"])
 
-    # --- the browser belongs to one thread ----------------------------------- #
-    #
-    # Reported: "cannot switch to a different thread (which happens to have
-    # exited)". Playwright's synchronous objects belong to the thread that
-    # created them, and one shared browser is reached from several — the
-    # fetch pass, the application, the helper. Sharing it was right; sharing
-    # it across threads is not. It lives on a thread of its own and every
-    # call is posted to it.
-    import agent.portal as _tb
-    import threading as _tbth
-    _tbwho = {}
-
-    class _TBReal:
-        def __init__(self, headless=True):
-            _tbwho["made_on"] = _tbth.current_thread().name
-            self._ctx = None
-        def open(self, url):
-            _tbwho.setdefault("used_on", set()).add(_tbth.current_thread().name)
-            return {"url": url}
-        def fields(self, page):
-            _tbwho.setdefault("used_on", set()).add(_tbth.current_thread().name)
-            return [{"label": "Full name"}]
-        def close_page(self, page):
-            pass
-        def close(self, keep_open=True):
-            pass
-
-    _tbsaved = _tb.PlaywrightDriver
-    _tb.PlaywrightDriver = _TBReal
-    try:
-        _tbd = _tb.ThreadBoundDriver(headless=True)
-        _tberr = []
-
-        def _tbwork():
-            try:
-                _tbp = _tbd.open("https://x/1")
-                _tbd.fields(_tbp)
-            except Exception as exc:
-                _tberr.append(f"{type(exc).__name__}: {exc}")
-        _tbts = [_tbth.Thread(target=_tbwork) for _ in range(4)]
-        for _t in _tbts:
-            _t.start()
-        for _t in _tbts:
-            _t.join()
-        check("portal.four_threads_can_drive_one_browser", not _tberr, f"{_tberr}")
-        check("portal.every_call_runs_on_the_owning_thread",
-              _tbwho.get("used_on") == {"browser"}
-              and _tbwho.get("made_on") == "browser",
-              f"made on {_tbwho.get('made_on')}, used on {_tbwho.get('used_on')}")
-        _tbd.close(keep_open=False)
-    finally:
-        _tb.PlaywrightDriver = _tbsaved
-    check("portal.the_shared_browser_is_the_thread_bound_one",
-          'ThreadBoundDriver(' in _RPath("agent/portal.py").read_text("utf-8"))
-
-    # --- the window uses the window ------------------------------------------ #
-    _wvcss = _RPath("web_jobs/jobs.css").read_text("utf-8")
-    check("jobsapp.the_views_are_not_capped_to_a_column",
-          ".view { max-width: none; }" in _wvcss
-          and "repeat(auto-fit, minmax(360px, 1fr))" in _wvcss)
-    check("jobsapp.prose_keeps_a_readable_measure",
-          "max-width: 72ch" in _wvcss)
-
-    # --- one browser for the whole app --------------------------------------- #
-    #
-    # Reported with the error: "Opening in existing browser session… the
-    # profile is already in use". Chromium allows a profile to be open once,
-    # and fetching, applying and the helper each launched their own against
-    # it — so the second was refused and its page appeared as a blank tab in
-    # the first. Logins live in that profile, so separate profiles are no
-    # answer: one instance is.
-    import agent.portal as _sb
-    import threading as _sbth, time as _sbtime
-    _sbmade = {"n": 0}
-    # the shared object is the thread-bound driver now; the browser behind it
-    # is only started when a page is first opened
-    _sbinit = _sb.ThreadBoundDriver.__init__
-    _sbclose = _sb.ThreadBoundDriver.close
-
-    def _sbfake(self, *a, **k):
-        _sbmade["n"] += 1
-        self.headless = k.get("headless", True)
-        self._real = None
-
-    _sb.ThreadBoundDriver.__init__ = _sbfake
-    _sb.ThreadBoundDriver.close = lambda self, keep_open=True: None
-    _sbwas = _sb.DRIVER
-    _sb.DRIVER = None          # an earlier block may have supplied one
-    # and may have left a shared browser standing — start from nothing, or
-    # "no new launch" would pass for the wrong reason
-    _sbshared = dict(_sb._SHARED)
-    _sb._SHARED.update({"driver": None, "uses": 0, "headless": True})
-    try:
-        def _sbuse(headless):
-            _sb.acquire_driver(headless=headless)
-            _sbtime.sleep(0.2)
-            _sb.release_driver(close=False)
-        _sbts = [_sbth.Thread(target=_sbuse, args=(i % 2 == 0,))
-                 for i in range(4)]
-        for _t in _sbts:
-            _t.start()
-        for _t in _sbts:
-            _t.join()
-        check("portal.four_callers_share_one_browser", _sbmade["n"] == 1,
-              f"{_sbmade['n']} launched")
-        check("portal.it_is_closed_only_when_nobody_holds_it",
-              _sb._SHARED["uses"] == 0)
-        _sb.acquire_driver()
-        _sb.release_driver(close=True)
-        check("portal.the_last_one_out_closes_it", _sb._SHARED["driver"] is None)
-    finally:
-        _sb.ThreadBoundDriver.__init__ = _sbinit
-        _sb.ThreadBoundDriver.close = _sbclose
-        _sb.DRIVER = _sbwas
-        _sb._SHARED.update(_sbshared)
-    # nothing may launch its own any more
-    _sbsrc = _RPath("agent/portal.py").read_text("utf-8") + \
-        _RPath("agent/jobscout.py").read_text("utf-8")
-    # exactly one place may construct the browser: the owner thread, inside
-    # the thread-bound driver. Everywhere else borrows it.
-    _sbowner = "self._real = PlaywrightDriver(headless=self.headless)"
-    check("portal.only_the_owner_thread_launches_the_browser",
-          _sbsrc.count("PlaywrightDriver(headless") == 1
-          and _sbowner in _sbsrc)
-    check("portal.that_error_is_explained",
-          "already using Agent Jo's profile" in _sb._explain_portal_error(
-              Exception("Opening in existing browser session"))
-          and "already using Agent Jo's profile" in _sb._explain_portal_error(
-              Exception("the profile is already in use by another instance")))
-
-    # --- the companion has to be reachable ----------------------------------- #
-    #
-    # Reported: "I browse forms without that feature appearing". It is
-    # injected into a page, so it can only exist in a window this app opened
-    # — never in your own browser. And it was injected only at hand-over, so
-    # even in the app's own window it appeared at the end of a session or not
-    # at all.
-    _hpsrc = _RPath("agent/portal.py").read_text("utf-8")
-    check("portal.the_companion_is_there_from_the_start",
-          "_offer_companion(driver, page, companion_hints([], [], fields))"
-          in _hpsrc)
-    check("portal.a_form_can_be_opened_with_the_helper_alone",
-          "def start_helper" in _hpsrc
-          and '"/api/jobs/portal/helper"' in
-          _RPath("jobs/server.py").read_text("utf-8")
-          and '"Open the form with help"' in
-          _RPath("web_jobs/jobs.js").read_text("utf-8"))
-    # opening it with help must fill nothing and send nothing
-    check("portal.opening_with_help_changes_nothing",
-          "filled in or sent" in _hpsrc
-          and "submit" not in _hpsrc[_hpsrc.index("def _open_with_help"):
-                                     _hpsrc.index("def start_helper")])
-
-    # --- one place fetches the sources --------------------------------------- #
-    #
-    # The cycle still opened a browser per source after the search path was
-    # fixed, because `discover` had its own copy of the loop — and that copy
-    # fetched every source over plain HTTP whatever its kind, so a "browser"
-    # source never rendered there either. Two loops doing one job is how a
-    # fix lands in the wrong one. There is one now, and this check fails if a
-    # second appears.
-    _1fsrc = _RPath("agent/jobscout.py").read_text("utf-8")
-    _1flines = _1fsrc.splitlines()
-    _1ffns = [(i + 1, _m.group(1)) for i, _l in enumerate(_1flines)
-              for _m in [_re.match(r"^def (\w+)", _l)] if _m]
-    _1floops = []
-    for _i, (_ln, _name) in enumerate(_1ffns):
-        _end = _1ffns[_i + 1][0] if _i + 1 < len(_1ffns) else len(_1flines)
-        _body = "\n".join(_1flines[_ln - 1:_end - 1])
-        if "for src in job_sources():" in _body and "_PARSERS" in _body:
-            _1floops.append(_name)
-    check("sources.only_one_function_fetches_them", _1floops == ["_fetch_all"],
-          f"{_1floops}")
-
-    # --- one browser, not one per source ------------------------------------- #
-    #
-    # Reported with a screenshot: running a cycle opened a row of browser
-    # tabs, all blank but the first. `open()` launched a whole browser on
-    # every call, and every source fetch called it — ten sources, ten
-    # browsers against one profile, which Chromium turns into a heap of tabs.
-    _bb_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        import agent.jobscout as _bbj
-        import agent.portal as _bbp
-        import json as _bbjson
-        (_bbj._dir() / "sources.json").write_text(_bbjson.dumps([
-            {"name": f"Site {i}", "url": "https://example.test/jobs",
-             "kind": "browser", "on": True} for i in range(4)]), "utf-8")
-        _bbmade = {"n": 0}
-
-        class _BBDriver:
-            def __init__(self, headless=True):
-                _bbmade["n"] += 1
-                self._ctx = None
-                self.pages = 0
-            def open(self, url):
-                self.pages += 1
-                return {"url": url}
-            def close_page(self, page):
-                self.pages -= 1
-            def html(self, page):
-                return "<html><body><a href='/jobs/1'>Data Engineer role</a></body></html>"
-            def close(self, keep_open=True):
-                pass
-
-        _bbreal = _bbp.PlaywrightDriver
-        _bbp.PlaywrightDriver = _BBDriver
-        # the app shares one browser now, so start from none — otherwise
-        # "no new launch" passes because an earlier block left one standing
-        _bbwas, _bbshared = _bbp.DRIVER, dict(_bbp._SHARED)
-        _bbp.DRIVER = None
-        _bbp._SHARED.update({"driver": None, "uses": 0, "headless": True})
-        try:
-            _bbj._fetch_all("")
-        finally:
-            _bbp.PlaywrightDriver = _bbreal
-            _bbp.DRIVER = _bbwas
-            _bbp._SHARED.update(_bbshared)
-        check("sources.one_browser_serves_the_whole_pass",
-              _bbmade["n"] == 1, f"{_bbmade['n']} browsers for 4 sources")
-        check("sources.the_browser_is_closed_when_the_pass_ends",
-              _bbj._BATCH.get("driver") is None)
-    finally:
-        config.AGENT_HOME = _bb_home
-    _bbsrc = _RPath("agent/portal.py").read_text("utf-8")
-    check("sources.the_driver_launches_once_not_per_page",
-          "if self._ctx is None:" in _bbsrc and "def close_page" in _bbsrc)
-    # the blank page a persistent context always starts with must be used,
-    # not left behind with another opened beside it
-    check("sources.the_blank_first_tab_is_reused",
-          'p.url in ("", "about:blank")' in _bbsrc)
-
-    # --- sites that publish nothing machine-readable ------------------------- #
-    #
-    # Reported: a source stuck on "pending" for ever. It was an HTML page
-    # saved as an RSS feed — the feed parser threw, returned [], and said
-    # nothing; and nothing recorded a check, so it never even became
-    # "failing". Expert marketplaces (micro1, Outsized, Toptal) publish no
-    # feed at all: the listings are drawn by JavaScript, often only once
-    # you're signed in.
-    _ms_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        import agent.jobscout as _msj
-        import json as _msjson
-        (_msj._dir() / "sources.json").write_text(_msjson.dumps([
-            {"name": "MicroAI", "url": "https://www.micro1.ai/experts/opportunities",
-             "kind": "rss", "on": True}]), "utf-8")
-        _msreal = _msj._fetch_source
-        _msj._fetch_source = lambda url: (
-            "<!doctype html><html><head><title>Opportunities</title>"
-            "</head><body>drawn by javascript</body></html>")
-        try:
-            _msf, _mse, _msp = _msj._fetch_all("")
-        finally:
-            _msj._fetch_source = _msreal
-        check("sources.a_page_saved_as_a_feed_says_so",
-              any("not a rss feed" in e and "browser" in e for e in _mse))
-        # and it must be recorded, whichever path ran — this used to be
-        # recorded only by a keyword search, so a source touched only by the
-        # daily run stayed "pending" for ever
-        _msst = _msj.source_status()["sources"][0]
-        check("sources.every_fetch_records_a_check",
-              _msst["status"] == "failing" and _msst["checked_at"])
-        # switching how it is fetched must actually switch it
-        check("sources.switching_to_the_browser_really_switches_it",
-              _msj.set_source_kind("MicroAI", "browser")["ok"]
-              and _msj.job_sources()[0]["kind"] == "browser")
-        check("sources.switching_an_unknown_source_fails_loudly",
-              _msj.set_source_kind("Nope", "browser")["ok"] is False)
-        check("sources.the_browser_kind_is_a_real_kind",
-              "browser" in _msj._PARSERS)
-    finally:
-        config.AGENT_HOME = _ms_home
-    # signing in once, kept by the browser profile the applications use
-    import agent.portal as _msp2
-    check("sources.you_can_sign_in_once_and_it_is_kept",
-          "def start_sign_in" in _RPath("agent/portal.py").read_text("utf-8")
-          and "launch_persistent_context" in
-          _RPath("agent/portal.py").read_text("utf-8"))
-    _msjs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("sources.the_window_offers_both",
-          '"/api/jobs/sources/kind"' in _msjs
-          and '"/api/jobs/sources/signin"' in _msjs)
-
-    # --- an update must not look like nothing happened ----------------------- #
-    #
-    # Reported twice: "nothing has really changed", and once "the engines tab
-    # is gone" — the Jobs app served its page with an ordinary cacheable
-    # response and linked its stylesheet and script by plain name, so a
-    # browser kept yesterday's page and yesterday's script. The main app has
-    # stamped its assets for months; the Jobs app never did.
-    _cbsrv = _RPath("jobs/server.py").read_text("utf-8")
-    check("jobsapp.the_page_is_never_cached",
-          '"Cache-Control": "no-store' in _cbsrv)
-    check("jobsapp.each_build_asks_for_its_own_files",
-          '"/static/jobs.css?v={v}"' in _cbsrv
-          and '"/static/jobs.js?v={v}"' in _cbsrv)
-    check("jobsapp.a_page_from_an_older_build_says_so",
-          "This page is an old copy" in
-          _RPath("web_jobs/jobs.js").read_text("utf-8"))
-
-    # --- it learns the site, and helps you inside the form ------------------- #
-    #
-    # Every application teaches something about the site — which system runs
-    # the form, whether it wants a sign-in, what it asks. And when automation
-    # stops, you are left in a page full of boxes holding answers the app has
-    # already worked out; the companion puts them where the boxes are.
-    import agent.portal as _lp
-    _lp_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        check("portal.a_site_is_unknown_until_you_apply",
-              _lp.site_brief("https://jobs.acme.test/apply/1") == "")
-        _lpf = [{"label": "Full name", "required": True},
-                {"label": "Upload your CV", "type": "file", "required": True},
-                {"label": "Why do you want this role?", "required": True}]
-        _lp.remember_site("https://jobs.acme.test/apply/1", ats="greenhouse",
-                          state="filled", fields=_lpf,
-                          questions=["Why do you want this role?"],
-                          blocked="needs_login")
-        _lp.remember_site("https://jobs.acme.test/apply/2", ats="greenhouse",
-                          state="submitted", fields=_lpf,
-                          questions=["Why do you want this role?",
-                                     "Notice period?"])
-        _lpr = _lp.recipe_for("https://jobs.acme.test/apply/9")
-        check("portal.it_learns_what_applying_there_takes",
-              _lpr["seen"] == 2 and _lpr["ats"] == "greenhouse"
-              and "sign in" in _lpr["steps"]
-              and "attach your CV" in _lpr["steps"])
-        check("portal.it_learns_which_questions_repeat",
-              _lpr["questions"]["Why do you want this role?"] == 2)
-        check("portal.it_says_so_before_you_start",
-              "2 time(s)" in _lp.site_brief("https://jobs.acme.test/x")
-              and "greenhouse" in _lp.site_brief("https://jobs.acme.test/x"))
-        check("portal.one_site_is_not_another",
-              _lp.site_brief("https://other.test/apply") == "")
-    finally:
-        config.AGENT_HOME = _lp_home
-
-    # the companion: what it offers for each field on the page
-    _lph = {h["label"]: h for h in _lp.companion_hints(
-        [{"label": "Full name", "value": "Sample User"}],
-        [{"question": "Why this role?", "answer": "I build platforms.",
-          "source": "engine"},
-         {"question": "Kubernetes?", "answer": "Four years.",
-          "source": "held", "why": "not in your profile"}],
-        [{"label": "Full name"}, {"label": "Why this role?"},
-         {"label": "Kubernetes?"}, {"label": "Salary expectation"}])}
-    check("portal.the_companion_offers_what_it_knows",
-          _lph["Full name"]["value"] == "Sample User"
-          and _lph["Why this role?"]["source"] == "engine")
-    check("portal.the_companion_marks_a_held_answer",
-          _lph["Kubernetes?"]["source"] == "held")
-    check("portal.the_companion_admits_what_it_does_not_know",
-          _lph["Salary expectation"]["value"] == ""
-          and "type it yourself" in _lph["Salary expectation"]["why"])
-    _lpsrc = _RPath("agent/portal.py").read_text("utf-8")
-    check("portal.the_companion_appears_where_you_are_left_to_finish",
-          _lpsrc.count("_offer_companion(driver, page") >= 3)
-    # offering help must never break an application
-    check("portal.a_driver_without_it_still_applies",
-          _lp._offer_companion(object(), None, []) is False)
-
-    # --- a captcha or a sign-in calls you in, then it carries on ------------- #
-    #
-    # These used to end the attempt: it reported what it saw and closed. But
-    # the browser is open on this machine, so the useful thing is to wait —
-    # you sign in or solve it, and the application continues from where it
-    # stopped.
-    import agent.portal as _cp
-    import threading as _cpth, time as _cptime
-
-    class _CpDriver:
-        def __init__(self, blocked=True):
-            self.blocked = blocked
-        def html(self, page):
-            return ("<div>please complete the captcha recaptcha</div>"
-                    if self.blocked else "<form><input name=email></form>")
-        def shot(self, page, name):
-            return ""
-
-    _cpd = _CpDriver()
-    _cpth.Timer(0.6, lambda: setattr(_cpd, "blocked", False)).start()
-    _cpt0 = _cptime.time()
-    _cpok = _cp._wait_for_person("t1", _cpd, None, _cp.NEEDS_CAPTCHA,
-                                 timeout_s=10)
-    check("portal.it_notices_when_you_have_handled_it",
-          _cpok and (_cptime.time() - _cpt0) < 9)
-    # while waiting it must say so, and say which kind of block
-    _cps = _cp.session("t1")
-    check("portal.while_waiting_it_says_what_it_needs",
-          _cps.get("blocked_by") == _cp.NEEDS_CAPTCHA
-          and "CAPTCHA" in (_cps.get("message") or ""))
-    # when it cannot tell, your word settles it
-    _cpd2 = _CpDriver()
-    _cpth.Timer(0.4, lambda: _cp.session_continue("t2")).start()
-    check("portal.continue_carries_on_when_it_cannot_tell",
-          _cp._wait_for_person("t2", _cpd2, None, _cp.NEEDS_LOGIN, timeout_s=10))
-    _cpd3 = _CpDriver()
-    _cpth.Timer(0.3, lambda: _cp.session_cancel("t3")).start()
-    check("portal.stopping_means_stopping",
-          not _cp._wait_for_person("t3", _cpd3, None, _cp.NEEDS_LOGIN,
-                                   timeout_s=10))
-    # an unattended run must never sit waiting for somebody
-    _cpsrc = _RPath("agent/portal.py").read_text("utf-8")
-    check("portal.an_unattended_run_never_waits",
-          "if wait and session_key:" in _cpsrc
-          and "wait: bool = False" in _cpsrc)
-    # a block can also appear at the submit step, and is handled there too
-    check("portal.a_late_block_is_handled_as_well",
-          "late = page_state(driver.html(page), url)" in _cpsrc)
-    _cpjs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("portal.the_window_follows_it_and_calls_you",
-          "function followPortal" in _cpjs
-          and "waiting_for_you" in _cpjs
-          and '"/api/jobs/portal/continue"' in _cpjs)
-
-    # --- applying beyond email ----------------------------------------------- #
-    #
-    # Reported: auto-apply "only works for email application", and the portal
-    # rehearsal left you to retype everything. Most adverts are portals, so
-    # auto-apply that only emails is auto-apply that mostly does nothing.
-    import agent.portal as _pp
-    _pp_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        import agent.jobscout as _ppj
-        import types as _pptypes
-        import json as _ppjson
-        _ppj.save_profile({"full_name": "A", "email": "a@b.test",
-                           "phone": "+27", "location": "JHB",
-                           "cv_path": "/tmp/cv.pdf", "summary": "BI",
-                           "target_roles": ["Data Analyst"],
-                           "skills": ["Power BI", "SQL"],
-                           "technologies": ["SQL Server"],
-                           "employers": ["Acme"], "locations_ok": ["Remote"],
-                           "achievements": ["Cut month-end to 1 day"],
-                           "years_experience": {}})
-        _pprole = {"title": "BI Developer", "company": "Contoso"}
-
-        class _PPBrain:
-            def chat(self, messages, system, tools=None, **kw):
-                data = {"answers": [
-                    {"question": "Why this role?",
-                     "answer": "I build reporting platforms in Power BI and SQL."},
-                    {"question": "Kubernetes experience?",
-                     "answer": "Four years running production clusters."},
-                    {"question": "Notice period?", "answer": ""}]}
-                return _pptypes.SimpleNamespace(
-                    content=[_pptypes.SimpleNamespace(
-                        type="text", text=_ppjson.dumps(data))],
-                    stop_reason="end_turn")
-
-        _ppa = {a["question"]: a for a in _pp.answer_questions(
-            _pprole, _ppj.profile(),
-            ["Why this role?", "Kubernetes experience?", "Notice period?"],
-            _PPBrain())}
-        check("portal.it_answers_a_form_question_from_your_profile",
-              _ppa["Why this role?"]["source"] == "engine")
-        # the same check a drafted email gets — a form must not claim more
-        check("portal.an_invented_answer_is_held_not_typed",
-              _ppa["Kubernetes experience?"]["source"] == "held")
-        check("portal.an_unanswerable_question_is_left_to_you",
-              _ppa["Notice period?"]["source"] == "blank"
-              and _ppa["Notice period?"]["answer"] == "")
-        check("portal.without_an_engine_nothing_is_invented",
-              all(a["source"] == "blank" for a in _pp.answer_questions(
-                  _pprole, _ppj.profile(), ["Why this role?"], None)))
-        # everything it worked out, in a form you can paste by hand
-        _pppack = _pp.paste_pack(list(_ppa.values()),
-                                 [{"label": "Email", "value": "a@b.test"}])
-        check("portal.it_hands_over_a_pack_you_can_paste",
-              "Email:" in _pppack and "Why this role?" in _pppack
-              and "[held — check this]" in _pppack)
-
-        # and auto-apply prepares portal-only roles instead of skipping them
-        _ppj.add_roles([{"title": "Portal only", "company": "Beta",
-                         "url": "https://beta.test/apply", "summary": "Power BI"}])
-        _ppk = _ppj.roles()[0]["key"]
-        _ppj.update_role(_ppk, fit={"score": 90},
-                         draft={"subject": "S", "body": "B",
-                                "check": {"ok": True, "problems": []}})
-        _ppreal = _pp.apply_to_portal
-        import agent.outreach as _ppo
-        _ppo_send, _ppo_conf, _ppo_draft = _ppo.send, _ppo.is_configured, _ppo._is_draft_only
-        _pp.apply_to_portal = lambda role, prof, **kw: {
-            "state": "filled",
-            "answers": [{"question": "Why this role?", "answer": "x",
-                         "source": "engine"},
-                        {"question": "Notice period?", "answer": "",
-                         "source": "blank"}],
-            "paste_pack": "Why this role?:\nx"}
-        _ppo.send = lambda *a, **k: {"ok": True}
-        _ppo.is_configured = lambda: True
-        _ppo._is_draft_only = lambda: False
-        try:
-            _ppj.save_auto_config({**_ppj.auto_config(), "enabled": True,
-                                   "dry_run": False})
-            _ppout = _ppj.auto_apply(None)
-            check("auto.a_portal_only_role_is_prepared_not_skipped",
-                  [p["title"] for p in _ppout["prepared"]] == ["Portal only"]
-                  and _ppout["prepared"][0]["needs_you"] == ["Notice period?"])
-            # and "off" means off
-            _ppj.set_stage(_ppk, "found")
-            _ppj.save_auto_config({**_ppj.auto_config(), "portal_mode": "off"})
-            check("auto.portal_mode_off_leaves_them_alone",
-                  not _ppj.auto_apply(None)["prepared"])
-        finally:
-            _pp.apply_to_portal = _ppreal
-            _ppo.send, _ppo.is_configured, _ppo._is_draft_only = _ppo_send, _ppo_conf, _ppo_draft
-    finally:
-        config.AGENT_HOME = _pp_home
-    check("auto.submitting_a_portal_form_is_off_unless_asked",
-          '"portal_mode": "prepare"' in
-          _RPath("agent/jobscout.py").read_text("utf-8"))
-
-    # --- the jobs window says one thing, once -------------------------------- #
-    #
-    # The overview used a third of the screen and left the rest blank; the
-    # roles list showed a raw stage ("drafted") beside a detail showing the
-    # real state ("held"), and the highlighted action told a held draft to
-    # mark itself applied. All three read the same state now, and the space
-    # is filled with what the app already knows.
-    _ujs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    _uhtml = _RPath("web_jobs/index.html").read_text("utf-8")
-    check("jobsapp.the_list_and_the_detail_show_the_same_state",
-          "const st = r.bucket || r.stage" in _ujs
-          and "BUCKET[r.bucket]" in _ujs)
-    check("jobsapp.the_next_step_follows_the_state_not_the_stage",
-          '}[r.bucket || r.stage || "found"];' in _ujs)
-    check("jobsapp.a_role_shows_why_it_scored_and_what_the_draft_says",
-          '"Why this score"' in _ujs and '"History"' in _ujs
-          and 'held ? "Draft — held"' in _ujs)
-    check("jobsapp.the_overview_fills_the_page_from_real_data",
-          all(i in _uhtml for i in ('id="ovNeeds"', 'id="ovSources"',
-                                    'id="ovActivity"'))
-          and "function drawNeeds" in _ujs and "function drawActivity" in _ujs)
-    # an empty panel must say so rather than show invented rows
-    check("jobsapp.an_empty_panel_says_it_is_empty",
-          '"Nothing waiting on you."' in _ujs
-          and "Scoring, drafting and applying all show up here." in _ujs)
-
-    # --- engines can be managed from the Jobs app --------------------------- #
-    #
-    # The Jobs app could only pick from engines defined in Agent Jo, which is
-    # what made the DeepSeek base-URL mistake hard to correct: the place that
-    # reported the fault wasn't the place that could fix it. Same store, same
-    # module — an engine added in either app appears in both.
-    _eg_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    config.DB_PATH = config.AGENT_HOME / "e.db"
-    try:
-        import jobs.server as _egs
-        from fastapi.testclient import TestClient as _EGC
-        _egs.memory = _RMS(db_path=config.DB_PATH, check_same_thread=False)
-        _egc = _EGC(_egs.app, raise_server_exceptions=False)
-        _egr = _egc.post("/api/engines", json={
-            "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1",
-            "api_key": "sk-x", "model": "deepseek-chat"})
-        check("jobsapp.an_engine_can_be_added_here",
-              _egr.status_code == 200
-              and "DeepSeek" in [e["id"] for e in _egr.json()["engines"]])
-        _egw = _egc.post("/api/engines", json={
-            "name": "Muddled", "base_url": "http://localhost:11434/v1",
-            "api_key": "", "model": "deepseek-v4-pro"})
-        check("jobsapp.a_mismatched_engine_is_flagged_on_save",
-              "looks like a cloud model id" in _egw.json()["message"])
-        # "/api/engines/{name}" also matches "/api/engines/test" — whichever
-        # is declared first wins, and the test route must be first
-        check("jobsapp.the_test_route_is_not_shadowed_by_the_wildcard",
-              _egc.post("/api/engines/test",
-                        json={"base_url": "", "model": "x"}).json()["error"]
-              == "No base URL.")
-        check("jobsapp.an_engine_can_be_edited_and_removed",
-              _egc.post("/api/engines/edit",
-                        json={"name": "Muddled",
-                              "base_url": "https://api.deepseek.com/v1"}
-                        ).status_code == 200
-              and _egc.delete("/api/engines/Muddled").status_code == 200
-              and "Muddled" not in
-              [e["id"] for e in _egc.get("/api/engines").json()["engines"]])
-        # and Agent Jo sees it, because it is one store
-        import agent.brain as _egb
-        check("jobsapp.both_apps_share_one_set_of_engines",
-              "DeepSeek" in _egb.custom_engine_names())
-    finally:
-        config.AGENT_HOME = _eg_home
-    _egjs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("jobsapp.presets_spell_out_the_real_base_urls",
-          "https://api.deepseek.com/v1" in _egjs
-          and "http://localhost:11434/v1" in _egjs
-          and "ENGINE_PRESETS" in _egjs)
-    # a module the Jobs app imports must travel with it, or the standalone
-    # app won't start — agent.engines didn't, and it didn't
-    _egsync = _RPath("tools/sync_jobs_app.py").read_text("utf-8")
-    check("jobsapp.every_imported_module_is_in_the_sync_closure",
-          '"engines"' in _egsync
-          and _RPath("../agent-jo-jobs/agent/engines.py").exists())
-
     # --- an engine pointing at the wrong kind of endpoint -------------------- #
     #
     # Reported: connecting directly to the DeepSeek API answered "`deepseek-
@@ -10807,287 +8386,6 @@ def main() -> None:
           and "request never left this machine" in
           _RPath("agent/brain.py").read_text("utf-8"))
 
-    # --- setup installs what the features need ------------------------------- #
-    #
-    # Portal applications need a real browser, and setup only ever printed the
-    # two commands to run — so the app's headline feature was one undocumented
-    # step from working on every fresh machine. Setup installs it now, and
-    # says what to do when the download is blocked.
-    _inst3 = _RPath("install_agent_jo.py").read_text("utf-8")
-    check("install.the_browser_is_installed_at_setup",
-          "-m\", \"playwright\", \"install\", \"chromium\"" in _inst3
-          or '"playwright", "install", "chromium"' in _inst3)
-    check("install.it_can_be_declined_and_never_hangs",
-          "--skip-extras" in _inst3 and "def ask(" in _inst3
-          and "isatty()" in _inst3)
-    # --dry-run exits 0 with no browser on disk, so it can't be the test
-    # the comment explaining why --dry-run isn't used mentions it, so look at
-    # the code rather than the prose
-    _inst3code = "\n".join(l for l in _inst3.splitlines()
-                           if not l.strip().startswith("#"))
-    check("install.readiness_is_whether_the_executable_exists",
-          "def browser_ready" in _inst3
-          and "executable_path" in _inst3
-          and '"--dry-run"' not in _inst3code)
-    check("install.a_blocked_download_says_what_to_do",
-          "playwright install chromium" in _inst3
-          and "HTTPS_PROXY" in _inst3)
-    _jinst = _RPath("../agent-jo-jobs/install.sh")
-    if _jinst.exists():
-        _jt = _jinst.read_text("utf-8")
-        check("install.the_jobs_app_installs_it_too",
-              "playwright install chromium" in _jt
-              and "executable_path" in _jt)
-    check("health.a_missing_portal_browser_is_visible",
-          "_check_portal_browser" in _RPath("agent/health.py").read_text("utf-8"))
-
-    # --- the portal must work from a chat too -------------------------------- #
-    #
-    # Reported: "Applying via the portal (rehearsal)" failed with "It looks
-    # like you are using Playwright Sync API inside the asyncio loop". The
-    # synchronous browser API refuses to start on a thread with a running
-    # loop. An HTTP route is fine — those run on a worker thread — but a tool
-    # call inside a chat turn runs on the loop, so every portal application
-    # from a conversation failed, with a message that reads like a coding
-    # fault rather than a place it was called from.
-    import agent.portal as _pt
-    import asyncio as _ptasyncio
-    def _pt_loop_running():
-        try:
-            _ptasyncio.get_running_loop()
-            return True
-        except RuntimeError:
-            return False
-
-    _pt_real = _pt._apply_to_portal
-    _pt._apply_to_portal = lambda role, prof, **kw: {
-        "ok": True, "state": "filled", "loop_here": _pt_loop_running()}
-    try:
-        async def _pt_from_chat():
-            return _pt.apply_to_portal({"url": "https://x/1"}, {}, submit=False)
-        # on its own loop in its own thread: the suite may already have one
-        # running in this thread, and asyncio.run refuses that — while the
-        # thing under test is simply "called from inside a loop"
-        def _pt_in_a_loop():
-            _ptloop = _ptasyncio.new_event_loop()
-            try:
-                return _ptloop.run_until_complete(_pt_from_chat())
-            finally:
-                _ptloop.close()
-        from concurrent.futures import ThreadPoolExecutor as _PTEX
-        with _PTEX(max_workers=1) as _ptex:
-            _ptres = _ptex.submit(_pt_in_a_loop).result(timeout=30)
-        check("portal.the_browser_never_starts_on_the_event_loop",
-              _ptres["loop_here"] is False)
-        check("portal.a_plain_caller_is_unaffected",
-              _pt.apply_to_portal({"url": "https://x/1"}, {},
-                                  submit=False)["loop_here"] is False)
-    finally:
-        _pt._apply_to_portal = _pt_real
-    # set-up failures must say what to run, not print the library's output
-    check("portal.a_missing_browser_says_the_command",
-          "playwright install chromium" in _pt._explain_portal_error(
-              Exception("Executable doesn't exist at /opt/pw/chrome")))
-    check("portal.a_missing_driver_says_the_command",
-          "pip install playwright" in _pt._explain_portal_error(
-              ImportError("No module named 'playwright'")))
-
-    # --- auto-apply must be able to send, and say why when it can't --------- #
-    #
-    # Reported: it has never sent autonomously. The sending code was never
-    # broken — it is guarded by several separate conditions, and when one was
-    # off nothing said so: the run reported "0 sent", which reads as a broken
-    # feature rather than a setting. And the standalone Jobs app ran no
-    # scheduler at all, so the daily job only happened if the main app was
-    # open at the time.
-    _aa_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    config.DB_PATH = config.AGENT_HOME / "aa.db"
-    try:
-        import agent.jobscout as _aaj
-        import agent.outreach as _aao
-        _aa_send, _aa_conf, _aa_draft = _aao.send, _aao.is_configured, _aao._is_draft_only
-        _aasent = []
-        _aao.send = lambda to, s2, b, **kw: (_aasent.append((to, kw.get("dry_run"))) or {"ok": True})
-        _aao.is_configured = lambda: True
-        _aao._is_draft_only = lambda: False
-        try:
-            check("auto.a_fresh_install_names_every_blocker",
-                  {b["what"] for b in _aaj.auto_readiness()["blockers"]}
-                  >= {"Auto-apply is off", "Rehearsal is on, so nothing is ever sent"})
-            _aaj.save_profile({"full_name": "A", "summary": "BI",
-                               "target_roles": ["Data Analyst"], "skills": ["SQL"],
-                               "technologies": ["SQL Server"], "employers": ["Acme"],
-                               "locations_ok": ["Remote"], "achievements": ["x"],
-                               "years_experience": {}})
-            _aaj.add_roles([{"title": "Data Analyst", "company": "Beta",
-                             "url": "https://x/9", "summary": "SQL",
-                             "apply_email": "jobs@beta.test"}])
-            _aak = _aaj.roles()[0]["key"]
-            _aaj.update_role(_aak, fit={"score": 90},
-                             draft={"subject": "S", "body": "B",
-                                    "check": {"ok": True, "problems": []}})
-            _aaj.save_auto_config({**_aaj.auto_config(), "enabled": True,
-                                   "dry_run": True, "min_score": 75})
-            check("auto.rehearsal_is_named_as_the_thing_stopping_it",
-                  any("Rehearsal" in b["what"]
-                      for b in _aaj.auto_readiness()["blockers"]))
-            _aaj.auto_apply(None)
-            check("auto.rehearsal_never_actually_sends", _aasent == [("jobs@beta.test", True)])
-            # and with rehearsal off it really sends
-            _aaj.set_stage(_aak, "found")
-            _aaj.save_auto_config({**_aaj.auto_config(), "dry_run": False})
-            _aar = _aaj.auto_readiness()
-            check("auto.with_everything_set_it_reports_ready",
-                  _aar["ok"] and _aar["will_send"] == 1)
-            # before it runs — afterwards the role is sent and nothing is left
-            check("auto.the_preview_says_what_would_happen",
-                  "would be sent" in _aaj.auto_preview()["sentence"])
-            check("auto.the_preview_and_the_run_count_the_same_roles",
-                  len(_aaj.auto_preview()["would_send"]) == _aar["will_send"])
-            _aasent.clear()
-            _aa_out = _aaj.auto_apply(None)
-            check("auto.it_sends_for_real",
-                  _aasent == [("jobs@beta.test", False)]
-                  and len(_aa_out["sent"]) == 1
-                  and _aaj.get_role(_aak)["stage"] == "applied")
-            # the preview and the run must describe themselves truthfully
-            _aaj.save_auto_config({**_aaj.auto_config(), "enabled": False})
-            check("auto.the_preview_does_not_claim_on_when_off",
-                  _aaj.auto_preview()["sentence"].startswith("Auto-apply is off"))
-        finally:
-            _aao.send, _aao.is_configured, _aao._is_draft_only = _aa_send, _aa_conf, _aa_draft
-    finally:
-        config.AGENT_HOME = _aa_home
-    # two apps on one store must never run the same job twice
-    import time as _rtime
-    _aam = _RMS(db_path=_RPath(_rtf.mkdtemp()) / "s.db", check_same_thread=False)
-    _aasid = _aam.create_schedule("Job scout — daily", "x", "{}", "Auto", False,
-                                  _rtime.time() - 5, action="jobscout", payload="{}")
-    check("auto.a_scheduled_run_can_only_be_claimed_once",
-          _aam.claim_schedule(_aasid, _rtime.time())
-          and not _aam.claim_schedule(_aasid, _rtime.time()))
-    _aasrv = _RPath("jobs/server.py").read_text("utf-8")
-    check("auto.the_jobs_app_runs_its_own_daily_job",
-          "def tick_schedules" in _aasrv and "claim_schedule" in _aasrv
-          and "start_scheduler()" in _RPath("run_jobs.py").read_text("utf-8"))
-    check("auto.a_run_reports_what_it_did_and_why_not",
-          '"summary"] = "; ".join(bits)' in _aasrv
-          and '"why_nothing"' in _aasrv)
-    _aajs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("auto.the_window_shows_what_is_stopping_it",
-          "function drawReadiness" in _aajs
-          and '"/api/jobs/auto/readiness"' in _aajs)
-
-    # --- the reference screens, with nothing invented ---------------------- #
-    #
-    # Restyled to a supplied design: Sources Manager with Verified / Pending
-    # badges, role cards with "% Match", a claims view with coverage, an
-    # auto-apply switch in the rail. The design showed a match on every card
-    # and a verified badge on most sources; the app shows them only where
-    # something real stands behind them.
-    _rsh = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    try:
-        import agent.jobscout as _rsj
-        import json as _rsjson
-        (_rsj._dir() / "sources.json").write_text(_rsjson.dumps([
-            {"name": "A", "url": "https://a.example/jobs", "on": True},
-            {"name": "B", "url": "https://b.example/jobs", "on": True},
-            {"name": "C", "url": "https://c.example/jobs", "on": True}]), "utf-8")
-        check("sources.never_checked_is_pending_not_verified",
-              {s["name"]: s["status"] for s in _rsj.source_status()["sources"]}
-              == {"A": "pending", "B": "pending", "C": "pending"})
-        _rsj.record_source_checks({"A": 12, "B": 0}, ["B: 403 Forbidden"])
-        _rsst = {s["name"]: s for s in _rsj.source_status()["sources"]}
-        check("sources.verified_only_when_it_returned_roles",
-              _rsst["A"]["status"] == "verified" and _rsst["A"]["last_count"] == 12
-              and _rsst["B"]["status"] == "failing"
-              and _rsst["B"]["error"] == "403 Forbidden"
-              and _rsst["C"]["status"] == "pending")
-        check("sources.freshness_is_when_they_were_really_checked",
-              bool(_rsj.source_status()["checked_at"]))
-    finally:
-        config.AGENT_HOME = _rsh
-    check("sources.every_search_records_what_each_source_did",
-          "record_source_checks(per_source, errors)" in
-          _RPath("agent/jobscout.py").read_text("utf-8"))
-    _rsjs = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    # a fresh result has no score, and says so rather than showing a number
-    check("search.a_match_is_shown_only_when_a_score_exists",
-          '"Not scored" : `${score}% Match`' in _rsjs)
-    check("profile.completeness_counts_real_fields_and_names_what_is_missing",
-          "function profileCompleteness" in _rsjs
-          and '"Missing: " + c.missing.join(", ")' in _rsjs)
-    # the rail switch changes only "enabled" — the rules stay as saved, and
-    # it reads "Test" while rehearsal means nothing is actually sent
-    check("auto.the_rail_switch_changes_only_enabled",
-          'await api("/api/jobs/auto", { enabled: on })' in _rsjs
-          and '(auto.dry_run ? "Test" : "On")' in _rsjs)
-
-    # an inset accent bar on a short rounded row bends round both corners and
-    # reads as a bracket — reported as messy, so the claim rows have none
-    _cvcss = _RPath("web_jobs/jobs.css").read_text("utf-8")
-    check("claims.coverage_rows_have_no_bracket_edge",
-          "box-shadow" not in _cvcss[_cvcss.index(".cov-item {"):
-                                     _cvcss.index("}", _cvcss.index(".cov-item {"))])
-
-    # --- search shows what you already have, and Track actually saves -------- #
-    #
-    # Reported: searching didn't show which roles were already tracked, and
-    # tracking didn't work. It was worse than broken — the window sent
-    # {"roles": [...]} to a route whose field is "items"; the extra key was
-    # dropped, the call answered ok with nothing added, and every result was
-    # then shown as tracked. Nothing was ever saved.
-    _stk_home = config.AGENT_HOME
-    config.AGENT_HOME = _RPath(_rtf.mkdtemp())
-    config.DB_PATH = config.AGENT_HOME / "s.db"
-    try:
-        import jobs.server as _stjs
-        import agent.jobscout as _stj
-        from fastapi.testclient import TestClient as _STC
-        _stjs.memory = _RMS(db_path=config.DB_PATH, check_same_thread=False)
-        _stc = _STC(_stjs.app, raise_server_exceptions=False)
-        _A = {"title": "Data Engineer", "company": "Acme", "url": "https://x/1"}
-        _B = {"title": "BI Lead", "company": "Zeta", "url": "https://x/2"}
-        _C = {"title": "ML Engineer", "company": "Tyme", "url": "https://x/3"}
-        check("search.a_wrong_field_is_refused_not_silently_ignored",
-              _stc.post("/api/jobs/search/add",
-                        json={"roles": [_A]}).status_code == 422)
-        _so = _stc.post("/api/jobs/search/add", json={"items": [_A, _B]}).json()
-        check("search.tracking_really_saves",
-              [o["status"] for o in _so["outcomes"]] == ["added", "added"]
-              and len(_stj.roles()) == 2)
-        _so2 = _stc.post("/api/jobs/search/add", json={"items": [_A, _C]}).json()
-        check("search.each_role_gets_its_own_outcome",
-              [o["status"] for o in _so2["outcomes"]]
-              == ["already tracked", "added"])
-        _stj.remove_role(_stj.role_key(_B))
-        _stm = {x["title"]: x for x in _stj.mark_tracked(
-            [_A, _B, {"title": "Head of Data", "company": "Luno"}])}
-        check("search.results_say_tracked_removed_or_new",
-              _stm["Data Engineer"]["already_tracked"]
-              and _stm["BI Lead"]["removed_before"]
-              and not _stm["Head of Data"]["already_tracked"]
-              and not _stm["Head of Data"]["removed_before"])
-        # a removed role is skipped silently by add_roles — so its button must
-        # say so, and Restore must actually bring it back
-        _so3 = _stc.post("/api/jobs/search/add", json={"items": [_B]}).json()
-        _so4 = _stc.post("/api/jobs/search/add",
-                         json={"items": [_B], "restore": True}).json()
-        check("search.a_removed_role_is_named_and_can_be_restored",
-              _so3["outcomes"][0]["status"] == "removed earlier"
-              and _so4["outcomes"][0]["status"] == "added")
-    finally:
-        config.AGENT_HOME = _stk_home
-    _stsrc = _RPath("agent/jobscout.py").read_text("utf-8")
-    check("search.reading_one_page_marks_tracked_too",
-          '"results": mark_tracked(kept[:limit])' in _stsrc)
-    _stjs2 = _RPath("web_jobs/jobs.js").read_text("utf-8")
-    check("search.the_window_sends_the_field_the_route_reads",
-          'api("/api/jobs/search/add", { items' in _stjs2
-          and "{ roles: results }" not in _stjs2)
-
     # --- upgrading must not touch what you have ------------------------------ #
     #
     # The upgrade instruction is "replace the folder", which is only safe
@@ -11111,43 +8409,6 @@ def main() -> None:
     _upmd = _RPath("UPGRADING.md").read_text("utf-8")
     check("upgrade.it_warns_about_the_two_things_that_actually_break",
           "brackets" in _upmd and "%TEMP%" in _upmd)
-
-    # --- Agent Jo Jobs is a separate app, not a copy -------------------------- #
-    #
-    # The job search had become a different product living inside another
-    # one. It moved out — but the modules did not: one fabrication check, one
-    # auto-apply engine, one definition of "held". Two copies would drift,
-    # and the half that decides whether an application goes out is not a half
-    # to let drift.
-    _jsrv = _RPath("jobs/server.py").read_text("utf-8")
-    _msrv = _RPath("web/server.py").read_text("utf-8")
-    check("jobsapp.the_routes_moved_rather_than_being_duplicated",
-          '"/api/jobs' in _jsrv and '"/api/jobs' not in _msrv)
-    check("jobsapp.it_imports_the_same_modules_not_copies",
-          "import agent.jobscout as jobscout" in _jsrv
-          and not _RPath("jobs").joinpath("jobscout.py").exists())
-    check("jobsapp.the_main_app_no_longer_carries_the_panel",
-          'id="jobsBtn"' not in _uihtml and "/api/jobs" not in _uijs)
-    # and it has to be in the box people download
-    _mkrel2 = _RPath("tools/make_release.py").read_text("utf-8")
-    check("release.ships_the_jobs_app",
-          '"jobs", "web_jobs",' in _mkrel2
-          and "run_jobs.py" in _mkrel2
-          and "start_agent_jo_jobs.bat" in _mkrel2)
-    _inst2 = _RPath("install_agent_jo.py").read_text("utf-8")
-    check("install.checks_both_apps_load",
-          "jobs.server" in _inst2 and "8766" in _inst2)
-    # same batch rules as the main launcher — a folder called "AgentJo (1)"
-    # breaks anything that expands a path inside a block
-    _jbat = _RPath("start_agent_jo_jobs.bat").read_text("utf-8")
-    _jdepth, _jbad = 0, []
-    for _ji, _jl in enumerate(_jbat.splitlines(), 1):
-        _js = _jl.split("REM")[0]
-        if "%~dp0" in _js and _jdepth > 0:
-            _jbad.append(_ji)
-        _jdepth += _js.count("(") - _js.count(")")
-    check("jobsapp.its_launcher_survives_brackets_in_the_folder_name",
-          not _jbad and _jdepth == 0)
 
     # --- a folder name with brackets in it ----------------------------------- #
     #
@@ -12060,12 +9321,624 @@ def main() -> None:
             _brainmod._custom_brains.clear()
 
     _hardening_checks()
-    _auto_apply_checks()
-    _sources_checks()
-    _helper_checks()
     _look_checks()
+    _installer_checks()
+    _memory_concurrency_checks()
+    _career_checks()
+    _updater_checks()
+
+    # --- exporting a conversation, secrets blanked ----------------------- #
+    _export_checks()
+
+    # --- interviews and applications from the job search, in the chat ----- #
+    _career_interview_checks()
+
+    # --- an approved held call actually runs ------------------------------ #
+    _held_checks()
+
+    # --- the phone companion: approvals and schedules, key only ------------ #
+    _phone_checks()
+
+    # --- the board shows held calls and the job search's urgent things ---- #
+    _board_checks()
+
+    # --- routing you can see; evals that test the engine you named -------- #
+    _routing_ui_checks()
+
+    # --- a model that can't take tools still answers ---------------------- #
+    _no_tools_checks()
+
+    # --- the Symbolic Synapse theme ----------------------------------------- #
+    _synapse_checks()
 
     print(f"\n{len(PASS)} checks passed OK")
+
+
+# ---------------------------------------------------------------------- #
+# Symbolic Synapse: the look of symbolicsynapse.co.za, as a skin over Glass.
+#   python -c "import tests.run_tests as t; t._synapse_checks()"
+#   python tools/check_layout.py     (the same, measured in a real browser)
+# ---------------------------------------------------------------------- #
+def _synapse_checks() -> None:
+    import re
+    root = Path(__file__).resolve().parents[1]
+    st = root / "web" / "static"
+    css = (st / "styles.css").read_text("utf-8")
+    js = (st / "app.js").read_text("utf-8")
+    html = (st / "index.html").read_text("utf-8")
+    pre = (st / "prepaint.js").read_text("utf-8")
+    srv = (root / "web" / "server.py").read_text("utf-8")
+
+    # a theme in Settings, drawn over Glass, so every Glass fix still applies
+    check("synapse.a_theme_drawn_over_glass",
+          'synapse: { label: "Symbolic Synapse (dark)", fixed: "glass", skin: "synapse" }' in js
+          and 'root.setAttribute("data-skin", skin)' in js
+          and 'root.removeAttribute("data-skin")' in js)
+    # the main look and the default (asked for, 171): first in the list,
+    # what a fresh install opens on, what System gives in dark mode, and the
+    # markup's own default so even the first paint is right
+    check("synapse.is_the_main_look_and_the_default",
+          'const DEFAULT_THEME = "synapse";' in js
+          and js.index("synapse: {", js.index("const THEMES = {")) <
+              js.index("glass: {", js.index("const THEMES = {"))
+          and 'system: { label: "System (follow Windows)", dark: "synapse"' in js
+          and '<html lang="en" data-theme="glass" data-skin="synapse"' in html)
+    # anyone on the old default moves once; a theme picked on purpose stays
+    mig = js[js.index('if (!localStorage.getItem("agentjo-theme-synapse-default"))'):]
+    mig = mig[:mig.index("return localStorage.getItem")]
+    check("synapse.the_move_to_it_happens_once_and_spares_a_chosen_theme",
+          'if (!was || was === "glass")' in mig
+          and 'localStorage.setItem("agentjo-theme-synapse-default", "1")' in mig
+          and '!ls.getItem("agentjo-theme-synapse-default")' in pre
+          and '(!c || c === "glass")) c = "synapse"' in pre)
+    # before the first paint: every skin app.js knows, prepaint.js knows too
+    skins = set(re.findall(r'skin: "([a-z-]+)"', js))
+    check("synapse.the_skin_is_on_before_the_first_paint",
+          skins == {"synapse"}
+          and all(f'{k}: "{k}"' in pre for k in skins)
+          and 'root.setAttribute("data-skin", SKINS[r])' in pre
+          and 'root.removeAttribute("data-skin")' in pre)
+    check("synapse.in_the_palette_too",
+          'name: "Theme: " + t.label' in js and "symbolic synapse website" in js)
+
+    # every rule belongs to the skin: nothing leaks into Glass or the others
+    start = css.index("/*  SYMBOLIC SYNAPSE")
+    end = css.index("/* Kept last: a class that sets display must never outrank [hidden].")
+    block = css[start:end]
+    no_comments = re.sub(r"/\*.*?\*/", "", block, flags=re.S)
+    heads = []
+    for m in re.finditer(r"([^{};]+)\{", no_comments):
+        head = " ".join(m.group(1).split())
+        if head.startswith(("@media", "@supports", "@keyframes", "from", "to")) or not head:
+            continue
+        heads.append(head)
+    def parts(head):                       # split a selector list, not :where(a, b)
+        out, depth, cur = [], 0, ""
+        for ch in head:
+            depth += (ch == "(") - (ch == ")")
+            if ch == "," and depth == 0:
+                out.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        return out + [cur]
+    loose = [h for h in heads if h != "@font-face"
+             and h != ".brand-co, .syn-legend, .syn-lattice"
+             and not all(part.strip().startswith(('[data-theme="glass"][data-skin="synapse"]',
+                                                  ':where([data-theme="glass"][data-skin="synapse"])'))
+                         for part in parts(h))]
+    check("synapse.every_rule_is_scoped_to_the_skin", heads and not loose)
+    # the parts only it shows are hidden everywhere else
+    check("synapse.its_parts_are_hidden_in_other_themes",
+          ".brand-co, .syn-legend, .syn-lattice { display: none; }" in css
+          and 'class="brand-co"' in html and 'class="syn-legend"' in html)
+    # Glass's phone layout hides and moves things with display/position; the
+    # skin outranks Glass, so it must never set those on the same parts
+    def body(sel):
+        i = block.find(sel + " {")
+        return block[i:block.index("}", i)] if i >= 0 else ""
+    check("synapse.never_moves_what_glass_lays_out",
+          all(not re.search(r"(^|[\s;{])(display|position|order|flex)\s*:", body(
+              '[data-theme="glass"][data-skin="synapse"] ' + s))
+              for s in (".task-feed", ".topbar", ".topbar-actions", ".nav-toggle")))
+
+    # the fonts: served by the app, licences beside them, no font service
+    faces = re.findall(r'url\("fonts/([^"]+)"\)', css)
+    fonts = st / "fonts"
+    check("synapse.its_fonts_ship_with_the_app",
+          len(faces) == 4 and all((fonts / f).is_file() and (fonts / f).stat().st_size > 10000
+                                  for f in faces))
+    check("synapse.with_their_licences",
+          all((fonts / f).is_file() for f in ("OFL-Archivo.txt", "OFL-IBMPlexSans.txt",
+                                              "OFL-IBMPlexMono.txt", "README.txt"))
+          and all("SIL Open Font License" in (fonts / f).read_text("utf-8")
+                  for f in ("OFL-Archivo.txt", "OFL-IBMPlexSans.txt", "OFL-IBMPlexMono.txt")))
+    check("synapse.no_font_service_is_contacted",
+          "fonts.googleapis" not in css + html and "fonts.gstatic" not in css + html)
+    # "Plex" is IBM's reserved name: those files must be IBM's own data, only
+    # wrapped as WOFF (the Open Font License FAQ allows that, not more)
+    plex_ok = False
+    try:
+        from fontTools.ttLib import TTFont as _TT
+        plex_ok = all(_TT(fonts / f)["name"].getDebugName(1).startswith("IBM Plex")
+                      and _TT(fonts / f).flavor == "woff"
+                      for f in ("ibm-plex-sans-var.woff", "ibm-plex-mono-400.woff",
+                                "ibm-plex-mono-500.woff"))
+    except ImportError:
+        plex_ok = all((fonts / f).read_bytes()[:4] == b"wOFF"
+                      for f in ("ibm-plex-sans-var.woff", "ibm-plex-mono-400.woff",
+                                "ibm-plex-mono-500.woff"))
+    check("synapse.plex_is_ibms_own_font_data", plex_ok)
+    check("synapse.the_csp_allows_fonts_from_the_app", "font-src 'self'" in srv)
+
+    # the lattice: only where it can be seen, still for anyone who asked for
+    # less motion, and never wider than the welcome column
+    run = js[js.index("function _synRunnable() {"):js.index("function _synKick() {")]
+    kick = js[js.index("function _synKick() {"):js.index("function _synStop() {")]
+    check("synapse.the_lattice_runs_only_when_it_can_be_seen",
+          all(x in run for x in ("document.hidden", "_syn.seen", 'classList.contains("hidden")'))
+          and "IntersectionObserver" in js and '"visibilitychange", _synKick' in js)
+    check("synapse.reduced_motion_draws_it_once",
+          "if (_reducedMotion()) { _synStop(); _synFrame(0, true); return; }" in kick)
+    check("synapse.the_lattice_fits_the_column",
+          "Math.min(560, Math.floor(room))" in kick and ".syn-lattice" in css
+          and "overflow-x: clip" in block)
+    check("synapse.switching_away_removes_it",
+          "_syn.canvas.remove()" in js and "synapseSkin(skin === \"synapse\")" in js)
+    check("synapse.left_alone_it_holds_still",
+          "now - _syn.input > SYN_IDLE_MS" in js and "const SYN_IDLE_MS = 120000;" in js
+          and '["pointermove", "pointerdown", "keydown", "wheel"]' in js)
+    check("synapse.the_pointer_light_is_for_mouse_and_pen",
+          'e.pointerType === "touch"' in js and "(hover: hover)" in js)
+    check("synapse.the_lattice_sits_behind_the_words",
+          "z-index: -1" in body('[data-theme="glass"][data-skin="synapse"] .syn-lattice')
+          and "isolation: isolate" in body('[data-theme="glass"][data-skin="synapse"] .empty-mark'))
+    # the site's tokens, by value
+    check("synapse.the_sites_palette",
+          all(v in block for v in ("--syn-abyss: #03060B", "--syn-cyan: #2FD3E3",
+                                    "--syn-steel: #2E6FAE", "--syn-bolt: #E6FAFF",
+                                    "--syn-fog: #D8E5F2", "--syn-slate: #8A9DB3")))
+    # a toast's kind (fine, warning, failed) is the dot before it now, and
+    # the skin's border must not hide a failed one
+    check("synapse.toasts_keep_their_kind_colour",
+          '[data-theme="glass"] .toast.bad::before' in css
+          and '[data-theme="glass"] .toast.ok::before { background: var(--ok); }' in css
+          and "var(--danger)" in body('[data-theme="glass"][data-skin="synapse"] .toast.err'))
+    # and the code-block lines aren't boxed one by one
+    check("synapse.a_code_block_is_one_surface",
+          "background: none" in body('[data-theme="glass"][data-skin="synapse"] .msg-content pre code'))
+    # no bars down the left edge of a rounded card (asked for, 171): the
+    # tier is a dot, rows and toasts lose their rail, in Glass and the skin
+    glass_tail = css[css.index("/* --- glass: no bars down the left edge"):start]
+    check("synapse.no_bars_down_the_left_edge",
+          '[data-theme="glass"] .log-row { box-shadow: none; }' in glass_tail
+          and "border-radius: 50%" in glass_tail[glass_tail.index('[data-theme="glass"] .tier::before {'):]
+          and '[data-theme="glass"] .foot-btn::before { display: none; }' in glass_tail
+          and '[data-theme="glass"] .toast { border-left-width: 1px;' in glass_tail
+          and '[data-theme="glass"] .auto-row {' in glass_tail
+          and "inset 3px 0 0" not in block and "border-left: 3px" not in block)
+    # the skin is decoration: whatever happens to it, the app still starts.
+    # The dashboard harness boots app.js on a bare stand-in for the page — no
+    # canvas, no insertBefore — which is as hostile as it gets.
+    import shutil as _ssh, subprocess as _ssub
+    _snode, _sharn = _ssh.which("node"), root / "tests" / "dash_visibility.js"
+    _sboot = True
+    if _snode and _sharn.exists():
+        _sr = _ssub.run([_snode, str(_sharn), '{"agentjo-theme": "synapse"}'],
+                        capture_output=True, text=True, timeout=60, cwd=str(root))
+        _sboot = "after boot: dash.hidden = false" in (_sr.stdout or "")
+    check("synapse.the_app_starts_whatever_happens_to_the_decoration",
+          _sboot and "try { synapseSkin(skin" in js)
+    # the lattice is driven by observers and input events (it is the default
+    # now, so every page has it): it must never throw into them
+    check("synapse.the_lattice_never_throws_into_events",
+          "try { _synKickNow(); } catch (e) { _synStop(); }" in js
+          and 'typeof mark.insertBefore !== "function"' in js
+          and "catch (err) { /* only a light" in js)
+
+
+# ---------------------------------------------------------------------- #
+# "<model> does not support tools": answer without them, and remember.
+#   python -c "import tests.run_tests as t; t._no_tools_checks()"
+# ---------------------------------------------------------------------- #
+def _no_tools_checks() -> None:
+    import tempfile as _nt
+    from types import SimpleNamespace as _NS
+    from agent import config as _nc, brain as B
+    home = _nc.AGENT_HOME
+    _nc.AGENT_HOME = Path(_nt.mkdtemp(prefix="notools-"))
+    B._NO_TOOLS = None
+    model = "hf.co/mlabonne/gemma-3-27b-it-abliterated-GGUF:Q4_K_M"
+    calls = []
+
+    class BadRequestError(Exception):
+        pass
+
+    class Completions:
+        def create(self, **kw):
+            calls.append("tools" in kw)
+            if "tools" in kw:
+                raise BadRequestError("Error code: 400 - {'error': {'message': '%s does not support tools', "
+                                      "'type': 'invalid_request_error'}}" % model)
+            msg = _NS(content="Hello from Gemma.", tool_calls=None)
+            return _NS(choices=[_NS(message=msg, finish_reason="stop")], usage=None)
+
+    client = _NS(chat=_NS(completions=Completions()))
+    tools = [{"name": "read_file", "description": "x", "input_schema": {"type": "object", "properties": {}}}]
+    try:
+        b = B.OpenAIBrain(model=model, base_url="http://localhost:11434/v1", api_key="ollama",
+                          label="Ollama", client=client, supports_stream=False)
+        r = b.chat([{"role": "user", "content": "hi"}], "be helpful", tools)
+        text = "".join(x.text for x in r.content if getattr(x, "type", "") == "text")
+        check("notools.it_answers_instead_of_failing", "Hello from Gemma." in text
+              and "does not support tools" not in text, text)
+        check("notools.and_says_it_answered_without_tools", "can't use tools" in text)
+        check("notools.retried_once_without_tools", calls == [True, False], calls)
+        check("notools.the_model_is_remembered", B.model_lacks_tools(model)
+              and (B.config.AGENT_HOME / "no_tools_models.json").exists())
+        calls.clear()
+        b.chat([{"role": "user", "content": "again"}], "x", tools)
+        check("notools.next_turn_skips_the_failed_request", calls == [False], calls)
+        B.forget_no_tools(model)
+        check("notools.can_be_forgotten", not B.model_lacks_tools(model))
+        # Ollama's own API (/api/chat) refuses the same way, with a 400 body
+        import json as _nj, threading as _nth
+        from http.server import BaseHTTPRequestHandler as _H, ThreadingHTTPServer as _S
+        seen = []
+
+        class H(_H):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                self.send_response(200); self.end_headers(); self.wfile.write(b'{"models": []}')
+            def do_POST(self):
+                body = _nj.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append("tools" in body)
+                if "tools" in body:
+                    self.send_response(400); self.end_headers()
+                    self.wfile.write(_nj.dumps({"error": "%s does not support tools" % body["model"]}).encode())
+                    return
+                self.send_response(200); self.end_headers()
+                self.wfile.write(_nj.dumps({"message": {"content": "Native hello."}, "done": True}).encode())
+        srv = _S(("127.0.0.1", 0), H)
+        _nth.Thread(target=srv.serve_forever, daemon=True).start()
+        old_host = B.config.OLLAMA_HOST
+        B.config.OLLAMA_HOST = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            ob = B.OllamaBrain(model="gemma-abliterated:latest")
+            r = ob.chat([{"role": "user", "content": "hi"}], "x", tools)
+            t2 = "".join(x.text for x in r.content if getattr(x, "type", "") == "text")
+            check("notools.ollama_native_path_too", "Native hello." in t2 and seen == [True, False]
+                  and B.model_lacks_tools("gemma-abliterated:latest"), (t2, seen))
+        finally:
+            B.config.OLLAMA_HOST = old_host
+            srv.shutdown()
+        check("notools.other_errors_arent_mistaken", not B.is_no_tools_error("401 invalid api key")
+              and B.is_no_tools_error("registry.ollama.ai/x does not support tools"))
+    finally:
+        B._NO_TOOLS = None
+        _nc.AGENT_HOME = home
+
+
+# ---------------------------------------------------------------------- #
+# Routing, spend and evals had endpoints and no window; evals tested the
+# wrong model. Kept fixed:
+#   python -c "import tests.run_tests as t; t._routing_ui_checks()"
+# ---------------------------------------------------------------------- #
+def _routing_ui_checks() -> None:
+    from types import SimpleNamespace as _NS
+    from agent import evals as EV
+    import tempfile as _rt
+    from agent import config as _rc
+    home = _rc.AGENT_HOME
+    _rc.AGENT_HOME = Path(_rt.mkdtemp(prefix="evals-"))
+    seen = []
+
+    class Brain:
+        def chat(self, messages, system, tools, **kw):
+            seen.append(kw.get("model", "<default>"))
+            return _NS(content=[_NS(type="text", text="{}")])
+    try:
+        EV.run(Brain(), engine="Ollama gemma3", feature="", model="TOKEN-FOR-GEMMA")
+        check("evals.test_the_engine_you_named", seen and all(m == "TOKEN-FOR-GEMMA" for m in seen), seen[:3])
+        seen.clear()
+        EV.run(Brain(), engine="", feature="")
+        check("evals.default_engine_when_none_named", seen and all(m == "<default>" for m in seen))
+    finally:
+        _rc.AGENT_HOME = home
+    root = Path(__file__).resolve().parents[1]
+    srv = (root / "web" / "server.py").read_text("utf-8")
+    js = (root / "web" / "static" / "app.js").read_text("utf-8")
+    html = (root / "web" / "static" / "index.html").read_text("utf-8")
+    check("routing.the_server_passes_the_resolved_model_to_evals", 'feature=body.feature or "", model=model)' in srv)
+    check("routing.each_reply_carries_its_route", 'turn_info["route"] = ' in srv
+          and '"route": turn_info.get("route")' in srv and '"failover": turn_info.get("failover")' in srv)
+    check("routing.the_reply_shows_the_rule", "msg-route" in js and "route: data.route" in js)
+    check("routing.there_is_a_window_for_it", 'id="routingBtn"' in html and 'id="routingModal"' in html
+          and "async function drawRouting" in js and "/api/routing/rules" in js
+          and "/api/routing/test" in js and "/api/costs" in js and "/api/evals/run" in js)
+    import re as _rr
+    html_ids = _rr.findall(r'class="modal-backdrop" id="([a-zA-Z]+)"', html)
+    cam = js[js.index("function closeAllModals() {"):]
+    cam = cam[:cam.index("\n}\n")]
+    named = {"mlModal": "closeMl()", "codemapModal": "closeCodemap()", "phoneModal": "closePhone()",
+             "routingModal": "closeRouting()"}
+    check("ui.opening_a_panel_closes_every_other", all(named[i] in cam for i in named if i in html_ids))
+    check("ui.panels_wrap_on_a_phone", ".modal .engine-grid { grid-template-columns: minmax(0, 1fr) !important; }"
+          in (root / "web" / "static" / "styles.css").read_text("utf-8"))
+    check("crew.members_can_be_edited_added_and_removed", "function crewEditor" in js
+          and '"/api/crew/member"' in js and '"/api/crew/member/" + encodeURIComponent' in js)
+    check("routing.turbo_results_shown", '"/api/turbo"' in js)
+    check("models.importance_and_card_are_shown", "/api/models/importance?name=" in js
+          and "/api/models/card?name=" in js)
+
+
+# ---------------------------------------------------------------------- #
+# The board: held calls and an interview soon, without opening anything.
+#   python -c "import tests.run_tests as t; t._board_checks()"
+# ---------------------------------------------------------------------- #
+def _board_checks() -> None:
+    import json as _bj
+    import os as _bo
+    import tempfile as _bt
+    from datetime import datetime as _bd, timedelta as _btd
+    from agent import config as _bc, intercepts as IC, dashboard as DB
+    home = _bc.AGENT_HOME
+    _bc.AGENT_HOME = Path(_bt.mkdtemp(prefix="board-"))
+    jobs = Path(_bt.mkdtemp(prefix="jobs-"))
+    (jobs / "jobscout").mkdir()
+    soon = (_bd.now() + _btd(hours=20)).strftime("%Y-%m-%d %H:%M")
+    later = (_bd.now() + _btd(days=6)).strftime("%Y-%m-%d %H:%M")
+    (jobs / "jobscout" / "roles.json").write_text(_bj.dumps([
+        {"title": "Data Engineer", "company": "Acme", "stage": "interview", "interview_at": soon,
+         "interview_link": "https://teams.microsoft.com/l/x"},
+        {"title": "BI Lead", "company": "Zeta", "stage": "interview", "interview_at": later}]), "utf-8")
+    (jobs / "jobscout" / "open_questions.json").write_text(_bj.dumps([{"question": "Notice period?"}]), "utf-8")
+    old = _bo.environ.get("AGENT_JOBS_HOME")
+    _bo.environ["AGENT_JOBS_HOME"] = str(jobs)
+    try:
+        check("board.nothing_held_nothing_shown", DB._held_items() == [])
+        IC.hold("send_email", {"to": "hr@acme.test", "subject": "Hi", "body": "x"})
+        h = DB._held_items()
+        check("board.a_held_call_is_on_the_board", h and h[0]["severity"] == "act"
+              and "hr@acme.test" in h[0]["detail"] and h[0]["panel"] == "autonomyBtn", h)
+        j = DB._jobs_items()
+        titles = [i["title"] for i in j]
+        check("board.an_interview_in_two_days_is_shown", "Interview: Data Engineer @ Acme" in titles
+              and not any("Zeta" in t for t in titles), titles)
+        check("board.waiting_questions_are_shown", any("waiting on your answers" in t for t in titles))
+        check("board.job_items_open_the_jobs_app", all(i.get("url") == DB.JOBS_URL for i in j))
+    finally:
+        if old is None:
+            _bo.environ.pop("AGENT_JOBS_HOME", None)
+        else:
+            _bo.environ["AGENT_JOBS_HOME"] = old
+        _bc.AGENT_HOME = home
+    js = (Path(__file__).resolve().parents[1] / "web" / "static" / "app.js").read_text("utf-8")
+    check("board.an_item_without_a_panel_doesnt_throw", "if (!i.panel) return;" in js)
+
+
+# ---------------------------------------------------------------------- #
+# The phone companion: only the key gets in, and only these decisions.
+#   python -c "import tests.run_tests as t; t._phone_checks()"
+# ---------------------------------------------------------------------- #
+def _phone_checks() -> None:
+    import http.client as _hc
+    import json as _pj
+    import tempfile as _pt
+    from agent import config as _pc, intercepts as IC, tools as TL, phone as PH, qr as QR
+
+    class Mem:
+        def __init__(self):
+            self.s = {1: {"id": 1, "name": "Morning brief", "enabled": 1, "spec": "{}", "last_status": "ok",
+                          "last_summary": "sent", "next_run": 1.0},
+                      2: {"id": 2, "name": "Weekly report", "enabled": 0, "spec": "{}", "last_status": "",
+                          "last_summary": "", "next_run": None}}
+        def list_schedules(self): return [dict(v) for v in self.s.values()]
+        def get_schedule(self, i): return dict(self.s[i]) if i in self.s else None
+        def set_schedule_enabled(self, i, on, nxt=None):
+            self.s[i]["enabled"] = int(on); self.s[i]["next_run"] = nxt; return True
+
+    class _C:
+        def print(self, *a, **k): pass
+
+    home = _pc.AGENT_HOME
+    _pc.AGENT_HOME = Path(_pt.mkdtemp(prefix="phone-"))
+    ran = []
+    real = TL._execute_tool_impl
+    TL._execute_tool_impl = lambda name, args, memory, console, auto_approve=False, session_id="", **kw: (
+        ran.append(name) or "sent")
+    mem = Mem()
+    try:
+        check("phone.qr_is_svg", QR.svg("hello").startswith("<svg"))
+        check("phone.off_until_turned_on", not PH.settings()["enabled"])
+        PH.configure(mem, _C())
+        PH.set_enabled(True)
+        PH.stop()
+        PH.start(port=0, host="127.0.0.1")
+        port = PH._SERVER["port"]
+        cur = {"key": PH.settings()["key"]}
+
+        def req(method, path, body=None, k=""):
+            k = cur["key"] if k == "" else k
+            c = _hc.HTTPConnection("127.0.0.1", port, timeout=10)
+            h = {"X-Phone-Key": k} if k is not None else {}
+            if body is not None:
+                h["Content-Type"] = "application/json"
+            c.request(method, path, body=_pj.dumps(body) if body is not None else None, headers=h)
+            r = c.getresponse(); data = r.read(); c.close()
+            try:
+                return r.status, _pj.loads(data)
+            except Exception:
+                return r.status, data
+
+        check("phone.page_loads", req("GET", "/", k=None)[0] == 200)
+        check("phone.no_key_no_data", req("GET", "/api/state", k=None)[0] == 401)
+        TL.execute_tool("send_email", {"to": "hr@acme.test", "subject": "Hi", "body": "x"}, None, _C())
+        TL.execute_tool("http_post", {"url": "https://api.test/x", "json": {"a": 1}}, None, _C())
+        code, s = req("GET", "/api/state")
+        check("phone.shows_what_waits_with_its_inputs", code == 200 and len(s["held"]) == 2
+              and any("hr@acme.test" in h["args"] for h in s["held"]), s)
+        check("phone.shows_the_schedules", [x["name"] for x in s["schedules"]] == ["Morning brief", "Weekly report"])
+        mail = [h for h in s["held"] if h["tool"] == "send_email"][0]
+        post = [h for h in s["held"] if h["tool"] == "http_post"][0]
+        code, r = req("POST", "/api/approve", {"id": mail["id"]})
+        check("phone.approve_runs_it", code == 200 and ran == ["send_email"] and r["then"] == "Done.", r)
+        check("phone.approved_once_only", req("POST", "/api/approve", {"id": mail["id"]})[0] == 400 and ran == ["send_email"])
+        code, r = req("POST", "/api/refuse", {"id": post["id"]})
+        check("phone.refuse_never_runs", code == 200 and ran == ["send_email"]
+              and [i for i in IC.pending() if i["id"] == post["id"]][0]["state"] == "refused")
+        code, r = req("POST", "/api/pause", {})
+        check("phone.pause_turns_schedules_off", r.get("paused") == 1 and not mem.s[1]["enabled"])
+        check("phone.state_says_paused", req("GET", "/api/state")[1]["paused"])
+        import agent.scheduler as _sch
+        _orig = (_sch.next_run, _sch.parse_spec)
+        _sch.parse_spec = lambda s: {}
+        _sch.next_run = lambda spec: 123.0
+        try:
+            code, r = req("POST", "/api/resume", {})
+        finally:
+            _sch.next_run, _sch.parse_spec = _orig
+        check("phone.resume_turns_back_on_only_what_it_paused",
+              r.get("resumed") == 1 and mem.s[1]["enabled"] and not mem.s[2]["enabled"], r)
+        check("phone.cant_do_anything_else", req("POST", "/api/run", {"cmd": "dir"})[0] == 404
+              and req("GET", "/api/memory", None)[0] == 404)
+        old = cur["key"]
+        PH.rotate_key()
+        check("phone.new_key_shuts_out_the_old", req("GET", "/api/state", k=old)[0] == 401)
+        cur["key"] = PH.settings()["key"]
+        PH._FAILS.clear()
+        for _ in range(PH.LOCK_AFTER):
+            req("GET", "/api/state", k="y" * 32)
+        check("phone.wrong_keys_lock_out", req("GET", "/api/state")[0] == 429)
+        PH._FAILS.clear()
+        check("phone.different_port_from_jobs", PH.DEFAULT_PORT == 8768)
+    finally:
+        PH.stop()
+        PH._FAILS.clear()
+        TL._execute_tool_impl = real
+        _pc.AGENT_HOME = home
+    root = Path(__file__).resolve().parents[1]
+    rel = (root / "tools" / "make_release.py").read_text("utf-8")
+    check("phone.its_page_ships_in_a_release", '"web_phone"' in rel)
+
+
+# ---------------------------------------------------------------------- #
+# Approving a held call runs it — once, with the inputs you were shown:
+#   python -c "import tests.run_tests as t; t._held_checks()"
+# ---------------------------------------------------------------------- #
+def _held_checks() -> None:
+    import tempfile as _ht
+    from agent import config as _hc, intercepts as IC, tools as TL
+    home = _hc.AGENT_HOME
+    _hc.AGENT_HOME = Path(_ht.mkdtemp(prefix="held-"))
+    ran = []
+    real = TL._execute_tool_impl
+    TL._execute_tool_impl = lambda name, args, memory, console, auto_approve=False, session_id="", **kw: (
+        ran.append((name, dict(args), auto_approve)) or "sent")
+    try:
+        class _C:
+            def print(self, *a, **k): pass
+        out = TL.execute_tool("send_email", {"to": "hr@acme.test", "subject": "Hi", "body": "x"}, None, _C())
+        check("held.an_outside_call_is_held_not_run", out.startswith("HELD FOR REVIEW") and ran == [])
+        item = IC.pending()[-1]
+        r0 = TL.run_held(item["id"], None, _C())
+        check("held.waiting_isnt_run", not r0["ok"] and ran == [])
+        IC.decide(item["id"], True)
+        r = TL.run_held(item["id"], None, _C())
+        check("held.approving_runs_it", r["ok"] and ran == [("send_email", {"to": "hr@acme.test", "subject": "Hi",
+                                                                           "body": "x"}, True)], ran)
+        check("held.the_result_is_kept", IC.pending()[-1]["state"] == "done" and IC.pending()[-1]["result"] == "sent")
+        check("held.never_twice", not TL.run_held(item["id"], None, _C())["ok"] and len(ran) == 1)
+        TL.execute_tool("delete_file", {"path": "x"}, None, _C())
+        j = IC.pending()[-1]
+        IC.decide(j["id"], False, "no")
+        check("held.a_refused_call_cant_be_run", not TL.run_held(j["id"], None, _C())["ok"] and len(ran) == 1)
+        TL._execute_tool_impl = lambda *a, **k: "Error: smtp refused"
+        TL.execute_tool("send_email", {"to": "a@b.test"}, None, _C())
+        f = IC.pending()[-1]
+        IC.decide(f["id"], True)
+        check("held.a_failure_is_recorded_as_one", TL.run_held(f["id"], None, _C())["state"] == "failed")
+    finally:
+        TL._execute_tool_impl = real
+        _hc.AGENT_HOME = home
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "web" / "static" / "app.js").read_text("utf-8")
+    srv = (root / "web" / "server.py").read_text("utf-8")
+    check("held.the_autonomy_panel_lists_them", "function loadHeld" in js and "Approve and run" in js)
+    check("held.the_endpoint_runs_on_approve", "_tools.run_held(body.id" in srv)
+
+
+# ---------------------------------------------------------------------- #
+# "When is my interview?" answered from Agent Jo Jobs' data:
+#   python -c "import tests.run_tests as t; t._career_interview_checks()"
+# ---------------------------------------------------------------------- #
+def _career_interview_checks() -> None:
+    import json as _cij
+    import os as _cio
+    import tempfile as _cit
+    from datetime import datetime as _cid
+    from agent import career as CR
+    d = Path(_cit.mkdtemp(prefix="jobs-home-"))
+    (d / "jobscout").mkdir()
+    (d / "jobscout" / "roles.json").write_text(_cij.dumps([
+        {"key": "a", "title": "Data Engineer", "company": "Acme Analytics", "stage": "interview",
+         "sent_at": "2026-10-01 08:00 UTC", "interview_at": "2026-10-14 10:00",
+         "interview_link": "https://teams.microsoft.com/l/x",
+         "interview": {"questions": [{"question": "Why Kafka?", "gap": "No Kafka in your CV"}]}},
+        {"key": "b", "title": "BI Lead", "company": "Zeta", "stage": "applied",
+         "interview_at": "2026-09-01 10:00"},
+        {"key": "c", "title": "Analyst", "company": "Beta", "stage": "found"}]), "utf-8")
+    (d / "jobscout" / "contacts.json").write_text(_cij.dumps({
+        "thandi@acme.co.za": {"email": "thandi@acme.co.za", "name": "Thandi Mokoena",
+                              "companies": ["Acme Analytics"], "kinds": {"interview": 1},
+                              "last": "2026-10-01 09:00 UTC", "notes": "met at a meetup"}}), "utf-8")
+    old = _cio.environ.get("AGENT_JOBS_HOME")
+    _cio.environ["AGENT_JOBS_HOME"] = str(d)
+    try:
+        now = _cid(2026, 10, 7, 9, 0)
+        a = CR.applications("how is my Acme application going?", now)
+        check("career.lists_interviews_coming_up",
+              "INTERVIEWS COMING UP" in a and "Wed 14 Oct 2026, 10:00" in a and "Zeta" not in a, a)
+        check("career.names_the_role_asked_about", "stage interview" in a and "Why Kafka?" in a
+              and "Gap: No Kafka" in a)
+        check("career.who_you_know_there", "Thandi Mokoena <thandi@acme.co.za>" in a
+              and "met at a meetup" in a, a)
+        check("career.a_role_merely_found_isnt_an_application",
+              "Beta" not in CR.applications("Beta", now))
+        out = CR.lookup("my Acme interview")
+        check("career.lookup_works_with_only_applications",
+              "APPLICATION — Data Engineer @ Acme Analytics" in out, out[:200])
+    finally:
+        if old is None:
+            _cio.environ.pop("AGENT_JOBS_HOME", None)
+        else:
+            _cio.environ["AGENT_JOBS_HOME"] = old
+
+
+# ---------------------------------------------------------------------- #
+# Exporting a conversation:
+#   python -c "import tests.run_tests as t; t._export_checks()"
+# ---------------------------------------------------------------------- #
+def _export_checks() -> None:
+    from agent import chatexport as CE
+    key = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0kLmN"
+    out = CE.to_markdown("Pipeline / plan: v2", [
+        {"role": "user", "text": f"my key is {key}, and password = hunter22"},
+        {"role": "assistant", "text": "Use the Kafka connector; skip ask for the token budget."},
+        {"role": "assistant", "text": ""}])
+    t = out["text"]
+    check("export.secrets_are_blanked", key not in t and "hunter22" not in t, t)
+    check("export.and_counted", out["removed"] == 2 and "2 secret(s)" in t, out["removed"])
+    check("export.ordinary_words_survive", "token budget" in t and "Kafka connector" in t)
+    check("export.who_said_what", t.count("**You:**") == 1 and t.count("**Agent Jo:**") == 1)
+    check("export.a_safe_file_name", out["filename"] == "Pipeline-plan-v2.md", out["filename"])
+    check("export.keep_secrets_only_when_asked",
+          key in CE.to_markdown("x", [{"role": "user", "text": key}], keep_secrets=True)["text"])
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "web" / "static" / "app.js").read_text("utf-8")
+    srv = (root / "web" / "server.py").read_text("utf-8")
+    check("export.in_the_conversation_menu", "Export as Markdown" in js and "/export" in js)
+    check("export.route_exists", '@app.get("/api/conversations/{cid}/export")' in srv)
 
 
 # ---------------------------------------------------------------------- #
@@ -12182,9 +10055,8 @@ def _hardening_checks() -> None:
                 os.environ[k] = v
 
     wsrc = (root / "web" / "server.py").read_text("utf-8")
-    jsrc = (root / "jobs" / "server.py").read_text("utf-8")
     add = "app.add_middleware(localguard.LocalOnlyGuard)"
-    check("guard.both_servers_install_it", add in wsrc and add in jsrc)
+    check("guard.the_server_installs_it", add in wsrc)
     check("guard.it_is_the_outermost_layer",
           add in wsrc and wsrc.rindex('@app.middleware("http")') < wsrc.index(add))
     check("guard.cors_no_longer_allows_every_origin",
@@ -12193,706 +10065,12 @@ def _hardening_checks() -> None:
     ck = ck[:ck.index("\n\n\n")]
     check("guard.the_login_limit_ignores_a_forged_forwarded_for",
           'headers.get("x-forwarded-for"' not in ck)
-    try:
-        from fastapi.testclient import TestClient as _GTC
-    except ImportError:
-        _GTC = None
-    if _GTC is not None:
-        import jobs.server as _gjs
-        _gc = _GTC(_gjs.app)
-        _r = _gc.post("/api/jobs/auto/run", headers={
-            "origin": "https://evil.example", "sec-fetch-site": "cross-site"})
-        check("guard.the_jobs_app_refuses_another_site",
-              _r.status_code == 403
-              and "AGENT_ALLOWED_ORIGINS" in _r.json().get("detail", ""))
-        check("guard.the_jobs_app_refuses_a_rebound_name",
-              _gc.get("/api/meta", headers={"host": "evil.example:8766"})
-              .status_code == 403)
-        check("guard.the_jobs_app_still_answers_itself",
-              _gc.get("/").status_code == 200)
-
-    # --- the wait for a listing runs on the browser's own thread ------------ #
-    #
-    # The fetch called page.wait_for_load_state from its own thread. Pages
-    # belong to the browser's thread, so Playwright refused — "cannot switch
-    # to a different thread" — the error was swallowed as a slow tracker, and
-    # a source whose roles are drawn by script came back with none.
-    import agent.portal as _sp
-    import agent.jobscout as _sj
-    wrong = []
-
-    class _SPage:
-        def __init__(self):
-            self.owner = threading.current_thread()
-            self.ready = False
-
-        def _mine(self, what):
-            if threading.current_thread() is not self.owner:
-                wrong.append(what)
-                raise RuntimeError("cannot switch to a different thread")
-
-        def wait_for_load_state(self, state="load", timeout=0):
-            self._mine("wait_for_load_state")
-            self.ready = True
-
-    class _SReal(_sp.PlaywrightDriver):     # the real settle(), a fake page
-        def __init__(self, headless=True):
-            self.headless, self._ctx = headless, None
-
-        def open(self, url):
-            return _SPage()
-
-        def html(self, page):
-            page._mine("content")
-            return "<li>Senior Data Engineer</li>" if page.ready else "<ul></ul>"
-
-        def close_page(self, page):
-            pass
-
-        def close(self, keep_open=True):
-            pass
-
-    was = (_sp.PlaywrightDriver, _sp.DRIVER, dict(_sp._SHARED), dict(_sj._BATCH))
-    _sp.PlaywrightDriver, _sp.DRIVER = _SReal, None
-    _sp._SHARED.update({"driver": None, "uses": 0, "headless": True})
-    _sj._BATCH.clear()
-    out = {}
-    try:
-        t = threading.Thread(target=lambda: out.update(
-            html=_sj.fetch_with_browser("https://board.example/jobs")))
-        t.start()
-        t.join(30)
-    finally:
-        if _sp._SHARED.get("driver") is not None:
-            _sp._SHARED["driver"].close(keep_open=False)
-        _sp.PlaywrightDriver, _sp.DRIVER = was[0], was[1]
-        _sp._SHARED.clear(); _sp._SHARED.update(was[2])
-        _sj._BATCH.clear(); _sj._BATCH.update(was[3])
-    check("browser.a_listing_drawn_by_script_is_waited_for",
-          "Senior Data Engineer" in out.get("html", ""), f"{out}")
-    check("browser.a_page_is_only_touched_on_its_own_thread", not wrong, f"{wrong}")
-    check("browser.the_fetch_never_calls_a_page_itself",
-          not _hxre.findall(r"\bpage\.\w+\(",
-                            (root / "agent" / "jobscout.py").read_text("utf-8")))
-
-    # --- a window you can see, when a person has to see it ------------------ #
-    #
-    # A fetch launches the shared browser hidden, and sign-in, "open the form
-    # with help" and applications then reused it: "sign in on the window that
-    # just opened", with no window. A visible request relaunches it visibly —
-    # still one browser, one profile, so logins carry over.
-    launches = []
-
-    class _VReal(_sp.PlaywrightDriver):
-        def __init__(self, headless=True):
-            self.headless, self._ctx, self.closed = headless, None, False
-            launches.append(self)
-
-        def open(self, url):
-            return {"url": url}
-
-        def html(self, page):
-            return ""
-
-        def close_page(self, page):
-            pass
-
-        def close(self, keep_open=True):
-            self.closed = self.closed or not keep_open
-
-    was = (_sp.PlaywrightDriver, _sp.DRIVER, dict(_sp._SHARED), _sp.SHOW_WAIT_S)
-    _sp.PlaywrightDriver, _sp.DRIVER = _VReal, None
-    _sp._SHARED.update({"driver": None, "uses": 0, "headless": True})
-    try:
-        d1 = _sp.acquire_driver(headless=True)          # a source fetch
-        d1.open("https://board.example/jobs")
-        _sp.release_driver(close=False)
-        d2 = _sp.acquire_driver(headless=False)         # then a sign-in
-        d2.open("https://board.example/login")
-        check("browser.a_sign_in_after_a_fetch_gets_a_window",
-              [x.headless for x in launches] == [True, False]
-              and launches[0].closed, f"{[x.headless for x in launches]}")
-        check("browser.it_is_still_one_shared_browser",
-              d1 is d2 and _sp._SHARED["driver"] is d2)
-        _sp.release_driver(close=False)
-        d3 = _sp.acquire_driver(headless=True)          # a fetch after it
-        d3.open("https://board.example/jobs")
-        check("browser.a_fetch_reuses_the_window_rather_than_relaunching",
-              d3 is d2 and len(launches) == 2)
-        _sp.release_driver(close=False)
-        _sp._SHARED["driver"].close(keep_open=False)    # start again, hidden
-        _sp._SHARED.update({"driver": None, "uses": 0})
-        launches.clear()
-        _sp.SHOW_WAIT_S = 5.0
-        order = []
-        _sp.acquire_driver(headless=True).open("https://board.example/a")
-
-        def _fetch_finishes():
-            _hxtime.sleep(0.4)
-            order.append("fetch released")
-            _sp.release_driver(close=False)
-        t = threading.Thread(target=_fetch_finishes)
-        t.start()
-        _sp.acquire_driver(headless=False).open("https://board.example/login")
-        order.append("window acquired")
-        t.join(5)
-        check("browser.a_window_waits_for_the_page_in_flight",
-              order == ["fetch released", "window acquired"]
-              and [x.headless for x in launches] == [True, False], f"{order}")
-        _sp.release_driver(close=False)
-    finally:
-        if _sp._SHARED.get("driver") is not None:
-            _sp._SHARED["driver"].close(keep_open=False)
-        _sp.PlaywrightDriver, _sp.DRIVER = was[0], was[1]
-        _sp._SHARED.clear(); _sp._SHARED.update(was[2])
-        _sp.SHOW_WAIT_S = was[3]
-
-    # --- the Jobs app's copy can't drift unnoticed ---------------------------- #
-    #
-    # The list of modules to copy was kept by hand: a new import in the Jobs
-    # server (localguard) would have shipped a server that couldn't start.
-    # And the manifest hashed only the modules, so a hand edit to the copied
-    # server or window went unseen.
-    spec = _hxil.spec_from_file_location("_sync_jobs_app",
-                                         root / "tools" / "sync_jobs_app.py")
-    sync = _hxil.module_from_spec(spec)
-    spec.loader.exec_module(sync)
-    check("vendor.what_the_jobs_server_imports_is_copied",
-          "localguard" in sync.closure())
-    dest = Path(_hxtmp.mkdtemp(prefix="vendor-"))
-    try:
-        sync.sync(dest)
-        man = json.loads((dest / "VENDORED.json").read_text("utf-8"))["files"]
-        check("vendor.the_manifest_covers_every_synced_file",
-              {"jobs/server.py", "web_jobs/jobs.js", "run_jobs.py",
-               "agent/localguard.py"} <= set(man))
-        r = sync.report(dest)
-        check("vendor.a_fresh_copy_is_in_step", not r["stale"] and not r["missing"],
-              f"{r}")
-        (dest / "agent" / "portal.py").write_bytes(
-            (root / "agent" / "portal.py").read_bytes().replace(b"\n", b"\r\n"))
-        check("vendor.crlf_line_endings_are_not_a_change",
-              "agent/portal.py" not in sync.report(dest)["stale"])
-        (dest / "agent" / "portal.py").write_text("# edited by hand\n", "utf-8")
-        check("vendor.a_hand_edit_is_caught",
-              "agent/portal.py" in sync.report(dest)["stale"])
-    finally:
-        shutil.rmtree(dest, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------- #
-# Auto-apply: the gates, rehearsal, the cap, portals, the engine, storage.
-#   python -c "import tests.run_tests as t; t._auto_apply_checks()"
-# ---------------------------------------------------------------------- #
-def _auto_apply_checks() -> None:
-    import tempfile as _axt
-    import time as _axtime
-    from types import SimpleNamespace as _AXN
-    from agent import config as _axc
-    import agent.jobscout as J
-    import agent.portal as P
-    import agent.outreach as O
-
-    def blk(t):
-        return _AXN(content=[_AXN(type="text", text=t)], stop_reason="end_turn")
-
-    def section(name, fn):
-        try:
-            fn()
-        except AssertionError:
-            raise
-        except Exception as exc:
-            check(f"{name}.ran", False, f"{type(exc).__name__}: {exc}")
-
-    home, db = _axc.AGENT_HOME, _axc.DB_PATH
-    saved = (O.send, O.is_configured, O._is_draft_only, P.apply_to_portal)
-    sends, opened = [], []
-    GOOD = ("I built a Medallion pipeline with regression testing, in Python "
-            "and SQL, at Standard Bank.")
-    CLEAN = {"subject": "S", "body": GOOD, "check": {"ok": True, "problems": []}}
-
-    def fresh(**auto):
-        _axc.AGENT_HOME = Path(_axt.mkdtemp(prefix="auto-"))
-        _axc.DB_PATH = _axc.AGENT_HOME / "a.db"
-        J.save_profile({
-            "summary": "Tech lead on an FX desk. Build BI and data pipelines.",
-            "technologies": ["Python", "SQL", "Power BI"],
-            "employers": ["Standard Bank"],
-            "achievements": ["Built a Medallion pipeline with regression testing"],
-            "years_experience": {"BI": "8"}})
-        J.save_auto_config({"enabled": True, "dry_run": False, "min_score": 75,
-                            "daily_cap": 5, "portal_mode": "prepare",
-                            "portal_per_run": 5, **auto})
-        sends.clear(); opened.clear()
-
-    def role(title, fit=None, email="", url="", draft=None, **extra):
-        J.add_roles([{"title": title, "company": title + " Co",
-                      "url": url or f"https://x.test/{title}",
-                      "summary": "Python SQL", "apply_email": email}])
-        k = [r for r in J.roles() if r["title"] == title][0]["key"]
-        J.update_role(k, fit=({"score": fit} if fit is not None else None),
-                      draft=draft, **extra)
-        return k
-
-    O.send = lambda to, s, b, **kw: (sends.append((to, kw.get("dry_run")))
-                                     or {"ok": True})
-    O.is_configured = lambda: True
-    O._is_draft_only = lambda: False
-    P.apply_to_portal = lambda r, prof, **kw: (
-        opened.append((r["title"], kw.get("submit"))) or
-        {"state": "filled", "answers": [], "message": "filled"})
-    try:
-        # --- every role meets the same gates, whatever its delivery -------- #
-        def gates_first():
-            fresh()
-            role("Weak", fit=30, draft=dict(CLEAN))
-            role("Invents", fit=90, draft={"subject": "S", "body": "x",
-                                           "check": {"ok": False,
-                                                     "problems": ["AWS"]}})
-            role("Good", fit=90, draft=dict(CLEAN))
-            out = J.auto_apply(None)
-            check("auto.a_weak_portal_role_is_not_opened",
-                  "Weak" not in [t for t, _ in opened]
-                  and any("below your threshold" in h["reason"]
-                          for h in out["held"] if h["title"] == "Weak"),
-                  f"{opened}")
-            check("auto.a_portal_draft_with_invented_claims_is_not_opened",
-                  "Invents" not in [t for t, _ in opened])
-            check("auto.a_good_portal_role_is_prepared",
-                  [p["title"] for p in out["prepared"]] == ["Good"])
-        section("auto.gates", gates_first)
-
-        # --- rehearsal consumes nothing ----------------------------------- #
-        def rehearsal():
-            fresh(dry_run=True)
-            k = role("Mailable", fit=90, email="jobs@beta.test", draft=dict(CLEAN))
-            out = J.auto_apply(None)
-            check("auto.a_rehearsal_is_reported_as_sent",
-                  [s["dry_run"] for s in out["sent"]] == [True]
-                  and sends == [("jobs@beta.test", True)])
-            check("auto.a_rehearsal_leaves_the_role_to_be_sent",
-                  J.get_role(k)["stage"] != "applied")
-            check("auto.a_rehearsal_uses_none_of_the_days_cap",
-                  J._sent_today() == 0)
-            J.save_auto_config({**J.auto_config(), "dry_run": False})
-            sends.clear()
-            J.auto_apply(None)
-            check("auto.after_rehearsal_it_really_sends",
-                  sends == [("jobs@beta.test", False)]
-                  and J.get_role(k)["stage"] == "applied")
-            # a role an older rehearsal marked as applied is put back
-            k2 = role("Consumed", fit=90, email="hr@gamma.test",
-                      draft=dict(CLEAN), sent_dry_run=True,
-                      sent_at=J._iso())
-            J.set_stage(k2, "applied", "REHEARSAL (dry run) — not actually sent")
-            sends.clear()
-            J.auto_apply(None)
-            check("auto.roles_an_old_rehearsal_consumed_are_sent",
-                  ("hr@gamma.test", False) in sends)
-        section("auto.rehearsal", rehearsal)
-
-        def rehearsal_never_submits():
-            fresh(dry_run=True, portal_mode="submit")
-            role("Portal", fit=90, draft=dict(CLEAN))
-            J.auto_apply(None)
-            check("auto.rehearsal_never_submits_a_portal_form",
-                  opened == [("Portal", False)], f"{opened}")
-        section("auto.rehearsal_portal", rehearsal_never_submits)
-
-        # --- the cap goes to the best ------------------------------------- #
-        def best_first():
-            fresh(daily_cap=1)
-            role("Fine", fit=80, email="a@a.test", draft=dict(CLEAN))
-            role("Best", fit=97, email="b@b.test", draft=dict(CLEAN))
-            out = J.auto_apply(None)
-            check("auto.the_cap_goes_to_the_best_fit",
-                  [s["title"] for s in out["sent"]] == ["Best"]
-                  and any(h["title"] == "Fine" and "cap" in h["reason"]
-                          for h in out["held"]))
-        section("auto.best_first", best_first)
-
-        # --- portals: once each, a few per run, failures not for ever ------ #
-        def portals():
-            fresh(portal_per_run=2)
-            for t in ("Portal One", "Portal Two", "Portal Three"):
-                role(t, fit=90, draft=dict(CLEAN))
-            out = J.auto_apply(None)
-            check("auto.portal_forms_per_run_are_limited",
-                  len(opened) == 2
-                  and any("limit" in h["reason"] for h in out["held"]))
-            opened.clear()
-            J.auto_apply(None)
-            check("auto.a_prepared_form_is_not_reopened_every_run",
-                  [t for t, _ in opened] == ["Portal Three"], f"{opened}")
-            fresh()
-            k = role("Broken", fit=90, draft=dict(CLEAN))
-            P.apply_to_portal = lambda r, prof, **kw: (
-                opened.append((r["title"], kw.get("submit"))) or
-                {"state": "failed", "message": "TimeoutError"})
-            out = J.auto_apply(None)
-            check("auto.a_failed_form_is_an_error_not_a_prepared_one",
-                  not out["prepared"] and any("portal" in e for e in out["errors"]))
-            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
-            J.auto_apply(None)
-            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
-            J.auto_apply(None)
-            J.update_role(k, portal_at="2000-01-01 00:00 UTC")
-            opened.clear()
-            J.auto_apply(None)
-            check("auto.a_form_that_keeps_failing_is_left_to_you",
-                  opened == [] and J.get_role(k)["portal_attempts"] == 3)
-        section("auto.portals", portals)
-
-        # --- the engine ---------------------------------------------------- #
-        def engine():
-            check("auto.its_own_timestamps_are_read",
-                  J._hours_since(J._iso()) < 1
-                  and J._hours_since("2000-01-01 00:00 UTC") > 1000)
-            check("auto.scores_are_read_however_they_come",
-                  J._parse_score("82/100") == 82 and J._parse_score("8.2/10") == 82
-                  and J._parse_score("85%") == 85 and J._parse_score(77.6) == 78
-                  and J._parse_score("high") is None)
-            fresh()
-            calls = {"n": 0}
-
-            class Down:
-                def chat(self, m, s, t=None, **kw):
-                    calls["n"] += 1
-                    raise ConnectionError("Connection refused")
-            for i in range(6):
-                role(f"Dead engine role {i}")
-            out = J.auto_apply(Down())
-            check("auto.a_dead_engine_is_asked_three_times_not_six",
-                  calls["n"] == J.ENGINE_TRIP and out["engine_stopped"]
-                  and any("left for the next run" in e for e in out["errors"]),
-                  f"{calls}")
-            fresh()
-            k = role("Wordy")
-            seq = ["Sure! Here's my assessment of the fit.",
-                   json.dumps({"score": "88/100", "verdict": "strong"})]
-
-            class Chatty:
-                def chat(self, m, s, t=None, **kw):
-                    return blk(seq.pop(0))
-            check("auto.a_reply_without_json_is_asked_once_more",
-                  J.score_role(k, Chatty())["ok"]
-                  and J.get_role(k)["fit"]["score"] == 88)
-
-            class NoScore:
-                def chat(self, m, s, t=None, **kw):
-                    return blk(json.dumps({"verdict": "strong"}))
-            k2 = role("Unscored")
-            check("auto.a_reply_with_no_score_is_not_filed_as_zero",
-                  not J.score_role(k2, NoScore())["ok"]
-                  and (J.get_role(k2).get("fit") or {}).get("score") is None)
-
-            class Empty:
-                def chat(self, m, s, t=None, **kw):
-                    return blk(json.dumps({"subject": "", "body": ""}))
-            k3 = role("Blank", fit=90)
-            check("auto.an_empty_draft_is_not_saved_as_drafted",
-                  not J.draft_application(k3, Empty())["ok"]
-                  and J.get_role(k3)["stage"] == "found")
-        section("auto.engine", engine)
-
-        # --- one run at a time, in the background --------------------------- #
-        def runs():
-            fresh()
-            role("Mail", fit=90, email="m@m.test", draft=dict(CLEAN))
-            J._RUN_LOCK.acquire()
-            try:
-                busy = J.auto_apply(None)
-            finally:
-                J._RUN_LOCK.release()
-            check("auto.only_one_run_at_a_time",
-                  busy["ok"] is False and "already" in busy["error"])
-            st = J.start_run("apply", None)
-            again = J.start_run("apply", None)
-            for _ in range(100):
-                if J.run_status()["state"] != "running":
-                    break
-                _axtime.sleep(0.05)
-            s = J.run_status()
-            check("auto.a_background_run_reports_when_done",
-                  st["ok"] and s["state"] == "done"
-                  and "1 sent" in s["result"]["summary"], f"{s}")
-            check("auto.a_second_start_follows_the_first",
-                  again.get("already") or again["state"] in ("running", "done"))
-        section("auto.runs", runs)
-
-        # --- roles storage survives a bad write and concurrent writers ------ #
-        def storage():
-            fresh()
-            keys = [role(f"Stored role {i}") for i in range(4)]
-            J.save_roles(J.roles())
-            p = J._roles_path()
-            p.write_text('[{"key": "half', "utf-8")
-            check("storage.a_damaged_file_falls_back_to_the_last_good_copy",
-                  len(J.roles()) == 4)
-            J.save_roles(json.loads(p.with_name(p.name + ".bak")
-                                    .read_text("utf-8")))
-
-            def bump(k, n):
-                for i in range(n):
-                    J.update_role(k, **{f"n_{threading.get_ident()}": i})
-            ts = [threading.Thread(target=bump, args=(keys[i % 4], 15))
-                  for i in range(8)]
-            for t in ts:
-                t.start()
-            for t in ts:
-                t.join()
-            got = sum(len([f for f in r if f.startswith("n_")])
-                      for r in J.roles())
-            check("storage.concurrent_writers_lose_nothing", got == 8, f"{got}")
-        section("storage", storage)
-    finally:
-        O.send, O.is_configured, O._is_draft_only, P.apply_to_portal = saved
-        _axc.AGENT_HOME, _axc.DB_PATH = home, db
 
 
-# ---------------------------------------------------------------------- #
-# Finding more sources.
-#   python -c "import tests.run_tests as t; t._sources_checks()"
-# ---------------------------------------------------------------------- #
-def _sources_checks() -> None:
-    import tempfile as _sxt
-    from agent import config as _sxc
-    import agent.jobscout as J
-    import agent.boards as B
-
-    def section(name, fn):
-        try:
-            fn()
-        except AssertionError:
-            raise
-        except Exception as exc:
-            check(f"{name}.ran", False, f"{type(exc).__name__}: {exc}")
-
-    RSS = ("<rss><channel><item><title>Senior Data Engineer</title>"
-           "<link>https://feed.test/1</link><description>Python SQL dbt"
-           "</description></item></channel></rss>")
-    GH = json.dumps({"jobs": [{"title": "Data Engineer",
-                               "absolute_url": "https://boards.greenhouse.io/acme/jobs/9",
-                               "location": {"name": "Remote"},
-                               "content": "&lt;p&gt;Python, SQL and dbt.&lt;/p&gt;"}]})
-    LV = json.dumps([{"text": "Analytics Engineer",
-                      "hostedUrl": "https://jobs.lever.co/globex/x1",
-                      "categories": {"location": "Cape Town"},
-                      "workplaceType": "remote",
-                      "descriptionPlain": "SQL, Python, Power BI."}])
-    AS = json.dumps({"jobs": [{"title": "Data Engineer", "isRemote": True,
-                               "jobUrl": "https://jobs.ashbyhq.com/beta/u1",
-                               "location": "Europe",
-                               "descriptionPlain": "Python and SQL."}]})
-    fetched = []
-    pages = {}
-
-    def fetcher(u):
-        fetched.append(u)
-        for k, v in pages.items():
-            if k in u:
-                return v
-        raise RuntimeError("404 Not Found")
-
-    home, db, cat = _sxc.AGENT_HOME, _sxc.DB_PATH, list(B.CATALOGUE)
-    prev_fetch, prev_browser = J.JOB_FETCHER, J.fetch_with_browser
-    try:
-        _sxc.AGENT_HOME = Path(_sxt.mkdtemp(prefix="src-"))
-        _sxc.DB_PATH = _sxc.AGENT_HOME / "s.db"
-        J.save_profile({"summary": "Data engineer building pipelines.",
-                        "target_roles": ["Data Engineer", "Analytics Engineer"],
-                        "skills": ["Python", "SQL"],
-                        "technologies": ["Python", "SQL", "dbt", "Power BI"],
-                        "employers": ["Standard Bank"], "achievements": ["x"],
-                        "years_experience": {"BI": "8"}})
-        J.save_job_sources([])
-        J.JOB_FETCHER = fetcher
-        J.fetch_with_browser = lambda u: (_ for _ in ()).throw(
-            RuntimeError("no browser here"))
-
-        def exhaustion():
-            B.CATALOGUE[:] = [
-                {"name": "Good feed", "kind": "rss", "url": "https://good.test/rss",
-                 "regions": [B.WORLD], "focus": ["data"], "about": ""},
-                {"name": "Dead feed", "kind": "rss", "url": "https://dead.test/rss",
-                 "regions": [B.WORLD], "focus": ["data"], "about": ""}]
-            pages.clear()
-            pages["good.test"] = RSS
-            first = B.auto_add()
-            check("sources.a_working_board_is_added",
-                  [a["name"] for a in first["added"]] == ["Good feed"]
-                  and "Added 1" in first["message"], first.get("message"))
-            fetched.clear()
-            again = B.auto_add()
-            check("sources.a_failed_board_is_not_retried_every_click",
-                  not any("dead.test" in u for u in fetched)
-                  and [r["name"] for r in again["resting"]] == ["Dead feed"],
-                  f"{fetched}")
-            check("sources.running_out_says_so_and_says_what_to_do",
-                  again["message"].startswith("Nothing new to add")
-                  and "Greenhouse" in again["message"])
-        section("sources.exhaustion", exhaustion)
-
-        def company():
-            check("sources.company_boards_are_recognised",
-                  J.ats_board_for("https://job-boards.greenhouse.io/acme/jobs/1")[:2]
-                  == ("greenhouse", "acme")
-                  and J.ats_board_for("https://boards.greenhouse.io/embed/job_app?for=acme")[1]
-                  == "acme"
-                  and J.ats_board_for("https://jobs.lever.co/globex/abc")[:2]
-                  == ("lever", "globex")
-                  and J.ats_board_for("https://jobs.ashbyhq.com/beta/u")[:2]
-                  == ("ashby", "beta")
-                  and J.ats_board_for("https://careers.example.com/jobs/1") is None)
-            J.add_roles([
-                {"title": "BI Developer", "company": "Acme",
-                 "url": "https://boards.greenhouse.io/acme/jobs/123"},
-                {"title": "BI Analyst", "company": "Globex",
-                 "url": "https://jobs.lever.co/globex/abc"},
-                {"title": "Data Lead", "company": "Beta",
-                 "url": "https://jobs.ashbyhq.com/beta/u1"}])
-            pages["boards-api.greenhouse.io/v1/boards/acme"] = GH
-            pages["api.lever.co/v0/postings/globex"] = LV
-            pages["api.ashbyhq.com/posting-api/job-board/beta"] = AS
-            offered = {b["name"] for b in B.company_boards()}
-            check("sources.tracked_companies_offer_their_whole_board",
-                  offered == {"Acme — careers", "Globex — careers",
-                              "Beta — careers"}, f"{offered}")
-            res = B.auto_add()
-            kinds = sorted(a["kind"] for a in res["added"])
-            check("sources.company_boards_are_added_when_the_list_runs_out",
-                  kinds == ["ashby", "greenhouse", "lever"], f"{res['message']}")
-            check("sources.an_added_company_board_is_not_offered_again",
-                  B.company_boards() == [])
-            d = J.discover()
-            got = {(r["title"], r["company"]) for r in J.roles()}
-            check("sources.their_roles_arrive_with_the_company_named",
-                  ("Data Engineer", "Acme") in got
-                  and ("Analytics Engineer", "Globex") in got
-                  and ("Data Engineer", "Beta") in got, f"{got} {d.get('errors')}")
-            lv = [r for r in J.roles() if r["company"] == "Globex"
-                  and r["title"] == "Analytics Engineer"][0]
-            gh = [r for r in J.roles() if r["company"] == "Acme"
-                  and r["title"] == "Data Engineer"][0]
-            check("sources.ats_details_are_read_properly",
-                  "remote" in lv["location"].lower()
-                  and "dbt" in gh.get("summary", "")
-                  and "&lt;" not in gh.get("summary", ""))
-        section("sources.company", company)
-
-        def browser_retry():
-            shell = "<html><head><title>Jobs</title></head><body><div id=app></div></body></html>"
-            drawn = ("<html><head><title>Jobs</title></head><body>"
-                     + "".join(f'<a href="/jobs/{i}-data-engineer">Data Engineer {i}</a>'
-                               for i in range(3)) + "</body></html>")
-            pages["drawn.test"] = shell
-            J.fetch_with_browser = lambda u: drawn
-            v = B.validate("https://drawn.test/jobs", "html")
-            check("sources.a_board_drawn_by_script_is_tried_in_the_browser",
-                  v.get("ok") and v.get("kind") == "browser", f"{v}")
-        section("sources.browser", browser_retry)
-
-        check("sources.the_window_reports_what_happened",
-              "Added ${x.added ?? 0}" not in
-              (Path(__file__).resolve().parents[1] / "web_jobs" / "jobs.js")
-              .read_text("utf-8"))
-    finally:
-        B.CATALOGUE[:] = cat
-        J.JOB_FETCHER, J.fetch_with_browser = prev_fetch, prev_browser
-        _sxc.AGENT_HOME, _sxc.DB_PATH = home, db
 
 
-# ---------------------------------------------------------------------- #
-# The in-page helper follows an application through every page.
-#   python -c "import tests.run_tests as t; t._helper_checks()"
-#   python tools/check_helper.py     (the same, in a real browser)
-# ---------------------------------------------------------------------- #
-def _helper_checks() -> None:
-    import agent.portal as P
-    src = (Path(__file__).resolve().parents[1] / "agent" / "portal.py").read_text("utf-8")
-    js = P._COMPANION_JS
-
-    prof = {"full_name": "Thandi Mokoena", "email": "t@example.com",
-            "phone": "+27 82 000 0000", "linkedin": "https://linkedin.com/in/t",
-            "availability": "30 days"}
-    role = {"title": "Data Engineer", "company": "Acme",
-            "draft": {"body": "I build data platforms."}}
-    pay = P.companion_payload([{"label": "Why here?", "value": "x",
-                                "source": "engine"}], prof, role)
-    check("helper.it_carries_your_profile_to_every_screen",
-          pay["known"].get("email") == "t@example.com"
-          and pay["known"].get("first_name") == "Thandi"
-          and pay["known"].get("notice") == "30 days"
-          and pay["hints"][0]["label"] == "Why here?")
-    check("helper.it_uses_the_fillers_own_rules",
-          [k for k, _ in pay["rules"]] == [k for k, _ in P.FIELD_PATTERNS]
-          and pay["sensitive"] == list(P.SENSITIVE))
-    check("helper.it_says_which_application_it_is_for",
-          pay["for"] == "Data Engineer @ Acme")
-
-    class _Frame:
-        def __init__(self):
-            self.ran = 0
-
-        def evaluate(self, script):
-            self.ran += 1
-            return True
-
-    class _Ctx:
-        def __init__(self):
-            self.init = []
-            self.pages = []
-
-        def add_init_script(self, script):
-            self.init.append(script)
-
-    class _Page:
-        def __init__(self, ctx):
-            self.context, self.frames = ctx, [_Frame(), _Frame()]
-            self.main = 0
-
-        def evaluate(self, script):
-            self.main += 1
-            return True
-
-    ctx = _Ctx()
-    pg = _Page(ctx)
-    ctx.pages = [pg]
-    ok = P.PlaywrightDriver.companion(object.__new__(P.PlaywrightDriver), pg, pay)
-    check("helper.it_is_registered_for_every_page_tab_and_frame_to_come",
-          ok and len(ctx.init) == 1 and '"t@example.com"' in ctx.init[0]
-          and "__AGENT_JO_DATA__" not in ctx.init[0])
-    check("helper.it_is_put_into_every_frame_already_open",
-          pg.main == 1 and all(f.ran == 1 for f in pg.frames))
-    check("helper.an_old_style_list_of_hints_still_works",
-          P.PlaywrightDriver.companion(object.__new__(P.PlaywrightDriver),
-                                       _Page(_Ctx()), [{"label": "a"}]))
-
-    seen = {}
-
-    class _D:
-        def companion(self, page, data):
-            seen.update(data)
-            return True
-    P._HELP.profile, P._HELP.role = prof, role
-    try:
-        P._offer_companion(_D(), None, [])
-    finally:
-        P._HELP.profile = P._HELP.role = None
-    check("helper.a_session_hands_it_the_profile",
-          seen.get("known", {}).get("phone") == "+27 82 000 0000")
-
-    check("helper.it_sees_inside_web_components", "composedPath" in js)
-    check("helper.a_field_reached_by_keyboard_gets_help",
-          '"focusin"' in js)
-    check("helper.it_waits_for_the_pointer_to_reach_it",
-          "hideTimer" in js and "mouseenter" in js)
-    check("helper.it_never_writes_html_strings",
-          "innerHTML" not in js)              # pages enforcing Trusted Types
-    check("helper.it_shows_it_is_there", "data-agent-jo" in js and "badge" in js)
-    check("helper.someone_elses_details_are_not_offered",
-          "referee|reference" in js)
-    check("helper.the_profile_registers_it", "add_init_script" in src)
 
 
 # ---------------------------------------------------------------------- #
@@ -12905,8 +10083,6 @@ def _look_checks() -> None:
     root = Path(__file__).resolve().parents[1]
     css = (root / "web" / "static" / "styles.css").read_text("utf-8")
     js = (root / "web" / "static" / "app.js").read_text("utf-8")
-    jcss = (root / "web_jobs" / "jobs.css").read_text("utf-8")
-    jjs = (root / "web_jobs" / "jobs.js").read_text("utf-8")
 
     def body(src, head, last=False):
         # in CSS the last rule with a selector is the one that wins
@@ -12914,11 +10090,11 @@ def _look_checks() -> None:
         return src[i:src.index("\n}\n", i)] if i >= 0 else ""
 
     # Glass: one teal accent, primary buttons included
-    pb = body(css, '[data-look="new"][data-theme="glass"] .btn.primary {')
+    pb = body(css, '[data-theme="glass"] .btn.primary {', last=True)
     check("look.glass_has_its_own_primary_buttons",
           pb and "#E0B058" not in pb and "#C08A38" not in pb)
     check("look.a_plain_link_is_readable_in_glass",
-          ':where([data-look="new"][data-theme="glass"]) a:where(:not([class])) { color: var(--accent); }' in css)
+          ':where([data-theme="glass"]) a:where(:not([class])) { color: var(--accent); }' in css)
 
     # the task feed covers nothing in its default corner. It is moved to
     # <body> at start-up, so .main is found through the board, not the feed
@@ -12932,45 +10108,32 @@ def _look_checks() -> None:
           and "querySelector" not in body(js, "function _markDash(dash, n) {"))
     check("look.the_greeting_shrinks_when_the_board_is_full",
           ".main.dash-full .empty-title" in css and "_markDash(dash" in js)
-    # asked for: no picture on the welcome in the new look; the previous
-    # look keeps it, as it was
-    check("look.the_new_look_has_no_picture_on_the_welcome",
-          '[data-look="new"][data-theme="glass"] .empty-mark { display: none; }' in css)
+    # one look now (the switch was removed): the welcome keeps its picture
+    check("look.the_welcome_keeps_its_picture", ".empty-mark { display: none; }" not in css)
     check("look.needs_you_rows_are_slim",
-          '[data-look="new"][data-theme="glass"] .dash-attention .dash-item {' in css
+          '[data-theme="glass"] .dash-attention .dash-item {' in css
           and "border-left: 1px solid var(--line);"
-              in body(css, '[data-look="new"][data-theme="glass"] .dash-attention .dash-item {', last=True))
+              in body(css, '[data-theme="glass"] .dash-attention .dash-item {', last=True))
 
     # the phone
     check("look.a_phone_has_one_menu_button",
-          '[data-look="new"][data-theme="glass"] #menuBtn { display: none; }' in css)
+          '[data-theme="glass"] #menuBtn { display: none; }' in css)
     check("look.the_phone_header_keeps_the_engine_on_screen",
           "order: 3; flex: 1 1 100%" in css)
     check("look.the_drawer_sits_above_its_backdrop",
           "body.nav-open #app::after" in css
           and "body.nav-open::after { display: none; }" in css)
     check("look.hidden_still_wins_everywhere",
-          css.rstrip().endswith("[hidden] { display: none !important; }")
-          and jcss.rstrip().endswith("[hidden] { display: none !important; }"))
+          css.rstrip().endswith("[hidden] { display: none !important; }"))
 
-    # Agent Jo Jobs
-    narrow = jcss.rfind('@media (max-width: 1000px) {\n  [data-look="new"] .shell')
-    check("look.a_narrow_jobs_window_reflows",
-          narrow > jcss.find("density matched to the reference") > 0)
-    check("look.the_jobs_window_shows_keyboard_focus",
-          ":focus-visible" in jcss and "--ink-4: #7f8890" in jcss)
-    check("look.an_open_drafts_pane_is_never_blank", '"Pick a draft"' in jjs)
-
-    # both looks kept, switched in Settings (Agent Jo) and the sidebar (Jobs),
-    # remembered, and applied before the first paint
+    # the New/Previous switch is gone: they looked the same. One look, set
+    # before the first paint, and the fixes that came with "new" apply always
     html = (root / "web" / "static" / "index.html").read_text("utf-8")
     pre = (root / "web" / "static" / "prepaint.js").read_text("utf-8")
     srv = (root / "web" / "server.py").read_text("utf-8")
-    jhtml = (root / "web_jobs" / "index.html").read_text("utf-8")
-    check("look.agent_jo_keeps_both_looks",
-          "function applyLook" in js and '"model_LOOK"' in js
-          and "agentjo-look" in js and "agentjo-look" in pre
-          and 'data-look="new"' in html)
+    check("look.no_look_switch_left",
+          '"model_LOOK"' not in js and 'data-look="new"' not in css + html + pre
+          and 'setAttribute("data-look", "previous")' in pre)
     check("look.the_look_is_set_before_the_first_paint",
           '<script src="/static/prepaint.js"></script>' in html
           and 'f"/static/prepaint.js?v={v}"' in srv)
@@ -12978,22 +10141,480 @@ def _look_checks() -> None:
     # and the service worker both lived in one and never ran
     check("look.no_inline_scripts_under_the_csp",
           not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html))
-    blk = css[css.index("the new look (152), and the previous one"):
-              css.index("--- both looks ---")]
-    loose = [ln.strip() for ln in blk.splitlines()
-             if ln.strip().endswith(("{", ",")) and not ln.strip().startswith(("@", "/*", "*"))
-             and 'data-look="new"' not in ln]
-    check("look.every_new_rule_is_switchable", not loose, f"{loose[:3]}")
-    check("look.agent_jo_jobs_keeps_both_looks",
-          'id="lookSel"' in jhtml and 'data-look="new"' in jhtml
-          and "agentjo-look" in jhtml and "function applyLook" in jjs
-          and ':root[data-look="new"] { --ink-4' in jcss
-          and ':root[data-look="previous"] .rail-foot { display: block; }' in jcss)
+
+
+
+# ---------------------------------------------------------------------- #
+# The Windows installer: what it copies, what it runs, what it leaves.
+#   python -c "import tests.run_tests as t; t._installer_checks()"
+# (Building the .exe itself needs Windows: installer\build_installer.bat.)
+# ---------------------------------------------------------------------- #
+def _installer_checks() -> None:
+    import re
+    root = Path(__file__).resolve().parents[1]
+    iss = (root / "installer" / "AgentJo.iss").read_text("utf-8")
+    bat = (root / "installer" / "build_installer.bat").read_text("utf-8")
+    ver = (root / "installer" / "version.ps1").read_text("utf-8")
+    flow = (root / ".github" / "workflows" / "windows-installer.yml").read_text("utf-8")
+    inst = (root / "install_agent_jo.py").read_text("utf-8")
+    check("installer.everything_it_names_exists",
+          all((root / f).exists() for f in (
+              "agent-jo.ico", "LICENSE", "start_agent_jo.bat", "install_agent_jo.py"))
+          and "SetupIconFile=..\\agent-jo.ico" in iss and "LicenseFile=..\\LICENSE" in iss)
+    check("installer.no_administrator_prompt",
+          "PrivilegesRequired=lowest" in iss and "{localappdata}\\Programs" in iss)
+    # Python from the registry, not PATH: after a fresh Python install the
+    # installer's own PATH is stale, which is why install.bat had to stop
+    check("installer.finds_python_without_path",
+          "Software\\Python\\PythonCore\\3." in iss and "function FindPython" in iss
+          and "DownloadTemporaryFile(" in iss and "InstallAllUsers=0" in iss)
+    check("installer.runs_the_same_setup_as_install_bat",
+          "install_agent_jo.py')) + ' --quiet --no-shortcut'" in iss
+          and '"--no-shortcut" not in argv' in inst)
+    check("installer.never_ships_a_build_or_a_venv",
+          all(x in iss for x in ("\\.venv", "__pycache__", "\\dist", "\\installer")))
+    check("installer.an_upgrade_leaves_no_stale_code_but_keeps_the_venv",
+          'Name: "{app}\\agent"' in iss and 'Name: "{app}\\.venv"' not in iss[
+              iss.index("[InstallDelete]"):iss.index("[UninstallDelete]")])
+    check("installer.uninstall_takes_everything_it_made",
+          'Type: filesandordirs; Name: "{app}"' in iss)
+    # every begin and try closed: counted on the code alone, with its strings
+    # and comments taken out ("try again" in a message isn't a try)
+    code = iss[iss.index("[Code]"):]
+    code = re.sub(r"'(?:[^']|'')*'", "''", code)
+    code = re.sub(r"\{[^}]*\}|//[^\n]*", "", code)
+    check("installer.its_code_is_balanced",
+          len(re.findall(r"\bbegin\b", code)) + len(re.findall(r"\btry\b", code))
+          == len(re.findall(r"\bend\b\s*;", code)))
+    m = re.search(r'BUILD_ID = "(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})',
+                  (root / "agent" / "config.py").read_text("utf-8"))
+    check("installer.the_version_comes_from_the_build_stamp",
+          m is not None and r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})" in ver
+          and int(m[4] + m[5]) < 65536)
+    cmds = "\n".join(l for l in bat.splitlines()
+                     if not l.strip().upper().startswith("REM"))
+    check("installer.the_build_script_obeys_the_batch_rules",
+          cmds.count("%~dp0") == 1 and "goto have_iscc" in bat
+          and not re.search(r"\bif\b[^\n]*\($", cmds, re.M)
+          and '"installer\\AgentJo.iss"' in bat and "winget install --id JRSoftware.InnoSetup" in bat)
+    check("installer.it_builds_in_the_cloud_too",
+          "installer\\build_installer.bat --ci" in flow and "AgentJo-Setup-*.exe" in flow)
+
+
+# ---------------------------------------------------------------------- #
+# The memory store under load: one connection per thread.
+#   python -c "import tests.run_tests as t; t._memory_concurrency_checks()"
+# ---------------------------------------------------------------------- #
+def _memory_concurrency_checks() -> None:
+    import tempfile as _mct
+    from agent.memory import MemoryStore as _MCS
+    home = Path(_mct.mkdtemp(prefix="mem-load-"))
+    m = _MCS(db_path=home / "load.db", check_same_thread=False)
+    errors, tasks = [], {}
+    guard = threading.Lock()
+
+    def worker(t):
+        for i in range(100):
+            try:
+                m.add_memory(f"thread {t} fact {i}", category="general")
+                m.log_message(f"s{t}", "user", f"message {i}")
+                tid = m.create_task(f"task {t}-{i}", [f"{t}-{i} one", f"{t}-{i} two"])
+                m.update_step(tid, 1, "done", "ok")
+                m.search_memories("fact", limit=3)
+                m.get_transcript(f"s{t}")
+                with guard:
+                    tasks[tid] = f"{t}-{i}"
+            except Exception as exc:
+                with guard:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+    ts = [threading.Thread(target=worker, args=(t,)) for t in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    # It was one connection shared by every thread: under this load rows went
+    # missing, "bad parameter or other API misuse" surfaced, and a task's
+    # steps could be filed under another task — its id was read from a
+    # connection someone else had just inserted through.
+    check("memory.many_threads_at_once_raise_nothing", not errors, f"{errors[:3]}")
+    count = lambda q: m.conn.execute(q).fetchone()[0]
+    check("memory.no_write_is_lost",
+          count("SELECT COUNT(*) FROM memories") == 800
+          and count("SELECT COUNT(*) FROM messages") == 800
+          and count("SELECT COUNT(*) FROM tasks") == 800)
+    wrong = [tid for tid, tag in tasks.items()
+             if [s["description"]
+                 for s in m.conn.execute(
+                     "SELECT * FROM task_steps WHERE task_id = ? ORDER BY seq",
+                     (tid,)).fetchall()][:2] != [f"{tag} one", f"{tag} two"]]
+    check("memory.a_tasks_steps_are_its_own", not wrong, f"{wrong[:3]}")
+    # a finished thread's connection is closed when the next thread
+    # connects: open connections stay bounded, however many threads came
+    # and went (30 here, in bursts of 10)
+    for _ in range(3):
+        burst = [threading.Thread(target=lambda: m.recent_memories(1)) for _ in range(10)]
+        for t in burst:
+            t.start()
+        for t in burst:
+            t.join()
+    check("memory.finished_threads_leave_no_connections_open",
+          len(m._conns) <= 11, f"{len(m._conns)} open after 30 threads")
+    m.close()
+    check("memory.close_closes_every_threads_connection", m._conns == {})
+
+
+# ---------------------------------------------------------------------- #
+# Your career in the chat: Agent Jo Jobs' CV and answers, read-only.
+#   python -c "import tests.run_tests as t; t._career_checks()"
+# ---------------------------------------------------------------------- #
+def _career_checks() -> None:
+    import ast as _cast
+    import tempfile as _ctt
+    import agent.career as CA
+    from agent import tools as _ctools
+    from agent.memory import MemoryStore as _CMS
+    root = Path(__file__).resolve().parents[1]
+    saved = os.environ.get("AGENT_JOBS_HOME")
+    jobs = Path(_ctt.mkdtemp(prefix="jobs-home-"))
+    os.environ["AGENT_JOBS_HOME"] = str(jobs)
+    try:
+        check("career.nothing_yet_says_where_to_add_it",
+              "paste or upload their CV" in CA.lookup("my experience"))
+        (jobs / "jobscout" / "cv").mkdir(parents=True)
+        # the shapes Agent Jo Jobs writes (its cvstore.py and answerbank.py)
+        (jobs / "jobscout" / "cv" / "chunks.json").write_text(json.dumps({"at": "x", "chunks": [
+            {"id": 0, "heading": "Summary", "text": "Data engineer building pipelines for banks."},
+            {"id": 1, "heading": "Experience", "text": "Standard Bank, 2019-2024: built a Databricks lakehouse; led the move from SSIS to Airflow."},
+            {"id": 2, "heading": "Education", "text": "BSc Computer Science, University of Johannesburg."}]}), "utf-8")
+        (jobs / "jobscout" / "answers.json").write_text(json.dumps([
+            {"id": 1, "question": "What is your notice period?", "answer": "30 days", "reuse": True},
+            {"id": 2, "question": "Gender", "answer": "Female", "sensitive": True, "reuse": False}]), "utf-8")
+        (jobs / "jobscout" / "profile.json").write_text(json.dumps(
+            {"full_name": "Thandi Mokoena", "skills": ["SQL", "Python"], "email": "t@x.com"}), "utf-8")
+        out = CA.lookup("What did I do at Standard Bank with Airflow?")
+        check("career.finds_the_cv_section_that_answers", "Databricks lakehouse" in out
+              and out.index("Standard Bank, 2019") < (out.find("University") if "University" in out else 10**9))
+        check("career.includes_the_profile", "Thandi Mokoena" in out and "Python" in out)
+        check("career.contact_details_stay_out", "t@x.com" not in out)
+        check("career.saved_answers_are_there",
+              "30 days" in CA.lookup("notice period"))
+        check("career.a_sensitive_answer_not_switched_on_stays_hidden",
+              "Female" not in CA.lookup("gender"))
+        check("career.it_reminds_the_chat_not_to_invent", "don't add employers" in out)
+        m = _CMS(db_path=Path(_ctt.mkdtemp()) / "c.db", check_same_thread=False)
+        via = _ctools.execute_tool("career_lookup", {"query": "education"}, m, console)
+        check("career.the_chat_tool_answers", "University of Johannesburg" in str(via), str(via)[:200])
+        check("career.the_tool_is_offered_to_the_chat",
+              any(t.get("name") == "career_lookup" for t in _ctools.TOOL_DEFINITIONS))
+        before = sorted((p.name, p.stat().st_mtime_ns) for p in jobs.rglob("*") if p.is_file())
+        CA.lookup("anything"); CA.status()
+        after = sorted((p.name, p.stat().st_mtime_ns) for p in jobs.rglob("*") if p.is_file())
+        check("career.it_only_reads", before == after)
+        # the split holds: Agent Jo imports nothing of the job search's
+        bad = []
+        for f in list((root / "agent").glob("*.py")) + list((root / "web").glob("*.py")):
+            for n in _cast.walk(_cast.parse(f.read_text("utf-8"))):
+                names = ([a.name for a in n.names] if isinstance(n, _cast.Import) else
+                         [n.module or ""] + [a.name for a in n.names] if isinstance(n, _cast.ImportFrom) else [])
+                if any(x.split(".")[-1] in ("jobscout", "portal", "answerbank", "cvstore", "inbox", "boards")
+                       for x in names):
+                    bad.append(f.name)
+        check("career.still_no_job_search_code_in_agent_jo", not bad, f"{bad}")
+    finally:
+        if saved is None:
+            os.environ.pop("AGENT_JOBS_HOME", None)
+        else:
+            os.environ["AGENT_JOBS_HOME"] = saved
+
+
+# ---------------------------------------------------------------------- #
+# One-click updates, and only ones you signed.
+#   python -c "import tests.run_tests as t; t._updater_checks()"
+# ---------------------------------------------------------------------- #
+def _updater_checks() -> None:
+    import hashlib as _uh
+    import importlib.util as _uil
+    import io as _uio
+    import tempfile as _ut
+    import zipfile as _uz
+    from cryptography.hazmat.primitives import serialization as _us
+    from cryptography.hazmat.primitives.asymmetric import ed25519 as _ued
+    import agent.updater as U
+
+    def pem(k):
+        return k.public_key().public_bytes(encoding=_us.Encoding.PEM,
+                                           format=_us.PublicFormat.SubjectPublicKeyInfo)
+
+    mine, theirs = _ued.Ed25519PrivateKey.generate(), _ued.Ed25519PrivateKey.generate()
+
+    def release(files, *, build="2099-01-01 00:00 UTC", key=mine, tamper=None,
+                pub=None, extra=None, top="local-agent/"):
+        entries = {n: _uh.sha256(b).hexdigest() for n, b in files.items()}
+        man = json.dumps({"build": build, "entries": entries}, sort_keys=True).encode()
+        buf = _uio.BytesIO()
+        with _uz.ZipFile(buf, "w") as z:
+            for n, b in files.items():
+                z.writestr(top + n, tamper.get(n, b) if tamper else b)
+            z.writestr(top + U.MANIFEST, man)
+            z.writestr(top + U.SIGNATURE, key.sign(man))
+            z.writestr(top + U.PUBKEY, pub if pub is not None else pem(key))
+            for n, b in (extra or {}).items():
+                z.writestr(n, b)
+        return buf.getvalue()
+
+    saved = (U.ROOT, U.config.BUILD_ID, U.config.AGENT_HOME)
+    try:
+        root = Path(_ut.mkdtemp(prefix="installed-"))
+        (root / "agent").mkdir()
+        (root / "agent" / "a.py").write_text("old a\n")
+        (root / "README.md").write_text("old readme\n")
+        (root / ".venv").mkdir(); (root / ".venv" / "keep").write_text("venv")
+        U.ROOT = root
+        U.config.BUILD_ID = "2026-10-06 21:00 UTC"
+        U.config.AGENT_HOME = Path(_ut.mkdtemp(prefix="uphome-"))
+        rel_dir = Path(_ut.mkdtemp(prefix="release-"))
+
+        def offer(data, *, build="2099-01-01 00:00 UTC", sha=None):
+            (rel_dir / "r.zip").write_bytes(data)
+            (rel_dir / "latest.json").write_text(json.dumps({
+                "build": build, "url": "r.zip",
+                "sha256": sha or _uh.sha256(data).hexdigest()}))
+            U.save_settings({"source": str(rel_dir / "latest.json")})
+
+        def snapshot():
+            return sorted((str(p.relative_to(root)), p.read_bytes())
+                          for p in root.rglob("*") if p.is_file() and ".update" not in p.parts)
+
+        good = {"agent/a.py": b"new a\n", "agent/b.py": b"brand new b\n", "README.md": b"new readme\n"}
+        offer(release(good))
+        check("update.no_key_in_this_copy_means_no_updates",
+              "no signing-key.pub" in U.install()["error"])
+        (root / U.PUBKEY).write_bytes(pem(mine))
+        before = snapshot()
+
+        def refused(name, data, why, **kw):
+            offer(data, **kw)
+            r = U.install()
+            check(name, not r["ok"] and why in r["error"] and snapshot() == before, r.get("error"))
+        refused("update.someone_elses_signature_is_refused",
+                release(good, key=theirs, pub=pem(mine)), "wasn't signed by you")
+        refused("update.a_file_changed_after_signing_is_refused",
+                release(good, tamper={"agent/a.py": b"evil\n"}), "don't match")
+        refused("update.a_checksum_mismatch_is_refused", release(good), "checksum", sha="0" * 64)
+        refused("update.a_new_key_cant_arrive_by_update",
+                release(good, pub=pem(theirs)), "different signing key")
+        refused("update.the_venv_and_paths_outside_are_off_limits",
+                release({**good, ".venv/evil": b"x"}), "not allowed")
+        refused("update.a_zip_slip_is_refused",
+                release(good, extra={"../../escape.txt": b"x"}), "unsafe path")
+        offer(release(good, build="2020-01-01 00:00 UTC"), build="2020-01-01 00:00 UTC")
+        c = U.check()
+        check("update.an_older_build_isnt_offered", c["ok"] and not c["newer"])
+        refused("update.an_older_build_isnt_installed",
+                release(good, build="2020-01-01 00:00 UTC"), "not newer",
+                build="2099-01-01 00:00 UTC")
+
+        offer(release(good))
+        c = U.check()
+        check("update.a_newer_build_is_offered", c["ok"] and c["newer"] and c["latest"].startswith("2099"))
+        r = U.install()
+        check("update.a_signed_update_installs",
+              r["ok"] and (root / "agent" / "a.py").read_text() == "new a\n"
+              and (root / "agent" / "b.py").exists()
+              and (root / ".venv" / "keep").read_text() == "venv", f"{r}")
+        check("update.it_says_to_restart", "Restart" in r["message"])
+        rb = U.roll_back()
+        check("update.roll_back_restores_exactly",
+              rb["ok"] and snapshot() == before, rb.get("error"))
+        check("update.only_one_roll_back", not U.roll_back()["ok"])
+
+        # the release tool signs what the updater checks
+        spec = _uil.spec_from_file_location("_mr", Path(__file__).resolve().parents[1] / "tools" / "make_release.py")
+        mr = _uil.module_from_spec(spec); spec.loader.exec_module(mr)
+        kf = Path(_ut.mkdtemp()) / "signing-key.private"
+        kf.write_bytes(mine.private_bytes(encoding=_us.Encoding.PEM,
+                                          format=_us.PrivateFormat.PKCS8,
+                                          encryption_algorithm=_us.NoEncryption()))
+        mr.KEYFILE = kf
+        names = ["agent/updater.py", "README.md"]
+        signed = mr._sign_files([Path(n) for n in names])
+        stage = Path(_ut.mkdtemp(prefix="stage-"))
+        for n in names:
+            (stage / n).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(mr.ROOT / n, stage / n)
+        for n, b in signed.items():
+            (stage / n).write_bytes(b)
+        check("update.releases_are_signed_the_way_the_updater_checks",
+              U.verify_release(stage, pem(mine))["ok"])
+        src = (Path(__file__).resolve().parents[1] / "tools" / "make_release.py").read_text("utf-8")
+        check("update.the_private_key_can_never_ship",
+              '"signing-key.private"' in src.split("LEAK_FILENAMES")[1][:80]
+              and '".update"' in src)
+    finally:
+        U.ROOT, U.config.BUILD_ID, U.config.AGENT_HOME = saved
+
+
+# ---------------------------------------------------------------------- #
+# Running it in sections.
+#
+# main() is one function of 9,000 lines that stopped at the first failure:
+# one missing package, or one broken check, and every check after it went
+# unrun and unreported. It runs section by section now — each "# ---"
+# heading in main() is a section — and a failure is recorded and the run
+# goes on. At the end: every failure, every section that couldn't run and
+# why, and which of those only failed because an earlier section did.
+#
+#   python tests/run_tests.py            every section, a full report
+#   python tests/run_tests.py -k phone   only sections whose title matches
+#                                        (and the ones they depend on)
+#   python tests/run_tests.py --list     the sections
+#   python tests/run_tests.py --stop     the old way: stop at the first failure
+# ---------------------------------------------------------------------- #
+def sections() -> list:
+    """[(title, first_line, source)] of main(), in order."""
+    import re as _sre
+    lines = Path(__file__).read_text("utf-8").splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("def main("))
+    end = next(i for i in range(start + 1, len(lines))
+               if lines[i].startswith(("def ", "class ", "if __name__", "# ----")))
+    body = list(range(start + 1, end))
+    out, title, first, buf = [], "setup: memories, skills, tasks", body[0], []
+    for i in body:
+        m = _sre.match(r"^    # --- (.*?)\s*-*\s*#?\s*$", lines[i])
+        if m:
+            if any(x.strip() for x in buf):
+                out.append((title, first + 1, "\n".join(buf)))
+            title, first, buf = m.group(1).strip(" -#") or "section", i, []
+        buf.append(lines[i])
+    if any(x.strip() for x in buf):
+        out.append((title, first + 1, "\n".join(buf)))
+    return out
+
+
+def run(argv=None) -> int:
+    import textwrap as _stw
+    import time as _stime
+    import traceback as _stb
+    argv = sys.argv[1:] if argv is None else argv
+    secs = sections()
+    if "--list" in argv:
+        for n, (t, ln, _) in enumerate(secs, 1):
+            print(f"{n:>4}  line {ln:<6} {t}")
+        return 0
+    if "--stop" in argv:
+        try:
+            main()
+        except AssertionError as exc:
+            print(f"\nFAILED after {len(PASS)} passing checks: {exc}")
+            return 1
+        return 0
+    want = ""
+    if "-k" in argv and argv.index("-k") + 1 < len(argv):
+        want = argv[argv.index("-k") + 1].lower()
+    _COLLECT["on"] = True
+    ns = globals()
+    results, crashed, t0 = [], [], _stime.time()
+    defined_by = {}
+    chosen = [i for i, (t, _, _) in enumerate(secs) if not want or want in t.lower()]
+    if want and not chosen:
+        print(f"No section's title contains {want!r}. Try --list.")
+        return 2
+    # with -k, a chosen section's names may come from earlier sections, so
+    # those run too — quietly — but only the ones it actually uses
+    import ast as _sast
+    import re as _sre2
+
+    def _names(code, kind):
+        try:
+            tree = _sast.parse(_stw.dedent(code))
+        except SyntaxError:
+            return set()
+        if kind == "def":
+            return {n.id for n in _sast.walk(tree) if isinstance(n, _sast.Name)
+                    and isinstance(n.ctx, _sast.Store)} | {
+                   (a.asname or a.name).split(".")[0] for n in _sast.walk(tree)
+                   if isinstance(n, (_sast.Import, _sast.ImportFrom)) for a in n.names} | {
+                   n.name for n in _sast.walk(tree)
+                   if isinstance(n, (_sast.FunctionDef, _sast.ClassDef))}
+        return {n.id for n in _sast.walk(tree) if isinstance(n, _sast.Name)
+                and isinstance(n.ctx, _sast.Load)}
+    run_set = set(chosen)
+    if want:
+        need = set().union(*(_names(secs[i][2], "use") for i in chosen)) - set(ns)
+        for i in range(max(chosen), -1, -1):
+            if i in run_set:
+                continue
+            gives = _names(secs[i][2], "def")
+            if gives & need:
+                run_set.add(i)
+                need |= _names(secs[i][2], "use") - set(ns)
+    for i, (title, line, code) in enumerate(secs):
+        if i not in run_set:
+            continue
+        p0, f0 = len(PASS), len(FAILED)
+        status, why = "ok", ""
+        try:
+            exec(compile("\n" * (line - 1) + _stw.dedent(code), __file__, "exec"), ns)
+        except AssertionError as exc:
+            status, why = "failed", str(exc)
+        except ModuleNotFoundError as exc:
+            status, why = "needs a package", f"{exc.name} isn't installed"
+        except NameError as exc:
+            name = getattr(exc, "name", "") or str(exc)
+            src_sec = defined_by.get(name)
+            # only excused when the section that sets it up couldn't run: a
+            # name nothing defines is a real bug, reported as one
+            if src_sec and src_sec in crashed:
+                status = "skipped"
+                why = (f"needs {name}, which “{src_sec}” would have set up, "
+                       f"but that section couldn't run")
+            else:
+                status, why = "crashed", f"NameError: {exc}"
+        except Exception as exc:
+            tb = _stb.extract_tb(exc.__traceback__)
+            at = next((f"line {f.lineno}" for f in reversed(tb) if f.filename == __file__), "")
+            status, why = "crashed", f"{type(exc).__name__}: {str(exc)[:200]} {at}".strip()
+        if status != "ok":
+            crashed.append(title)
+        for nm in _names(code, "def"):
+            defined_by.setdefault(nm, title)
+        quiet = want and i not in chosen
+        results.append((title, line, status, why, len(PASS) - p0, FAILED[f0:], quiet))
+    _COLLECT["on"] = False
+
+    shown = [r for r in results if not r[6]]
+    bad_checks = sum(len(r[5]) for r in shown)
+    print()
+    for title, line, status, why, n, fails, quiet in results:
+        if quiet and status == "ok" and not fails:
+            continue
+        if status == "ok" and not fails:
+            continue
+        mark = {"failed": "FAIL", "crashed": "CRASH", "needs a package": "NEEDS",
+                "skipped": "SKIP", "ok": "FAIL"}[status]
+        print(f"{mark:>5}  {title}  (line {line}, {n} passed)" + ("  [ran for -k]" if quiet else ""))
+        for f in fails[:8]:
+            print(f"         ✗ {f}")
+        if len(fails) > 8:
+            print(f"         … and {len(fails) - 8} more")
+        if why:
+            print(f"         {why}")
+    counts = {}
+    for r in shown:
+        counts[r[2]] = counts.get(r[2], 0) + 1
+    print(f"\n{len(PASS)} checks passed, {bad_checks} failed, in {len(shown)} section(s)"
+          f" ({_stime.time() - t0:.0f}s).")
+    extra = [f"{counts[k]} {k}" for k in ("failed", "crashed", "needs a package", "skipped")
+             if counts.get(k)]
+    if extra:
+        print("Sections not clean: " + ", ".join(extra) + ".")
+    if counts.get("skipped"):
+        print("A skipped section only failed because an earlier one couldn't run — "
+              "fix that one first.")
+    ok = not bad_checks and not any(counts.get(k) for k in ("failed", "crashed", "needs a package", "skipped"))
+    print("OK" if ok else "NOT OK")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AssertionError as exc:
-        print(f"\nFAILED after {len(PASS)} passing checks: {exc}")
-        sys.exit(1)
+    sys.exit(run())

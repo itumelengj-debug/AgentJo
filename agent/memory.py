@@ -12,6 +12,7 @@ No external services — everything lives in one local file.
 
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -181,16 +182,13 @@ def _source_rank(src: str) -> int:
 
 class MemoryStore:
     def __init__(self, db_path: Path | None = None, check_same_thread: bool = True):
+        # check_same_thread is accepted for callers and no longer needed:
+        # every thread gets a connection of its own (see `conn`)
         self.db_path = Path(db_path or config.DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path),
-                                    check_same_thread=check_same_thread)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        # Tolerate concurrent access from parallel sessions (the web UI runs
-        # turns in worker threads): wait briefly on a lock instead of erroring,
-        # and use WAL so reads and a write can proceed at once.
-        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self._local = threading.local()
+        self._conns: dict = {}                 # thread id -> its connection
+        self._conns_lock = threading.Lock()
         try:
             self.conn.execute("PRAGMA journal_mode = WAL")
         except sqlite3.OperationalError:
@@ -215,6 +213,41 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
         self.conn.commit()
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """This thread's connection to the database.
+
+        It was one connection shared by every thread — the web server's
+        workers, the scheduler, background runs — and sqlite3 leaves
+        serialising that to the program, which nothing did. Under load rows
+        went missing, "bad parameter or other API misuse" surfaced at random,
+        and a new task's steps could be filed under another task: its id was
+        read from a connection another thread had just inserted through.
+        Measured with eight threads: about 300 errors in 6,000 writes.
+
+        A connection per thread makes each id, transaction and cursor its
+        own. WAL lets readers carry on while one thread writes; busy_timeout
+        makes writers take turns rather than fail.
+        """
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("PRAGMA busy_timeout = 5000")
+            self._local.conn = c
+            with self._conns_lock:
+                # a finished thread's connection is closed here, so open
+                # handles stay bounded by the threads that are still alive
+                alive = {t.ident for t in threading.enumerate()}
+                for ident in [i for i in self._conns if i not in alive]:
+                    try:
+                        self._conns.pop(ident).close()
+                    except Exception:
+                        pass
+                self._conns[threading.get_ident()] = c
+        return c
 
     def ensure_schema(self) -> None:
         """Re-apply the (idempotent) schema and migrations. Called after a
@@ -989,7 +1022,15 @@ class MemoryStore:
         self.conn.commit()
 
     def close(self) -> None:
-        self.conn.close()
+        """Close every connection this store opened, in every thread."""
+        with self._conns_lock:
+            conns, self._conns = list(self._conns.values()), {}
+        for c in conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+        self._local = threading.local()
 
 
 _STEP_MARK = {"pending": "[ ]", "in_progress": "[>]", "done": "[x]",

@@ -2,3 +2,5 @@
 # signing key — never commit this
 signing-key.private
 *.private
+.update/
+dist/

@@ -40,7 +40,6 @@ from . import config
 # generous on purpose: a false alarm teaches you to ignore the panel, which
 # costs more than the fault it was meant to catch.
 QUIET_DAYS = {
-    "jobscout": 4,      # auto-apply on: something should be found or sent
     "trend": 14,        # weekly scan, so a fortnight is genuinely quiet
     "challenge": 14,
     "crew": 21,
@@ -53,7 +52,6 @@ QUIET_DAYS = {
 
 # Which audit kinds count as this feature having actually DONE something.
 SUCCESS_KINDS = {
-    "jobscout": ("jobscout",),
     "trend": ("trend",),
     "challenge": ("challenge",),
     "crew": ("crew",),
@@ -64,7 +62,6 @@ SUCCESS_KINDS = {
 }
 
 FRIENDLY = {
-    "jobscout": "Job scout",
     "trend": "Trend Scout",
     "challenge": "Challenges",
     "crew": "Crew",
@@ -107,17 +104,11 @@ def _enabled_features(memory) -> dict:
     """What is switched on, and therefore expected to produce something."""
     on = {}
     try:
-        from . import jobscout
-        if jobscout.auto_config().get("enabled"):
-            on["jobscout"] = "auto-apply is on"
-    except Exception:
-        pass
-    try:
         rows = memory.conn.execute(
             "SELECT name, action FROM schedules WHERE enabled = 1").fetchall()
         for r in rows:
             act = (r["action"] or "").strip()
-            key = {"trendscout": "trend", "jobscout": "jobscout",
+            key = {"trendscout": "trend",
                    "watch": "watch", "crew": "crew",
                    "backup": "backup"}.get(act)
             if key:
@@ -136,37 +127,6 @@ def why_quiet(feature: str) -> str:
     why is half a report.
     """
     try:
-        if feature.lower().startswith("job"):
-            from . import jobscout
-            p = jobscout.auto_preview()
-            if not p.get("enabled"):
-                return "auto-apply is switched off, so it isn't meant to."
-            # order matters: "no sources" is true of a fresh install, but
-            # if there are roles in the list it is not the reason anything
-            # stopped — the specific cause has to win over the general one
-            if not jobscout.roles() and not jobscout.job_sources():
-                return ("it has no job sites configured — Sites & filters "
-                        "\u2192 Find sites for me.")
-            if not p.get("would_send") and p.get("would_hold"):
-                return (f"every candidate is held: {len(p['would_hold'])} "
-                        f"draft(s) claim things your profile can't support. "
-                        f"Held drafts shows which.")
-            if not p.get("would_send") and p.get("needs_scoring"):
-                return (f"{len(p['needs_scoring'])} role(s) are waiting to be "
-                        f"scored — that needs an engine with credit, or a "
-                        f"local one pinned in the Jobs panel.")
-            if not p.get("would_send") and p.get("no_address"):
-                return (f"{len(p['no_address'])} role(s) are portal-only, so "
-                        f"there is nothing it can send by itself.")
-            if not p.get("would_send"):
-                return ("there are no roles left to act on — the list is "
-                        "empty or everything has been applied to.")
-            if p.get("dry_run"):
-                return (f"it would send {len(p['would_send'])}, but rehearsal "
-                        f"is on so nothing leaves. Turn rehearsal off in "
-                        f"Auto-apply when you're ready.")
-            return (f"it has {len(p['would_send'])} ready to send — if that "
-                    f"hasn't happened, the daily schedule may not be running.")
         if feature.lower().startswith(("trend", "challenge")):
             from . import challenges
             if not [s for s in challenges.sources() if s.get("on")]:

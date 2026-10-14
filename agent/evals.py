@@ -209,9 +209,13 @@ def cases_for(feature: str = "") -> list:
 # --------------------------------------------------------------------------- #
 #  running
 # --------------------------------------------------------------------------- #
-def run(brain, engine: str = "", feature: str = "") -> dict:
+def run(brain, engine: str = "", feature: str = "", model=None) -> dict:
     """Run the suite against one engine. Never raises — a case that errors is
-    a failed case, which is itself the finding."""
+    a failed case, which is itself the finding.
+
+    `model` is what the engine name resolves to (the server's _trend_model).
+    The name itself used to be passed as the model, which no engine
+    recognises, so an eval of a named engine tested nothing it meant to."""
     from . import costs
     selected = cases_for(feature)
     results, passed = [], 0
@@ -219,7 +223,7 @@ def run(brain, engine: str = "", feature: str = "") -> dict:
     for case in selected:
         started = time.time()
         try:
-            kw = {"model": engine} if engine and engine != "Auto" else {}
+            kw = {"model": model} if model is not None else {}
             resp = brain.chat([{"role": "user", "content": case["user"]}],
                               [case["system"]], None, **kw)
             reply = "".join(b.text for b in resp.content

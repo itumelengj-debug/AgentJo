@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="glass" data-look="new">
+<html lang="en" data-theme="glass" data-skin="synapse" data-look="previous">
 <head>
   <meta charset="utf-8" />
   <!-- viewport-fit=cover so the app can paint under the notch and home bar;
@@ -36,6 +36,8 @@
         <div class="brand-text">
           <div class="brand-name">Agent&nbsp;Jo</div>
           <div class="brand-sub">agentic workspace</div>
+          <!-- the Symbolic Synapse theme's wordmark line; hidden in the others -->
+          <div class="brand-co"><span class="brand-co-a">Symbolic</span> <span class="brand-co-b">Synapse</span></div>
         </div>
       </div>
 
@@ -91,6 +93,9 @@
           </button>
           <button class="foot-btn" id="enginesBtn">
           <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/><path d="M6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14"/></svg></span> Manage engines
+        </button>
+          <button class="foot-btn" id="routingBtn">
+          <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3.5" cy="8" r="1.6"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5 7.3 11 4.2M5 8.7l6 3.1"/></svg></span> Routing &amp; spend
         </button>
           <button class="foot-btn" id="documentsBtn">
           <span class="foot-ico"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.8H4.4A1.4 1.4 0 0 0 3 3.2v9.6a1.4 1.4 0 0 0 1.4 1.4h7.2a1.4 1.4 0 0 0 1.4-1.4V5.8z"/><path d="M9 1.8v4h4"/><path d="M5.6 8.4h4.8M5.6 11h3.2"/></svg></span> Documents
@@ -274,6 +279,11 @@
               API access vs. self-hosting weights
             </button>
           </div>
+          <!-- what the Symbolic Synapse theme's lattice stands for; hidden in the others -->
+          <p class="syn-legend">
+            <span><i class="syn-lg syn-lg-lattice"></i>Lattice: rules and tools</span>
+            <span><i class="syn-lg syn-lg-filament"></i>Filaments: what it learns</span>
+          </p>
         </div>
         <!-- Messages injected here -->
         <div class="messages" id="messages"></div>
@@ -867,6 +877,22 @@
   </div>
 
   <!-- ============ Autonomy dashboard ============ -->
+  <div class="modal-backdrop" id="routingModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="routingTitle">
+      <div class="modal-head">
+        <h2 id="routingTitle">Routing &amp; spend</h2>
+        <button class="icon-btn" id="closeRoutingModal" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-intro">
+        With the Auto engine, each turn goes to the engine its first matching rule names:
+        light work to your local model, hard work to the strong one. Here is where your turns
+        went, the rules (change them), what a message would do, what it cost this month, and
+        whether your local model is good enough for each kind of work.
+      </p>
+      <div id="routingBody"><div class="out-empty">Loading…</div></div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="autonomyModal" hidden>
     <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="autonomyTitle">
       <div class="modal-head">
@@ -877,6 +903,11 @@
         Everything Agent Jo can do on its own, in one place. Each system is armed
         separately and is off by default. The button below stops all of it at once.
       </p>
+      <div class="held-box" id="heldBox">
+        <div class="held-head"><span class="budget-title">Waiting for your OK</span>
+          <span class="held-n" id="heldN"></span></div>
+        <div id="heldList"></div>
+      </div>
       <div class="auto-cards" id="autoCards"></div>
       <div class="budget-box" id="budgetBox">
         <div class="budget-head">
@@ -1375,7 +1406,7 @@
         it work here or from chat; give it a schedule and it works on its own.
         Autonomy is scoped: a specialist writes only inside its own workspace.
       </p>
-      <div class="issues-toolbar">
+      <div class="issues-toolbar crew-toolbar">
         <input type="text" id="crewTask" class="model-input" style="flex:1"
                placeholder="Task for the crew — e.g. “draft an outreach email for 3 JHB manufacturers needing BI”" />
         <select id="crewWho" class="model-select"></select>

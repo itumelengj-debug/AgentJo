@@ -6,22 +6,37 @@
    theme until app.js caught up. A script from this origin is allowed. */
 (function () {
   var root = document.documentElement;
+  /* themes drawn as a skin over Glass: must agree with THEMES in app.js */
+  var SKINS = { synapse: "synapse" };
   try {
-    /* must agree with currentTheme() in app.js: Glass by default, and
-       "System" in dark mode is Glass too */
-    var c = localStorage.getItem("agentjo-theme");
-    if (!localStorage.getItem("agentjo-theme-glass-default")
+    /* must agree with currentTheme() in app.js, which also saves what it
+       decides: each one-time move, in order, then Symbolic Synapse (the
+       main look) when nothing is chosen */
+    var ls = localStorage;
+    var c = ls.getItem("agentjo-theme");
+    if (!ls.getItem("agentjo-theme-glass-migrated")
+        && (!c || c === "fluent" || c === "system")) c = "glass";
+    if (!ls.getItem("agentjo-theme-glass-default")
         && (!c || c === "system")) c = "glass";
-    c = c || "glass";
+    if (!ls.getItem("agentjo-theme-synapse-default")
+        && (!c || c === "glass")) c = "synapse";
+    c = c || "synapse";
     var r = c;
     if (c === "system") {
+      /* System follows Windows: the main look when it's dark */
       r = (window.matchMedia &&
            window.matchMedia("(prefers-color-scheme: dark)").matches)
-          ? "glass" : "fluent-light";
+          ? "synapse" : "fluent-light";
+    }
+    if (SKINS[r]) {
+      root.setAttribute("data-skin", SKINS[r]);
+      r = "glass";
+    } else {
+      root.removeAttribute("data-skin");
     }
     if (r !== "instruments") root.setAttribute("data-theme", r);
-    /* the look, chosen in Settings: "new" from build 152 on, or "previous" */
-    root.setAttribute("data-look",
-      localStorage.getItem("agentjo-look") === "previous" ? "previous" : "new");
+    else root.removeAttribute("data-theme");
+    /* one look now: the previous one (the switch was removed) */
+    root.setAttribute("data-look", "previous");
   } catch (e) {}
 })();
