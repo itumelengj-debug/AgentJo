@@ -127,7 +127,9 @@ async def _auth_guard(request: Request, call_next):
     if request.method == "OPTIONS" or not auth.is_enabled():
         return await call_next(request)
     path = request.url.path
-    if path in _AUTH_PUBLIC or path.startswith("/static"):
+    # /hooks/ authenticates each delivery with the trigger's own secret
+    # (agent/triggers.py); a browser session would mean nothing to GitHub
+    if path in _AUTH_PUBLIC or path.startswith("/static") or path.startswith("/hooks/"):
         return await call_next(request)
     if auth.verify_token(request.cookies.get(auth.COOKIE, "")):
         return await call_next(request)
@@ -882,6 +884,116 @@ def goals_run_now(goal_id: int):
 def goals_delete(goal_id: int):
     from agent import goals as _goals
     return {"ok": _goals.delete(goal_id)}
+
+
+class TriggerBody(BaseModel):
+    name: str
+    kind: str
+    instruction: str = ""
+    goal_id: int | None = None
+    engine: str = "Auto"
+    full_access: bool = False
+    max_per_hour: int = 12
+    imap: dict | None = None
+    folder: str = ""
+    pattern: str = "*"
+    from_contains: str = ""
+    subject_contains: str = ""
+
+
+class TriggerPatch(BaseModel):
+    enabled: bool | None = None
+    instruction: str | None = None
+    full_access: bool | None = None
+    max_per_hour: int | None = None
+
+
+_hook_rl = RateLimiter(int(os.environ.get("AGENT_HOOK_RATE", "60")), 60)
+
+
+@app.post("/hooks/{trigger_id}")
+async def webhook_in(trigger_id: str, request: Request):
+    """A delivery from outside. Answers fast (202) and runs in the background,
+    so a slow turn never makes GitHub retry the delivery."""
+    from agent import triggers as _tr
+    if _RATE_ON:
+        ok_rl, retry = _hook_rl.hit(_client_key(request))
+        if not ok_rl:
+            return JSONResponse({"detail": "Too many requests."}, status_code=429,
+                                headers={"Retry-After": str(int(retry) + 1)})
+    body = await request.body()
+    if len(body) > _tr.MAX_BODY:
+        return JSONResponse({"detail": "Too large."}, status_code=413)
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    ok, why = _tr.verify_webhook(trigger_id, body, headers,
+                                 request.query_params.get("token", ""))
+    if not ok:
+        _audit_safe("trigger", name="refused", trigger=trigger_id[:20], why=why)
+        # one answer for 'no such hook' and 'wrong secret': don't confirm ids
+        return JSONResponse({"detail": "Not accepted."}, status_code=401)
+    if headers.get("x-github-event") == "ping":
+        return {"ok": True, "note": "pong — the webhook is connected."}
+    t = _tr.get(trigger_id, with_secrets=True)
+    _fire_trigger_async(t, _tr.webhook_event(body, headers), "webhook")
+    return JSONResponse({"ok": True, "accepted": True}, status_code=202)
+
+
+@app.get("/api/triggers")
+def triggers_list():
+    from agent import triggers as _tr
+    return {"triggers": _tr.list_triggers(), "kinds": list(_tr.KINDS)}
+
+
+@app.post("/api/triggers")
+def triggers_create(body: TriggerBody):
+    from agent import triggers as _tr
+    try:
+        t = _tr.create(body.name, body.kind, instruction=body.instruction,
+                       goal_id=body.goal_id, engine=body.engine,
+                       full_access=body.full_access, max_per_hour=body.max_per_hour,
+                       imap=body.imap, folder=body.folder, pattern=body.pattern,
+                       from_contains=body.from_contains,
+                       subject_contains=body.subject_contains)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _start_scheduler()
+    return t
+
+
+@app.post("/api/triggers/{trigger_id}")
+def triggers_patch(trigger_id: str, body: TriggerPatch):
+    from agent import triggers as _tr
+    t = _tr.update(trigger_id, **body.model_dump())
+    if not t:
+        raise HTTPException(status_code=404, detail="no such trigger")
+    return t
+
+
+@app.post("/api/triggers/{trigger_id}/rotate")
+def triggers_rotate(trigger_id: str):
+    from agent import triggers as _tr
+    r = _tr.rotate_secret(trigger_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r["error"])
+    return r
+
+
+@app.post("/api/triggers/{trigger_id}/test")
+def triggers_test(trigger_id: str):
+    """Fire it once with a sample event, so you can see what it does."""
+    from agent import triggers as _tr
+    t = _tr.get(trigger_id, with_secrets=True)
+    if not t:
+        raise HTTPException(status_code=404, detail="no such trigger")
+    _fire_trigger_async(t, "(a test event sent from the Triggers panel; nothing really happened)",
+                        "test")
+    return {"ok": True, "note": "Fired. The result shows on the trigger and in History."}
+
+
+@app.delete("/api/triggers/{trigger_id}")
+def triggers_delete(trigger_id: str):
+    from agent import triggers as _tr
+    return {"ok": _tr.delete(trigger_id)}
 
 
 class ServiceBody(BaseModel):
@@ -3254,6 +3366,118 @@ _sched_guard = threading.Lock()
 _scheduler_started = False
 
 
+def _goal_runner(goal: dict, prompt: str):
+    """One unattended run on a goal, with a goal-sized budget (agent/goals.py)."""
+    from agent import goals as _goals
+    ginfo: dict = {"feature": "goals"}
+    gsess = f"goal-{goal['id']}-{int(time.time())}"
+    try:
+        memory.log_message(gsess, "user", prompt)
+    except Exception:
+        pass
+    rep = main.run_turn(
+        get_brain(), memory, [], prompt,
+        auto_approve=bool(goal.get("full_access")), session_id=gsess,
+        force_model=_force_model(goal.get("engine") or "Auto"),
+        turn_info=ginfo, max_rounds=_goals.GOAL_MAX_ROUNDS,
+        time_limit=_goals.GOAL_TIME_LIMIT)
+    if rep:
+        try:
+            memory.log_message(gsess, "assistant", rep)
+        except Exception:
+            pass
+    _accumulate_cost(ginfo)
+    return rep, ginfo
+
+
+def _goal_cost(ginfo: dict) -> float:
+    by = ginfo.get("by_engine") or {}
+    if by:
+        return sum(_cost_of(lbl or "claude", u or {}) for lbl, u in by.items())
+    return _cost_of(ginfo.get("engine") or "claude", ginfo.get("usage") or {})
+
+
+def _fire_trigger(t: dict, event: str, source: str) -> dict:
+    """An event happened: run the trigger's instruction, or wake its goal.
+    Fenced like a schedule — breaker, monthly ceiling, hourly cap — and
+    every outcome is recorded on the trigger and in the audit trail."""
+    from agent import triggers as _tr
+    tid = t["id"]
+    bkey = f"trigger:{tid}"
+    ok, why = breaker.allow(bkey)
+    if not ok:
+        _tr.record_fire(tid, "skipped", why)
+        return {"ok": False, "skipped": why}
+    if _budget_blocks_autonomy():
+        msg = f"budget reached (${config.BUDGET_USD:.2f}) — trigger held"
+        _tr.record_fire(tid, "skipped", msg)
+        return {"ok": False, "skipped": msg}
+    if not _tr.allow_fire(t):
+        _audit_safe("trigger", name="dropped", trigger=tid)
+        return {"ok": False, "skipped": "hourly ceiling for this trigger"}
+    status, summary = "ok", ""
+    try:
+        if t.get("goal_id"):
+            from agent import goals as _goals
+            g = _goals.get(int(t["goal_id"]))
+            if not g or g["status"] != "active":
+                status, summary = "skipped", f"goal #{t['goal_id']} isn't active"
+            else:
+                _goals.note(g["id"], "event", f"[{t['name']}] " + event[:1400])
+                r = _goals.run_one(_goals.get(g["id"]), _goal_runner, memory, _goal_cost)
+                status = "error" if r.get("error") else "ok"
+                summary = (r.get("error") or
+                           f"woke goal #{g['id']}" + (" — progressed" if r.get("progressed") else ""))
+        else:
+            info: dict = {"feature": "autonomy"}
+            sess = f"trigger-{tid}-{int(time.time())}"
+            prompt = _tr.build_prompt(t, event, source)
+            try:
+                memory.log_message(sess, "user", prompt)
+            except Exception:
+                pass
+            reply = main.run_turn(
+                get_brain(), memory, [], prompt,
+                auto_approve=bool(t.get("full_access")), session_id=sess,
+                force_model=_force_model(t.get("engine") or "Auto"), turn_info=info)
+            if reply:
+                try:
+                    memory.log_message(sess, "assistant", reply)
+                except Exception:
+                    pass
+            _accumulate_cost(info)
+            summary = " ".join((reply or "").split())[:300] or "(no output)"
+    except Exception as exc:
+        status, summary = "error", f"{type(exc).__name__}: {exc}"[:300]
+        issues.note_error(f"trigger:{t.get('name', '')[:20]}", summary)
+    try:
+        if status == "error":
+            breaker.record_failure(bkey, summary)
+        elif status == "ok":
+            breaker.record_success(bkey)
+    except Exception:
+        pass
+    _tr.record_fire(tid, status, summary)
+    if status == "error":
+        try:
+            from agent import notify as _nt
+            _nt.schedule_failed(f"trigger {t.get('name', '')}", summary)
+        except Exception:
+            pass
+    return {"ok": status == "ok", "status": status, "summary": summary}
+
+
+def _audit_safe(kind: str, **fields) -> None:
+    try:
+        audit.record(kind, **fields)
+    except Exception:
+        pass
+
+
+def _fire_trigger_async(t: dict, event: str, source: str) -> None:
+    threading.Thread(target=_fire_trigger, args=(t, event, source), daemon=True).start()
+
+
 def _run_schedule(sch: dict) -> None:
     """Run one scheduled instruction as a tracked job in its own session, then
     record the outcome and compute the next fire time. Mirrors the desktop."""
@@ -3448,35 +3672,6 @@ def _run_schedule(sch: dict) -> None:
 
         if action == "goals":
             from agent import goals as _goals
-            brain = get_brain()
-
-            def _goal_runner(goal, prompt):
-                ginfo: dict = {"feature": "goals"}
-                gsess = f"goal-{goal['id']}-{int(time.time())}"
-                try:
-                    memory.log_message(gsess, "user", prompt)
-                except Exception:
-                    pass
-                rep = main.run_turn(
-                    brain, memory, [], prompt,
-                    auto_approve=bool(goal.get("full_access")), session_id=gsess,
-                    force_model=_force_model(goal.get("engine") or sch["engine"]),
-                    turn_info=ginfo, max_rounds=_goals.GOAL_MAX_ROUNDS,
-                    time_limit=_goals.GOAL_TIME_LIMIT)
-                if rep:
-                    try:
-                        memory.log_message(gsess, "assistant", rep)
-                    except Exception:
-                        pass
-                _accumulate_cost(ginfo)
-                return rep, ginfo
-
-            def _goal_cost(ginfo):
-                by = ginfo.get("by_engine") or {}
-                if by:
-                    return sum(_cost_of(lbl or "claude", u or {}) for lbl, u in by.items())
-                return _cost_of(ginfo.get("engine") or "claude", ginfo.get("usage") or {})
-
             rep = _goals.sweep(_goal_runner, memory, _goal_cost)
             summary = (f"goals: {rep['ran']} run(s), {rep['progressed']} progressed"
                        if rep["results"] else "goals: nothing due")
@@ -3589,6 +3784,12 @@ def _scheduler_loop() -> None:
             from agent import notify as _nt
             if "telegram" in _nt.enabled_channels():
                 _nt.start_poller()
+        except Exception:
+            pass
+        # inbox and folder triggers are looked at by the same one process
+        try:
+            from agent import triggers as _tr
+            _tr.poll_due(_fire_trigger_async)
         except Exception:
             pass
         try:

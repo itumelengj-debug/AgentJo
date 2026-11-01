@@ -5861,3 +5861,34 @@ install modal read the companion's status instead of its own steps. The
 install steps now live at `/api/phone/setup`.
 
 1,480 checks (60 new), all passing.
+
+### 173. Triggers: webhooks, new email and dropped files start work
+
+Schedules answered "when"; nothing answered "when this happens". Now
+Tasks & Scheduler → Triggers does:
+
+- **Webhook**: `POST /hooks/<id>`. Each trigger has its own secret,
+  encrypted at rest and shown once. The secret goes in a bearer header, an
+  `X-Agent-Jo-Token` header or `?token=`, or GitHub's `X-Hub-Signature-256`
+  HMAC is checked. An unknown id and a wrong secret get the same answer. The
+  webhook answers 202 at once and runs in the background, and GitHub's ping
+  is answered without firing.
+- **Inbox**: IMAP, read-only (`readonly` select and `BODY.PEEK`), filtered by
+  sender and/or subject.
+- **Folder**: new or changed files matching a pattern.
+
+Each event either runs the trigger's instruction or wakes a goal. A woken
+goal gets the event in its history and runs now, out of turn. The fence:
+event content is quoted as untrusted data that can't close its own quote
+block. Triggers run in safe mode by default. Each has an hourly ceiling, its
+own circuit breaker, and is subject to the monthly ceiling. The first look at
+an inbox or folder only sets a baseline, so old mail and files never fire.
+Every fire is recorded on the trigger and in the audit trail, and failures
+are sent to your phone. Inbox and folder polling runs only in the process
+that holds the schedule lock.
+
+The goal runner moved to module level so schedules and triggers share it.
+
+1,513 checks (33 new), all passing. A webhook was also checked end to end
+against a live server: 401 without the secret, 202 with it, and the result
+recorded on the trigger.

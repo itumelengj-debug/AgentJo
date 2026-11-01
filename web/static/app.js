@@ -6310,6 +6310,8 @@ function switchSchedTab(tab) {
   $("#schedTabSchedules").classList.toggle("active", tab === "schedules");
   $("#schedTabTasks").classList.toggle("active", tab === "tasks");
   $("#schedTabGoals").classList.toggle("active", tab === "goals");
+  $("#schedTabTriggers").classList.toggle("active", tab === "triggers");
+  $("#schedPaneTriggers").hidden = tab !== "triggers";
   $("#schedPaneSchedules").hidden = tab !== "schedules";
   $("#schedPaneTasks").hidden = tab !== "tasks";
   $("#schedPaneGoals").hidden = tab !== "goals";
@@ -6479,6 +6481,86 @@ async function loadGoals() {
     row.appendChild(head);
     list.appendChild(row);
   });
+}
+function updateTriggerFields() {
+  const k = $("#trKind").value;
+  $("#trInboxFields").hidden = k !== "inbox";
+  $("#trFolderFields").hidden = k !== "folder";
+}
+async function loadTriggers(secretNote) {
+  let d = {}, gs = {};
+  try { d = await fetch("/api/triggers").then(r => r.json()); } catch (e) { return; }
+  try { gs = await fetch("/api/goals").then(r => r.json()); } catch (e) {}
+  const sel = $("#trGoal"); const keep = sel.value;
+  sel.innerHTML = "<option value=''>(no goal: run the instruction)</option>";
+  (gs.goals || []).filter((g) => g.status === "active").forEach((g) => {
+    const o = el("option"); o.value = g.id; o.textContent = `#${g.id} ${g.title}`; sel.appendChild(o);
+  });
+  sel.value = keep;
+  const list = $("#triggerList"); list.innerHTML = "";
+  if (secretNote) {
+    const n = el("div", "mem-item"); n.style.whiteSpace = "pre-wrap"; n.textContent = secretNote; list.appendChild(n);
+  }
+  const ts = d.triggers || [];
+  if (!ts.length) { const e = el("div", "out-empty"); e.textContent = "No triggers yet."; list.appendChild(e); return; }
+  ts.forEach((t) => {
+    const row = el("div", "mem-item");
+    const head = el("div", "mem-text");
+    const ttl = el("strong"); ttl.textContent = t.name;
+    const meta = el("div", "log-meta");
+    const where = t.kind === "webhook" ? `POST ${location.origin}${t.path}`
+      : t.kind === "inbox" ? `${(t.imap || {}).user || ""} \u00b7 ${(t.imap || {}).mailbox || "INBOX"}`
+      : `${t.folder} \u00b7 ${t.pattern}`;
+    const st = t.state || {};
+    meta.textContent = [t.enabled ? "on" : "off", t.kind, where,
+      t.goal_id ? `wakes goal #${t.goal_id}` : "runs the instruction",
+      `${st.fires || 0} fire(s)`, st.dropped ? `${st.dropped} dropped (hourly cap)` : ""].filter(Boolean).join(" \u00b7 ");
+    head.append(ttl, meta);
+    const last = st.error ? `Couldn't look: ${st.error}` : (st.last_summary ? `[${st.last_status}] ${st.last_summary}` : "");
+    if (last) { const l = el("div", "log-meta"); l.textContent = last; head.appendChild(l); }
+    const acts = el("div"); acts.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px";
+    const btn = (label, fn) => { const b = el("button"); b.className = "btn btn-mini"; b.textContent = label; b.addEventListener("click", () => fn()); acts.appendChild(b); };
+    btn("Test", async () => {
+      const r = await fetch(`/api/triggers/${t.id}/test`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+      $("#trStatus").textContent = r.note || errText(r, "");
+    });
+    btn(t.enabled ? "Turn off" : "Turn on", async () => {
+      await fetch(`/api/triggers/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
+      loadTriggers();
+    });
+    if (t.kind === "webhook") btn("New secret", async () => {
+      if (!confirm("Make a new secret? Whatever calls this webhook must be updated.")) return;
+      const r = await fetch(`/api/triggers/${t.id}/rotate`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+      loadTriggers(r.secret ? `New secret for ${t.name} (shown once, copy it now):\n${r.secret}` : errText(r, ""));
+    });
+    btn("Delete", async () => {
+      if (!confirm(`Delete trigger \u201c${t.name}\u201d?`)) return;
+      await fetch(`/api/triggers/${t.id}`, { method: "DELETE" }); loadTriggers();
+    });
+    head.appendChild(acts); row.appendChild(head); list.appendChild(row);
+  });
+}
+async function createTrigger() {
+  const kind = $("#trKind").value;
+  const body = {
+    name: $("#trName").value.trim(), kind, instruction: $("#trInstruction").value.trim(),
+    goal_id: $("#trGoal").value ? parseInt($("#trGoal").value, 10) : null,
+    full_access: $("#trFull").checked, max_per_hour: parseInt($("#trMax").value, 10) || 12,
+    from_contains: $("#trFrom").value.trim(), subject_contains: $("#trSubject").value.trim(),
+    folder: $("#trFolder").value.trim(), pattern: $("#trPattern").value.trim() || "*",
+  };
+  if (kind === "inbox") body.imap = { host: $("#trHost").value.trim(), port: parseInt($("#trPort").value, 10) || 993,
+    user: $("#trUser").value.trim(), password: $("#trPass").value, mailbox: $("#trMailbox").value.trim() || "INBOX" };
+  const r = await fetch("/api/triggers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#trStatus").textContent = errText(d, "Couldn't add it."); return; }
+  $("#trStatus").textContent = `Added \u201c${d.name}\u201d.`;
+  ["#trName", "#trInstruction", "#trPass", "#trFrom", "#trSubject", "#trFolder", "#trPattern", "#trMax"].forEach((x) => { $(x).value = ""; });
+  const note = d.secret
+    ? `Webhook for ${d.name}:\n  POST ${location.origin}${d.path}\n  Authorization: Bearer ${d.secret}\n` +
+      `For GitHub, use the secret as the webhook secret (signatures are checked).\nThe secret is shown once; copy it now.`
+    : "";
+  loadTriggers(note);
 }
 async function createGoal() {
   const body = {
@@ -7448,6 +7530,9 @@ $("#projectFilter").addEventListener("change", async (e) => {
   $("#schedTabTasks").addEventListener("click", () => { switchSchedTab("tasks"); loadTasks(); });
   $("#schedTabGoals").addEventListener("click", () => { switchSchedTab("goals"); loadGoals(); });
   $("#glCreateBtn").addEventListener("click", createGoal);
+  $("#schedTabTriggers").addEventListener("click", () => { switchSchedTab("triggers"); loadTriggers(); });
+  $("#trKind").addEventListener("change", updateTriggerFields);
+  $("#trCreateBtn").addEventListener("click", createTrigger);
   $("#arSaveBtn").addEventListener("click", saveAutoResume);
   $("#arPreviewBtn").addEventListener("click", previewAutoResume);
   $("#arRunBtn").addEventListener("click", runAutoResume);
