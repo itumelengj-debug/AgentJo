@@ -9372,6 +9372,9 @@ def main() -> None:
     # --- sandbox: what a command may do when nobody is watching ------------- #
     _sandbox_checks()
 
+    # --- vault: credentials the agent can use but never sees --------------- #
+    _vault_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -11334,6 +11337,147 @@ def _sandbox_checks() -> None:
             check("sandbox.chat_is_not_isolated", "exit code: 0" in out, out)
     finally:
         _sc.AGENT_HOME = saved
+
+# ---------------------------------------------------------------------- #
+# Vault: credentials the agent can use but never sees.
+#   python tests/run_tests.py -k vault
+# ---------------------------------------------------------------------- #
+def _vault_checks() -> None:
+    import base64 as _vb
+    import json as _vj
+    import tempfile as _vt
+    import threading as _vth
+    from http.server import BaseHTTPRequestHandler as _VH, ThreadingHTTPServer as _VS
+    from agent import config as _vc, intercepts as IC, tools as TL, vault as VT
+    from agent.memory import MemoryStore as _VMS
+
+    class _Con:
+        def print(self, *a, **k): pass
+    saved = _vc.AGENT_HOME
+    _vc.AGENT_HOME = Path(_vt.mkdtemp(prefix="vault-"))
+    mem = _VMS(db_path=_vc.AGENT_HOME / "agent.db", check_same_thread=False)
+    T = lambda name, args, sess="web-1", aa=False: TL.execute_tool(name, args, mem, _Con(),
+                                                                 auto_approve=aa, session_id=sess)
+    seen = []
+
+    class Api(_VH):
+        def log_message(self, *a): pass
+        def _reply(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n).decode() if n else ""
+            seen.append({"path": self.path, "auth": self.headers.get("Authorization", ""), "body": body,
+                         "method": self.command})
+            out = _vj.dumps({"you_sent": self.headers.get("Authorization", ""), "ok": True}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(out)
+        do_GET = do_POST = _reply
+    srv = _VS(("127.0.0.1", 0), Api)
+    srv.daemon_threads = True
+    _vth.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    TOKEN = "ghp_SuperSecretToken123456"
+    try:
+        for bad in [("Bad Name!", "x", ["a.com"]), ("ok", "", ["a.com"]), ("ok", "v", [])]:
+            try:
+                VT.put(*bad)
+                check("vault.bad_entries_are_refused", False, bad)
+            except ValueError:
+                pass
+        check("vault.bad_entries_are_refused", True)
+        VT.put("api", TOKEN, ["https://127.0.0.1/", "api.example.com"], note="test token")
+        VT.put("ci", "ci-secret-value-999", [], commands=True)
+        check("vault.values_are_encrypted_at_rest",
+              TOKEN not in (_vc.AGENT_HOME / "vault.json").read_text("utf-8"))
+        check("vault.listings_never_carry_values",
+              TOKEN not in _vj.dumps(VT.public()) and VT.public("api")["hosts"] == ["127.0.0.1", "api.example.com"])
+        check("vault.the_model_sees_names_and_sites",
+              "api: may be sent to 127.0.0.1, api.example.com" in T("list_credentials", {})
+              and TOKEN not in T("list_credentials", {}))
+        filled, err = VT.resolve({"h": "Bearer {{vault:api}}"}, "sub.api.example.com", "t")
+        check("vault.fills_for_an_allowed_site", not err and filled["h"] == "Bearer " + TOKEN)
+        filled, err = VT.resolve("Bearer {{vault:api}}", "evil.example", "t")
+        check("vault.refuses_any_other_site", "may only be sent to" in err and TOKEN not in str(filled))
+        check("vault.unknown_names_are_refused", "no saved credential" in VT.resolve("{{vault:nope}}", "x", "t")[1])
+
+        # http_request: GET runs, the server gets the token, the model doesn't
+        out = T("http_request", {"method": "GET", "url": base + "/user",
+                                 "headers": {"Authorization": "Bearer {{vault:api}}"}})
+        check("vault.get_sends_the_real_token", seen and seen[-1]["auth"] == "Bearer " + TOKEN, seen)
+        check("vault.an_echoed_token_is_blanked_before_the_model_sees_it",
+              "HTTP 200" in out and TOKEN not in out and "[vault:api]" in out, out)
+        n = len(seen)
+        out = T("http_request", {"method": "GET", "url": "http://localhost:%d/x" % srv.server_port,
+                                 "headers": {"Authorization": "Bearer {{vault:api}}"}})
+        check("vault.a_site_not_on_the_list_gets_nothing", out.startswith("Refused") and len(seen) == n, out)
+        check("vault.reads_are_not_held_and_writes_are",
+              not IC.classify("http_request", {"method": "GET"})["hold"]
+              and IC.classify("http_request", {"method": "delete"})["hold"])
+
+        # POST: held with the placeholder shown, replayed with the value
+        out = T("http_request", {"method": "POST", "url": base + "/repos/x/issues",
+                                 "headers": {"Authorization": "Bearer {{vault:api}}"},
+                                 "json": {"title": "Bug"}}, sess="goal-1-1")
+        held = [i for i in IC.pending() if i["tool"] == "http_request" and i["state"] == "waiting"][-1]
+        check("vault.a_post_is_held_showing_which_secret_not_its_value",
+              out.startswith("HELD FOR REVIEW") and len(seen) == n
+              and "uses vault:api" in held["summary"] and TOKEN not in _vj.dumps(held), held["summary"])
+        IC.decide(held["id"], True)
+        r = TL.run_held(held["id"], mem, _Con())
+        check("vault.approving_sends_it_with_the_value",
+              r.get("ok") and seen[-1]["method"] == "POST" and seen[-1]["auth"] == "Bearer " + TOKEN
+              and '"title": "Bug"' in seen[-1]["body"] and TOKEN not in r.get("result", ""), (r, seen[-1]))
+
+        # commands: only secrets allowed for commands; output blanked
+        out = T("run_command", {"command": f'"{sys.executable}" -c "import os; print(os.environ[\'VAULT_CI\'])"',
+                                "credentials": ["ci"]}, aa=True)
+        check("vault.commands_get_allowed_secrets_as_env_and_the_output_is_blanked",
+              "[vault:ci]" in out and "ci-secret-value-999" not in out, out)
+        out = T("run_command", {"command": "ls", "credentials": ["api"]}, aa=True)
+        check("vault.secrets_not_allowed_for_commands_are_refused", out.startswith("Refused") and "commands" in out, out)
+        b64 = _vb.b64encode(TOKEN.encode()).decode()
+        check("vault.base64_forms_are_blanked_too", VT.redact(f"Basic {b64}") == "Basic [vault:api]")
+
+        # the browser can sign in with it, on an allowed site only
+        import playwright.sync_api  # noqa: F401  (absent -> "needs a package")
+        from agent import browser as BR
+
+        class Login(_VH):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+                self.wfile.write(b"<title>Sign in</title><form method=post action=/in>"
+                                 b"<label>User <input name=u></label><label>Password <input name=p type=password></label>"
+                                 b"<button>Sign in</button></form>")
+            def do_POST(self):
+                seen.append({"login": self.rfile.read(int(self.headers["Content-Length"])).decode()})
+                self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+                self.wfile.write(b"<title>Welcome</title>Signed in")
+        ls = _VS(("127.0.0.1", 0), Login)
+        ls.daemon_threads = True
+        _vth.Thread(target=ls.serve_forever, daemon=True).start()
+        lurl = f"http://127.0.0.1:{ls.server_port}/"
+        try:
+            page = T("browser", {"action": "open", "url": lurl}, sess="b1")
+            ref = lambda label: next(l.split("]")[0][1:] for l in page.splitlines() if l.startswith("[") and label in l)
+            T("browser", {"action": "type", "ref": ref("User"), "text": "jo"}, sess="b1")
+            out = T("browser", {"action": "type", "ref": ref("Password"), "text": "hunter2"}, sess="b1")
+            check("vault.a_password_the_model_was_told_is_still_refused", out.startswith("Refused"), out)
+            out = T("browser", {"action": "type", "ref": ref("Password"), "text": "{{vault:api}}"}, sess="b1")
+            check("vault.a_saved_credential_can_fill_a_password_field", out.startswith("Filled"), out)
+            T("browser", {"action": "click", "ref": ref("Sign in")}, sess="b1")
+            h = [i for i in IC.pending() if i["tool"] == "browser_submit" and i["state"] == "waiting"][-1]
+            check("vault.the_held_sign_in_shows_the_placeholder",
+                  "{{vault:api}}" in h["summary"] and TOKEN not in _vj.dumps(h), h["summary"])
+            IC.decide(h["id"], True)
+            r = TL.run_held(h["id"], mem, _Con())
+            check("vault.approved_sign_in_sends_the_real_password",
+                  "Signed in" in r.get("result", "") and any(f"p={TOKEN}" in x.get("login", "") for x in seen), r)
+        finally:
+            BR._W.call(lambda w: w.shutdown(), timeout=30)
+            ls.shutdown(); ls.server_close()
+    finally:
+        srv.shutdown(); srv.server_close()
+        _vc.AGENT_HOME = saved
 
 # ---------------------------------------------------------------------- #
 # Running it in sections.

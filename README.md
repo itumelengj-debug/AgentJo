@@ -208,6 +208,22 @@ crew), shell commands are fenced:
 Chat runs are unchanged unless you choose "every run". The **Check** box
 tells you whether a command would be allowed, without running it.
 
+## Credentials it can use but never sees
+
+Settings → **Credentials**. Save an API token or password with the sites it
+may be sent to. The agent refers to it as `{{vault:name}}`, and the app fills
+in the value at the last moment, only for those sites:
+
+- `http_request` calls web APIs with it. GETs run at once; POST, PUT and
+  DELETE wait for your OK, showing which credential, never its value.
+- The browser can type it into a password field, on an allowed site only,
+  so it can sign in without the model knowing the password.
+- Commands can get it as `$VAULT_NAME`, if you tick "commands may use it".
+- Anything a tool prints back has the value (and its base64 form) replaced
+  with `[vault:name]` before the model sees it. Every use is audited.
+
+Never paste a secret into the chat.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

@@ -5706,6 +5706,52 @@ async function loadModelPickers() {
   };
   drawSandbox();
 
+  // credentials: secrets the agent uses by name and never sees
+  const vtRow = el("div", "set-row");
+  const vtInfo = el("div", "set-info");
+  const vtNm = el("div", "set-name"); vtNm.textContent = "Credentials";
+  const vtDs = el("div", "set-desc");
+  vtDs.textContent = "API tokens and passwords the agent can use without ever seeing them. It writes {{vault:name}}, and the app fills the value in only for the sites you list. Anything a tool prints back has the value blanked out. Never paste a secret into the chat; add it here.";
+  vtInfo.append(vtNm, vtDs);
+  const vtCtrl = el("div", "set-control");
+  vtCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  vtRow.append(vtInfo, vtCtrl);
+  box.appendChild(vtRow);
+  const drawVault = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/vault").then((r) => r.json()); } catch (e) { return; }
+    vtCtrl.innerHTML = "";
+    (st.credentials || []).forEach((c) => {
+      const r = el("div"); r.style.cssText = "display:flex;gap:6px;align-items:center;justify-content:space-between";
+      const t = el("div", "set-desc");
+      t.textContent = `${c.name} \u2192 ${(c.hosts || []).join(", ") || "no sites"}${c.commands ? " \u00b7 commands" : ""} \u00b7 used ${c.uses || 0}\u00d7`;
+      const d = el("button"); d.className = "btn btn-mini"; d.textContent = "Delete";
+      d.addEventListener("click", async () => {
+        if (!confirm(`Delete the credential \u201c${c.name}\u201d?`)) return;
+        await fetch(`/api/vault/${encodeURIComponent(c.name)}`, { method: "DELETE" }); drawVault("Deleted.");
+      });
+      r.append(t, d); vtCtrl.appendChild(r);
+    });
+    const f = (ph, type) => { const i = el("input"); i.className = "model-select"; i.placeholder = ph; if (type) i.type = type; return i; };
+    const nm = f("name, e.g. github"); const val = f("the secret", "password");
+    const hosts = f("sites it may be sent to, e.g. api.github.com, github.com");
+    const note = f("note (optional), e.g. fine-grained token, repo scope");
+    const cw = el("label"); cw.className = "set-desc"; cw.style.cssText = "display:flex;gap:6px;align-items:center";
+    const cmd = el("input"); cmd.type = "checkbox"; const cmt = el("span"); cmt.textContent = "Commands may use it (as $VAULT_NAME)"; cw.append(cmd, cmt);
+    const add = el("button"); add.className = "btn btn-mini primary"; add.textContent = "Save credential";
+    add.addEventListener("click", async () => {
+      const r = await fetch("/api/vault", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nm.value.trim(), value: val.value, note: note.value.trim(), commands: cmd.checked,
+          hosts: hosts.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      const d = await r.json().catch(() => ({}));
+      val.value = "";
+      drawVault(r.ok ? `Saved. The agent can use it as {{vault:${d.name}}}.` : errText(d, "Couldn't save it."));
+    });
+    vtCtrl.append(nm, val, hosts, note, cw, add);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; vtCtrl.appendChild(m); }
+  };
+  drawVault();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");

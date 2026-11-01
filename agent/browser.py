@@ -336,7 +336,11 @@ def _replay(w: _Worker, sid: str, args: dict) -> str:
         elif f.get("kind") in ("checkbox", "radio"):
             loc.set_checked(bool(f["value"]))
         else:
-            loc.fill(str(f["value"]))
+            from . import vault as _vault
+            real, err = _vault.resolve(str(f["value"]), host_of(args["url"]), "browser")
+            if err:
+                return f"Error: {err}. Nothing was pressed."
+            loc.fill(real)
     btn = page.locator(args["button_selector"]).first
     seen = " ".join((btn.inner_text(timeout=5000) or btn.get_attribute("value") or "").split())[:80]
     want = str(args.get("button_label") or "")
@@ -412,13 +416,20 @@ def run_action(args: dict, session_id: str = "chat", *, approved: bool = False) 
             return f"Error: no element [{ref}] on the last read. Use action=read to get fresh refs."
         loc = page.locator(el["selector"]).first
         if action == "type":
-            if el.get("secret"):
-                return ("Refused: that's a password field. Agent Jo never types passwords. Ask the "
-                        "user to sign in once (Settings → Browser → Sign in to a site); it stays signed in.")
+            from . import vault as _vault
+            text = str(args.get("text") or "")
+            uses = _vault.names_in(text)
+            if el.get("secret") and not uses:
+                return ("Refused: that's a password field, and Agent Jo never types a password "
+                        "it was told. Use a saved credential ({{vault:name}}, see "
+                        "list_credentials) if one is allowed for this site, or ask the user to "
+                        "sign in once (Settings → Browser → Sign in to a site).")
             if el["kind"] not in ("field",):
                 return f"Error: [{ref}] is a {el['kind']}, not a field."
-            text = str(args.get("text") or "")
-            loc.fill(text)
+            real, err = _vault.resolve(text, host_of(page.url), "browser")
+            if err:
+                return f"Refused: {err}."
+            loc.fill(real)          # the form records the placeholder, never the value
             s["fields"][el["selector"]] = {"selector": el["selector"], "label": el["label"],
                                            "kind": "field", "value": text}
             return f"Filled [{ref}] “{el['label']}” ({len(text)} characters). Nothing is sent until a button is pressed."
