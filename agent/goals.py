@@ -210,7 +210,8 @@ def delete(goal_id: int) -> bool:
 # --------------------------------------------------------------------------- #
 def record_update(goal_id: int, status: str, note_text: str, *,
                   evidence: str = "", needs: str = "", task_id: int | None = None,
-                  checks=None, memory=None, auto_approve: bool = False) -> str:
+                  checks=None, memory=None, auto_approve: bool = False,
+                  session_id: str = "") -> str:
     g = get(goal_id)
     if g is None:
         return "Error: no such goal. Use list_goals to check ids."
@@ -235,7 +236,8 @@ def record_update(goal_id: int, status: str, note_text: str, *,
         all_checks = (_checks.normalise(g.get("checks")) + new)[:_checks.MAX_CHECKS]
         if all_checks:
             # the goal's own checks decide, not the wording of the evidence
-            res = _checks.run_all(all_checks, memory=memory, auto_approve=auto_approve)
+            res = _checks.run_all(all_checks, memory=memory, auto_approve=auto_approve,
+                                  session_id=session_id)
             if not res["ok"]:
                 note(goal_id, "checkpoint", f"Claimed achieved, but the app's checks failed: {res['text']}")
                 return ("Refused: the app checked and the goal isn't met: " + res["text"]

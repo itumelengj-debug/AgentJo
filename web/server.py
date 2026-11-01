@@ -1045,6 +1045,39 @@ def browser_forget():
     return _br.forget_logins()
 
 
+class SandboxBody(BaseModel):
+    mode: str | None = None
+    applies_to: str | None = None
+    network: bool | None = None
+    writable: list[str] | None = None
+
+
+@app.get("/api/sandbox")
+def sandbox_status():
+    from agent import sandbox as _sb
+    return _sb.status()
+
+
+@app.post("/api/sandbox")
+def sandbox_set(body: SandboxBody):
+    from agent import sandbox as _sb
+    try:
+        return _sb.save({k: v for k, v in body.model_dump().items() if v is not None})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class SandboxTestBody(BaseModel):
+    command: str
+
+
+@app.post("/api/sandbox/check")
+def sandbox_check(body: SandboxTestBody):
+    """Would an unattended run be allowed to run this? Nothing is run."""
+    from agent import sandbox as _sb
+    return _sb.check(body.command)
+
+
 class ServiceBody(BaseModel):
     install: bool = True
     port: int = 8765

