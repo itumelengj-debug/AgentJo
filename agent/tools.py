@@ -1491,6 +1491,11 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     experience.on_step_blocked(memory, task, _sdesc, needs)
                 except Exception:
                     pass
+                try:
+                    from . import notify
+                    notify.step_blocked(task, _sdesc, needs)
+                except Exception:
+                    pass
                 nxt = [s for s in task["steps"]
                        if s["status"] in ("pending", "in_progress")]
                 tail = ("\nThis step needs the user. Keep going on any independent "
