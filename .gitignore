@@ -4,3 +4,8 @@ signing-key.private
 *.private
 .update/
 dist/
+
+# build and run by-products
+__pycache__/
+*.pyc
+install.log
