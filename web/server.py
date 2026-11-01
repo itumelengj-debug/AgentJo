@@ -767,6 +767,30 @@ def phone_set(body: PhoneBody):
     return _phone.set_enabled(body.enabled)
 
 
+class ServiceBody(BaseModel):
+    install: bool = True
+    port: int = 8765
+
+
+@app.get("/api/service")
+def service_status():
+    """Is Agent Jo installed to run in the background, and which process is
+    running the schedules right now."""
+    from agent import service as _svc
+    return {**_svc.status(), "port": _svc.DEFAULT_PORT,
+            "this_port": int(os.environ.get("AGENT_WEB_PORT") or 0)}
+
+
+@app.post("/api/service")
+def service_set(body: ServiceBody):
+    from agent import service as _svc
+    r = _svc.install(port=body.port) if body.install else _svc.uninstall()
+    if body.install and r.get("ok") and int(os.environ.get("AGENT_WEB_PORT") or 0) == body.port:
+        r["note"] = (r.get("note", "") + " This window is on the same port, so the "
+                     "service takes over when you close it.")
+    return r
+
+
 @app.post("/api/phone/rotate")
 def phone_rotate():
     from agent import phone as _phone
@@ -3383,6 +3407,15 @@ def _run_schedule(sch: dict) -> None:
 def _scheduler_loop() -> None:
     while True:
         time.sleep(15)
+        # only one process runs the schedules: the background service if it
+        # is up, otherwise the first window. Checked every tick, so a window
+        # takes over by itself if the service stops (agent/service.py)
+        try:
+            from agent import service as _svc
+            if not _svc.acquire_scheduler_lock():
+                continue
+        except Exception:
+            pass
         try:
             for sch in memory.due_schedules(time.time()):
                 threading.Thread(target=_run_schedule, args=(sch,),

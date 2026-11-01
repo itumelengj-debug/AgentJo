@@ -9351,6 +9351,9 @@ def main() -> None:
     # --- the Symbolic Synapse theme ----------------------------------------- #
     _synapse_checks()
 
+    # --- background service: one scheduler, restarts, survives the window -- #
+    _service_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -10452,6 +10455,75 @@ def _updater_checks() -> None:
               and '".update"' in src)
     finally:
         U.ROOT, U.config.BUILD_ID, U.config.AGENT_HOME = saved
+
+
+
+# ---------------------------------------------------------------------- #
+# Background service: one scheduler however many copies are open.
+#   python tests/run_tests.py -k "background service"
+# ---------------------------------------------------------------------- #
+def _service_checks() -> None:
+    #
+    # Schedules only ran while a window was open, and two open windows would
+    # each have fired the same schedule. The service definitions are rendered
+    # by pure functions, and the lock is checked across real processes.
+    import subprocess as _svsp
+    import tempfile as _svt
+    import xml.dom.minidom as _svx
+    from agent import service as _sv
+    _sv_saved = config.AGENT_HOME
+    try:
+        config.AGENT_HOME = Path(_svt.mkdtemp(prefix="svc-"))
+        _sv.release_scheduler_lock()
+        check("service.first_process_gets_the_scheduler", _sv.acquire_scheduler_lock())
+        check("service.asking_again_is_harmless", _sv.acquire_scheduler_lock())
+        _sv_probe = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r});"
+                     f"from agent import config, service; from pathlib import Path;"
+                     f"config.AGENT_HOME = Path({str(config.AGENT_HOME)!r});"
+                     f"print(service.acquire_scheduler_lock())")
+        _sv_other = _svsp.run([sys.executable, "-c", _sv_probe], capture_output=True,
+                              text=True, timeout=60).stdout.strip()
+        check("service.a_second_process_leaves_the_schedules_alone", _sv_other == "False", _sv_other)
+        _sv.release_scheduler_lock()
+        _sv_other = _svsp.run([sys.executable, "-c", _sv_probe], capture_output=True,
+                              text=True, timeout=60).stdout.strip()
+        check("service.it_takes_over_once_the_holder_lets_go", _sv_other == "True", _sv_other)
+
+        _sv_py = "/opt/My Python/bin/python"
+        _sv_unit = _sv.render_systemd(_sv_py, 8765, home="/home/me/.local_agent")
+        check("service.systemd_restarts_forever",
+              "Restart=always" in _sv_unit and "StartLimitIntervalSec=0" in _sv_unit)
+        check("service.systemd_quotes_paths_with_spaces",
+              'ExecStart="/opt/My Python/bin/python"' in _sv_unit)
+        check("service.never_moves_to_another_port",
+              "--strict-port" in _sv_unit and "--port 8765" in _sv_unit
+              and "--no-browser" in _sv_unit)
+        _sv_plist = _sv.render_launchd(_sv_py, 8765, home="/Users/me/.local_agent")
+        _sv_doc = _svx.parseString(_sv_plist.encode())
+        check("service.launchd_plist_is_valid_xml_and_kept_alive",
+              _sv_doc.documentElement.tagName == "plist"
+              and "<key>KeepAlive</key>\n    <true/>" in _sv_plist)
+        _sv_task = _sv.render_windows_task(r"C:\Program Files\Py\pythonw.exe", 8765, user="jo&co")
+        _sv_tdoc = _svx.parseString(_sv_task.replace('encoding="UTF-16"', 'encoding="UTF-8"').encode())
+        check("service.windows_task_is_valid_xml",
+              _sv_tdoc.documentElement.tagName == "Task")
+        check("service.windows_task_restarts_and_runs_unprivileged",
+              "<RestartOnFailure>" in _sv_task and "LeastPrivilege" in _sv_task
+              and "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in _sv_task
+              and "IgnoreNew" in _sv_task)
+        check("service.windows_task_escapes_the_user", "jo&amp;co" in _sv_task)
+        check("service.status_answers_without_installing", "installed" in _sv.status())
+
+        # the launcher opens a running copy instead of starting a second one
+        _sv_rw = (Path(__file__).resolve().parents[1] / "run_web.py").read_text("utf-8")
+        check("service.launcher_hands_off_to_a_running_copy",
+              "_running_agent_jo" in _sv_rw and "--strict-port" in _sv_rw and "--new" in _sv_rw)
+        _sv_srv = (Path(__file__).resolve().parents[1] / "web" / "server.py").read_text("utf-8")
+        check("service.scheduler_loop_takes_the_lock",
+              "acquire_scheduler_lock" in _sv_srv.split("def _scheduler_loop")[1][:900])
+    finally:
+        _sv.release_scheduler_lock()
+        config.AGENT_HOME = _sv_saved
 
 
 # ---------------------------------------------------------------------- #
