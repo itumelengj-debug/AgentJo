@@ -767,6 +767,48 @@ def phone_set(body: PhoneBody):
     return _phone.set_enabled(body.enabled)
 
 
+class NotifyBody(BaseModel):
+    ntfy: dict | None = None
+    telegram: dict | None = None
+    events: dict | None = None
+    open_url: str | None = None
+
+
+@app.get("/api/notify")
+def notify_get():
+    from agent import notify as _nt
+    return _nt.public_settings()
+
+
+@app.post("/api/notify")
+def notify_set(body: NotifyBody):
+    from agent import notify as _nt
+    r = _nt.save({k: v for k, v in body.model_dump().items() if v is not None})
+    if "telegram" in _nt.enabled_channels():
+        _start_scheduler()          # its loop starts the Telegram listener
+    return r
+
+
+@app.post("/api/notify/test")
+def notify_test():
+    from agent import notify as _nt
+    if not _nt.enabled_channels():
+        return {"ok": False, "error": "Turn on ntfy or Telegram first, and save."}
+    return _nt.send("test", "Agent Jo can reach you",
+                    "This is a test. When something needs you, it arrives like this.",
+                    wait=True)
+
+
+class NotifyChatBody(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/notify/telegram/chat")
+def notify_find_chat(body: NotifyChatBody):
+    from agent import notify as _nt
+    return _nt.find_chat(body.token.strip())
+
+
 class ServiceBody(BaseModel):
     install: bool = True
     port: int = 8765
@@ -3377,6 +3419,12 @@ def _run_schedule(sch: dict) -> None:
         status, summary = "error", f"{type(exc).__name__}: {exc}"[:300]
         issues.note_error(f"schedule:{sch.get('name', '')[:20]}", summary)
     finally:
+        if status == "error":
+            try:
+                from agent import notify as _nt
+                _nt.schedule_failed(sch.get("name", ""), summary)
+            except Exception:
+                pass
         # feed the outcome back to the breaker for this action type. "skipped"
         # is neither success nor failure — it never ran.
         try:
@@ -3414,6 +3462,14 @@ def _scheduler_loop() -> None:
             from agent import service as _svc
             if not _svc.acquire_scheduler_lock():
                 continue
+        except Exception:
+            pass
+        # the schedule-runner also listens for Telegram taps, so a tap is
+        # acted on once however many copies are open (agent/notify.py)
+        try:
+            from agent import notify as _nt
+            if "telegram" in _nt.enabled_channels():
+                _nt.start_poller()
         except Exception:
             pass
         try:

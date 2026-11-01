@@ -135,6 +135,11 @@ def hold(tool: str, args: dict, context: str = "",
     }
     _save(pending() + [item])
     _audit("held", f"{tool}: {item['summary'][:120]}")
+    try:                       # tell the person, wherever they are
+        from . import notify
+        notify.held(item)
+    except Exception:
+        pass
     return item
 
 

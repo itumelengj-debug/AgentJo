@@ -9354,6 +9354,9 @@ def main() -> None:
     # --- background service: one scheduler, restarts, survives the window -- #
     _service_checks()
 
+    # --- notifications: ntfy push, Telegram approve / refuse --------------- #
+    _notify_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -10525,6 +10528,137 @@ def _service_checks() -> None:
         _sv.release_scheduler_lock()
         config.AGENT_HOME = _sv_saved
 
+
+# ---------------------------------------------------------------------- #
+# Notifications: ntfy push, Telegram with Approve / Refuse, from one chat.
+#   python tests/run_tests.py -k notifications
+# ---------------------------------------------------------------------- #
+def _notify_checks() -> None:
+    import json as _nj
+    import tempfile as _ntt
+    from agent import config as _nc, intercepts as IC, notify as NT, phone as PH, breaker as BR
+    from agent import tools as TL
+
+    class Mem:
+        def __init__(self):
+            self.s = {1: {"id": 1, "name": "Morning brief", "enabled": 1, "spec": "{}",
+                          "last_status": "error", "last_summary": "model retired", "next_run": 1.0}}
+        def list_schedules(self): return [dict(v) for v in self.s.values()]
+        def get_schedule(self, i): return dict(self.s[i]) if i in self.s else None
+        def set_schedule_enabled(self, i, on, nxt=None):
+            self.s[i]["enabled"] = int(on); return True
+
+    class _C:
+        def print(self, *a, **k): pass
+
+    sent = []
+
+    def fake_post(url, *, data, headers, timeout=15):
+        sent.append({"url": url, "data": data, "headers": headers})
+        if "api.telegram.org" in url and url.endswith("/getUpdates"):
+            return 200, _nj.dumps({"ok": True, "result": [
+                {"update_id": 5, "message": {"chat": {"id": 4242, "type": "private",
+                                                      "first_name": "Jo"}, "text": "hi"}}]})
+        if "api.telegram.org" in url:
+            return 200, '{"ok": true, "result": {}}'
+        return 200, "{}"
+
+    saved = (_nc.AGENT_HOME, NT.POSTER, NT.SYNC, PH._CTX.get("memory"), TL._execute_tool_impl)
+    ran = []
+    _nc.AGENT_HOME = Path(_ntt.mkdtemp(prefix="notify-"))
+    NT.POSTER, NT.SYNC = fake_post, True
+    NT._RECENT.clear(); NT._SENT.clear()
+    TL._execute_tool_impl = lambda name, args, memory, console, auto_approve=False, session_id="", **kw: (
+        ran.append(name) or "sent")
+    try:
+        check("notify.off_until_set_up", NT.send("held", "x")["skipped"] == "no channel set up"
+              and not sent)
+
+        NT.save({"ntfy": {"enabled": True, "topic": "/agentjo-test-7f3/"}})
+        check("notify.topic_is_tidied", NT.settings()["ntfy"]["topic"] == "agentjo-test-7f3")
+        item = IC.hold("send_email", {"to": "hiring@acme.com", "subject": "Application",
+                                       "body": "SECRET BODY TEXT " * 20}, source="schedule")
+        ntfy = [x for x in sent if "ntfy.sh/agentjo-test-7f3" in x["url"]]
+        check("notify.a_held_call_pushes_to_ntfy", len(ntfy) == 1, sent)
+        check("notify.push_carries_the_summary_not_the_body",
+              b"hiring@acme.com" in ntfy[0]["data"] and b"SECRET BODY" not in ntfy[0]["data"]
+              and ntfy[0]["headers"].get("Priority") == "high")
+        before = len(sent)
+        NT.held(item)
+        check("notify.the_same_thing_twice_is_sent_once", len(sent) == before)
+        NT.save({"events": {"held": False}})
+        check("notify.events_can_be_switched_off",
+              NT.send("held", "y", key="other")["skipped"] == "event switched off")
+        NT.save({"events": {"held": True}})
+
+        # Telegram: token kept encrypted, never shown back, buttons on a hold
+        NT.save({"telegram": {"enabled": True, "token": "123:ABCSECRETTOKEN"}})
+        raw = (_nc.AGENT_HOME / "notify.json").read_text("utf-8")
+        check("notify.telegram_token_is_encrypted_at_rest", "ABCSECRETTOKEN" not in raw)
+        check("notify.panel_never_sees_the_token",
+              NT.public_settings()["telegram"]["token"] is True
+              and "ABCSECRETTOKEN" not in _nj.dumps(NT.public_settings()))
+        check("notify.telegram_needs_a_chat_before_it_sends",
+              "telegram" not in NT.enabled_channels())
+        found = NT.find_chat()
+        check("notify.find_my_chat_reads_who_wrote_to_the_bot",
+              found.get("ok") and found["chat_id"] == "4242", found)
+        NT.save({"telegram": {"chat_id": found["chat_id"]}})
+        check("notify.saving_without_a_token_keeps_the_old_one",
+              NT.settings()["telegram"]["token"] == "123:ABCSECRETTOKEN")
+        sent.clear()
+        item2 = IC.hold("send_email", {"to": "boss@acme.com", "subject": "Report"})
+        tg = [x for x in sent if x["url"].endswith("/sendMessage")]
+        msg = _nj.loads(tg[0]["data"]) if tg else {}
+        btns = (msg.get("reply_markup") or {}).get("inline_keyboard", [[]])[0]
+        check("notify.telegram_hold_has_approve_and_refuse",
+              [b["callback_data"] for b in btns] == [f"ij:y:{item2['id']}", f"ij:n:{item2['id']}"], msg)
+
+        PH.configure(Mem(), _C())
+        stranger = {"update_id": 9, "callback_query": {
+            "id": "q1", "data": f"ij:y:{item2['id']}", "from": {"id": 666},
+            "message": {"message_id": 3, "chat": {"id": 666}}}}
+        check("notify.a_stranger_cannot_approve",
+              NT.handle_update(stranger)["did"] == "ignored"
+              and IC.state_of(item2["id"]) == "waiting" and not ran)
+        mine = {"update_id": 10, "callback_query": {
+            "id": "q2", "data": f"ij:y:{item2['id']}", "from": {"id": 4242},
+            "message": {"message_id": 3, "chat": {"id": 4242}}}}
+        r = NT.handle_update(mine)
+        check("notify.your_tap_approves_and_runs_it",
+              r["did"].startswith("approved") and ran == ["send_email"], (r, ran))
+        r = NT.handle_update({"update_id": 11, "callback_query": {
+            "id": "q3", "data": f"ij:n:{item['id']}", "from": {"id": 4242},
+            "message": {"message_id": 4, "chat": {"id": 4242}}}})
+        check("notify.refuse_refuses", IC.state_of(item["id"]) == "refused" and ran == ["send_email"])
+        st = NT.handle_update({"update_id": 12, "message": {"chat": {"id": 4242}, "from": {"id": 4242},
+                                                           "text": "/status"}})
+        check("notify.status_lists_failing_schedules", "Morning brief" in st["reply"], st)
+        pz = NT.handle_update({"update_id": 13, "message": {"chat": {"id": 4242}, "from": {"id": 4242},
+                                                           "text": "/pause"}})
+        check("notify.pause_from_telegram", "Paused 1" in pz["reply"], pz)
+
+        # the other events
+        sent.clear()
+        for _ in range(BR.THRESHOLD):
+            BR.record_failure("notify-test-feature", "host not found")
+        check("notify.a_tripped_breaker_tells_you",
+              any(b"notify-test-feature" in x["data"] or "notify-test-feature" in
+                  _nj.dumps(x["headers"]) for x in sent), sent)
+        sent.clear()
+        r = NT.schedule_failed("Morning brief", "NotFoundError: model retired")
+        check("notify.a_failed_schedule_tells_you", r.get("ok") and len(sent) == 2, r)
+        NT._SENT[:] = [__import__("time").time()] * NT.MAX_PER_HOUR
+        check("notify.an_hourly_ceiling_stops_a_flood",
+              NT.send("failed", "flood", key="new")["skipped"] == "hourly ceiling")
+        src = (Path(__file__).resolve().parents[1] / "web" / "server.py").read_text("utf-8")
+        check("notify.schedule_failures_are_wired", "_nt.schedule_failed(" in src)
+        tsrc = (Path(__file__).resolve().parents[1] / "agent" / "tools.py").read_text("utf-8")
+        check("notify.blocked_steps_are_wired", "notify.step_blocked(" in tsrc)
+    finally:
+        _nc.AGENT_HOME, NT.POSTER, NT.SYNC, _m, TL._execute_tool_impl = saved
+        PH._CTX["memory"] = _m
+        NT._RECENT.clear(); NT._SENT.clear()
 
 # ---------------------------------------------------------------------- #
 # Running it in sections.

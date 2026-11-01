@@ -5542,6 +5542,71 @@ async function loadModelPickers() {
   };
   drawService();
 
+  // notifications: ntfy push and a Telegram bot with Approve / Refuse buttons
+  const ntRow = el("div", "set-row");
+  const ntInfo = el("div", "set-info");
+  const ntNm = el("div", "set-name"); ntNm.textContent = "Notifications";
+  const ntDs = el("div", "set-desc");
+  ntDs.textContent = "Hear about it when something needs you: a held email, a failed schedule, a blocked task. ntfy pushes to the free ntfy app. A Telegram bot also lets you approve or refuse from the message, from anywhere. Only a one-line summary leaves the machine.";
+  ntInfo.append(ntNm, ntDs);
+  const ntCtrl = el("div", "set-control");
+  ntCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  ntRow.append(ntInfo, ntCtrl);
+  box.appendChild(ntRow);
+  const drawNotify = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/notify").then((r) => r.json()); } catch (e) { return; }
+    ntCtrl.innerHTML = "";
+    const field = (ph, val, type) => {
+      const i = el("input"); i.className = "model-select"; i.placeholder = ph;
+      i.value = val || ""; if (type) i.type = type; return i;
+    };
+    const tick = (label, on) => {
+      const w = el("label"); w.className = "set-desc";
+      w.style.cssText = "display:flex;gap:6px;align-items:center";
+      const c = el("input"); c.type = "checkbox"; c.checked = !!on;
+      const t = el("span"); t.textContent = label; w.append(c, t); return [w, c];
+    };
+    const [nW, nOn] = tick("ntfy push", st.ntfy && st.ntfy.enabled);
+    const nTopic = field("topic, e.g. agentjo-7f3k2q (hard to guess)", st.ntfy && st.ntfy.topic);
+    const nServer = field("server (default https://ntfy.sh)", st.ntfy && st.ntfy.server);
+    const [tW, tOn] = tick("Telegram bot", st.telegram && st.telegram.enabled);
+    const tTok = field(st.telegram && st.telegram.token ? "bot token (saved; paste to replace)" : "bot token from @BotFather", "", "password");
+    const tChat = field("your chat id", st.telegram && st.telegram.chat_id);
+    const find = el("button"); find.className = "btn btn-mini"; find.textContent = "Find my chat";
+    find.title = "Send your bot any message in Telegram first";
+    find.addEventListener("click", async () => {
+      const r = await fetch("/api/notify/telegram/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tTok.value }) }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
+      if (r.ok) tChat.value = r.chat_id; else alert(r.error || "Couldn't find it.");
+    });
+    const evs = el("div"); evs.style.cssText = "display:flex;flex-direction:column;gap:2px";
+    const evBoxes = {};
+    Object.entries(st.event_labels || {}).forEach(([k, label]) => {
+      const [w, c] = tick(label, (st.events || {})[k]); evBoxes[k] = c; evs.appendChild(w);
+    });
+    const btns = el("div"); btns.style.cssText = "display:flex;gap:6px";
+    const save = el("button"); save.className = "btn btn-mini primary"; save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      const events = {}; Object.entries(evBoxes).forEach(([k, c]) => { events[k] = c.checked; });
+      await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ntfy: { enabled: nOn.checked, topic: nTopic.value, server: nServer.value || "https://ntfy.sh" },
+          telegram: { enabled: tOn.checked, token: tTok.value, chat_id: tChat.value }, events }) });
+      drawNotify("Saved.");
+    });
+    const test = el("button"); test.className = "btn btn-mini"; test.textContent = "Send a test";
+    test.addEventListener("click", async () => {
+      const r = await fetch("/api/notify/test", { method: "POST" }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
+      drawNotify(r.ok ? "Sent. Check your phone." : ("Didn't arrive: " + (r.error || JSON.stringify(r.channels || {}))));
+    });
+    btns.append(save, test);
+    const tRow = el("div"); tRow.style.cssText = "display:flex;gap:6px"; tChat.style.flex = "1"; tRow.append(tChat, find);
+    ntCtrl.append(nW, nTopic, nServer, tW, tTok, tRow, evs, btns);
+    if (st.poller && st.poller.error) { const e = el("div", "set-desc"); e.textContent = "Telegram: " + st.poller.error; ntCtrl.appendChild(e); }
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; ntCtrl.appendChild(m); }
+  };
+  drawNotify();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");

@@ -103,6 +103,24 @@ However many copies are open, **only one runs the schedules**, so a
 scheduled email never goes out twice. If that copy stops, another open one
 takes the schedules over within 15 seconds.
 
+## It tells you when it needs you
+
+**Settings → Notifications.** When something is held for your OK, a
+scheduled task fails, a feature is switched off after repeated failures, or a
+task is blocked on you, Agent Jo tells you on your phone:
+
+- **ntfy**: free push notifications with no account. Pick a hard-to-guess
+  topic, then subscribe to it in the ntfy app.
+- **Telegram**: make a bot with @BotFather, paste its token, send it "hi",
+  then click **Find my chat**. A held call arrives with **Approve / Refuse**
+  buttons that work from anywhere, with no port opened to the internet.
+  `/status`, `/pause` and `/resume` work from the chat. Only your own chat is
+  listened to.
+
+Only the same one-line summary the approval queue shows leaves the machine,
+never an email's body. Repeats are folded together, and there's an hourly
+ceiling.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in
