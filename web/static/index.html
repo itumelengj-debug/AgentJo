@@ -585,6 +585,7 @@
       <div class="mem-tabs">
         <button class="mem-tab active" id="schedTabSchedules">Schedules</button>
         <button class="mem-tab" id="schedTabTasks">Tasks</button>
+        <button class="mem-tab" id="schedTabGoals">Goals</button>
       </div>
 
       <!-- Schedules pane -->
@@ -674,6 +675,34 @@
         </div>
         <div class="sched-preview" id="arPreview" hidden></div>
         <div class="mem-list" id="taskList"></div>
+      </div>
+
+      <!-- Goals pane -->
+      <div class="mem-pane" id="schedPaneGoals" hidden>
+        <p class="modal-intro">
+          Outcomes Agent Jo works toward over days, a few runs a day. Each run picks up
+          from the last checkpoint. It stops by itself, and tells you, when a goal is met,
+          blocked on you, out of budget, past its deadline, or three runs make no progress.
+        </p>
+        <div class="sched-form">
+          <div class="engine-grid">
+            <label class="field"><span>Goal</span><input id="glTitle" placeholder="e.g. Five interviews this month" /></label>
+            <label class="field"><span>Deadline</span><input id="glDeadline" type="date" /></label>
+            <label class="field"><span>Budget (USD, 0 = none)</span><input id="glBudget" placeholder="5" /></label>
+            <label class="field"><span>Runs per day</span><input id="glRuns" placeholder="4" /></label>
+          </div>
+          <label class="field"><span>Objective</span><textarea id="glObjective" rows="2" placeholder="What you want, in your words"></textarea></label>
+          <label class="field"><span>Done when</span><textarea id="glSuccess" rows="2" placeholder="How you'd know it's done: checkable"></textarea></label>
+          <label class="sched-full">
+            <input type="checkbox" id="glFull" />
+            <span>Full access during its runs (commands &amp; file writes; anything leaving the machine still waits for you)</span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn primary" id="glCreateBtn">Set goal</button>
+            <span class="engine-status" id="glStatus"></span>
+          </div>
+        </div>
+        <div class="mem-list" id="goalList"></div>
       </div>
     </div>
   </div>

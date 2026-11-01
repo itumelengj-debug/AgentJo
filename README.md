@@ -105,7 +105,7 @@ takes the schedules over within 15 seconds.
 
 ## It tells you when it needs you
 
-**Settings → Notifications.** When something is held for your OK, a
+**Settings → Phone notifications.** When something is held for your OK, a
 scheduled task fails, a feature is switched off after repeated failures, or a
 task is blocked on you, Agent Jo tells you on your phone:
 
@@ -120,6 +120,20 @@ task is blocked on you, Agent Jo tells you on your phone:
 Only the same one-line summary the approval queue shows leaves the machine,
 never an email's body. Repeats are folded together, and there's an hourly
 ceiling.
+
+## Goals: outcomes, not just instructions
+
+Tasks & Scheduler → **Goals**, or just ask: *"make it a goal to land five
+interviews by 30 November, budget $5"*. A goal has an objective, checkable
+"done when" criteria, an optional deadline and an optional budget of its own.
+It's worked on a few times a day. Each run picks up from the last checkpoint
+and gets a bigger budget than a chat turn (40 tool calls and 20 minutes, set
+with `AGENT_GOAL_MAX_ROUNDS` and `AGENT_GOAL_TIME_LIMIT`).
+
+It stops on its own, and tells you, when the goal is met (with evidence), when
+it's blocked on you, when it's out of budget or past its deadline, or when
+three runs in a row make no progress. Anything leaving the machine still
+waits for your OK.
 
 ## Windows installer (.exe)
 
