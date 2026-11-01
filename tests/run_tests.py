@@ -9366,6 +9366,9 @@ def main() -> None:
     # --- browser: a real Chromium; form submissions are held --------------- #
     _browser_checks()
 
+    # --- checks: "done" means the app looked -------------------------------- #
+    _checks_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -10970,7 +10973,9 @@ def _triggers_checks() -> None:
 def _browser_checks() -> None:
     import tempfile as _bt
     import threading as _bth
-    from http.server import BaseHTTPRequestHandler as _BH, HTTPServer as _BS
+    # threaded: Chromium may hold an idle keep-alive connection open, and a
+    # one-connection-at-a-time server then never returns from shutdown()
+    from http.server import BaseHTTPRequestHandler as _BH, ThreadingHTTPServer as _BS
     from urllib.parse import parse_qs as _bq
     from agent import browser as BR, config as _bc, intercepts as IC, tools as TL
 
@@ -11018,6 +11023,7 @@ def _browser_checks() -> None:
                 posted.append(_bq(self.rfile.read(int(self.headers["Content-Length"])).decode()))
                 self._send("<title>Thanks</title>Application received")
         srv = _BS(("127.0.0.1", 0), Site)
+        srv.daemon_threads = True
         _bth.Thread(target=srv.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{srv.server_port}"
 
@@ -11068,10 +11074,163 @@ def _browser_checks() -> None:
                   out.startswith("Error: the page changed") and len(posted) == 2, out)
             BR.run_action({"action": "close"}, "t1")
         finally:
-            srv.shutdown()
-            BR._W.call(lambda w: w.shutdown(), timeout=30)
+            BR._W.call(lambda w: w.shutdown(), timeout=30)   # the browser first,
+            srv.shutdown()                                   # then its server
+            srv.server_close()
     finally:
         _bc.AGENT_HOME = saved_home
+
+# ---------------------------------------------------------------------- #
+# Checks: "done" means the app looked, not that the model said so.
+#   python tests/run_tests.py -k checks
+# ---------------------------------------------------------------------- #
+def _checks_checks() -> None:
+    import sqlite3 as _cs
+    import sys as _csys
+    import tempfile as _ct
+    import threading as _cth
+    from http.server import BaseHTTPRequestHandler as _CH, ThreadingHTTPServer as _CS
+    from agent import checks as CK, config as _cc, goals as GL, intercepts as IC, tools as TL
+    from agent.memory import MemoryStore as _CMS
+
+    class _Con:
+        def print(self, *a, **k): pass
+    saved = _cc.AGENT_HOME
+    _cc.AGENT_HOME = Path(_ct.mkdtemp(prefix="checks-"))
+    work = Path(_ct.mkdtemp(prefix="work-"))
+    mem = _CMS(db_path=_cc.AGENT_HOME / "agent.db", check_same_thread=False)
+    T = lambda name, args, aa=False: TL._execute_tool_impl(name, args, mem, _Con(), auto_approve=aa,
+                                                           session_id="ck")
+    try:
+        check("checks.unknown_type_is_named", "unknown check type" in CK.problem({"type": "vibes"}))
+        check("checks.missing_field_is_named", "needs path" in CK.problem({"type": "file_exists"}))
+        check("checks.bad_regex_is_caught", "bad regex" in CK.problem(
+            {"type": "file_contains", "path": "x", "regex": "("}))
+        f = work / "report.csv"
+        r = CK.run({"type": "file_exists", "path": str(f)})
+        check("checks.missing_file_fails_with_what_was_seen", not r["ok"] and "does not exist" in r["observed"])
+        f.write_text("name,total\nTOTAL,1200\n")
+        check("checks.file_exists_and_size",
+              CK.run({"type": "file_exists", "path": str(f)})["ok"]
+              and not CK.run({"type": "file_exists", "path": str(f), "min_bytes": 10_000})["ok"])
+        check("checks.file_contains_text_and_regex",
+              CK.run({"type": "file_contains", "path": str(f), "text": "TOTAL"})["ok"]
+              and CK.run({"type": "file_contains", "path": str(f), "regex": r"TOTAL,\d+"})["ok"]
+              and not CK.run({"type": "file_contains", "path": str(f), "text": "GRAND"})["ok"])
+
+        py = f'"{_csys.executable}" -c "import sys; print(\'3 passed\'); sys.exit(0)"'
+        r = CK.run({"type": "command", "command": py}, memory=mem, auto_approve=False)
+        check("checks.a_command_needing_permission_is_not_run",
+              not r["ok"] and r.get("not_run") and "permission" in r["observed"], r)
+        r = CK.run({"type": "command", "command": py, "expect_output": "passed"}, auto_approve=True)
+        check("checks.command_exit_and_output", r["ok"], r)
+        r = CK.run({"type": "command", "command": py.replace("exit(0)", "exit(2)")}, auto_approve=True)
+        check("checks.command_failure_shows_exit_and_output",
+              not r["ok"] and "exit 2" in r["observed"] and "3 passed" in r["observed"], r)
+        check("checks.read_only_commands_run_without_asking",
+              CK.run({"type": "command", "command": f"ls {work}", "expect_output": "report.csv"},
+                     memory=mem)["ok"])
+
+        class Site(_CH):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                code = 200 if self.path == "/health" else 404
+                self.send_response(code); self.end_headers(); self.wfile.write(b"status: ok")
+        srv = _CS(("127.0.0.1", 0), Site)
+        _cth.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_port}"
+        check("checks.url_status_and_text",
+              CK.run({"type": "url", "url": base + "/health", "contains": "ok"})["ok"]
+              and "404" in CK.run({"type": "url", "url": base + "/gone"})["observed"])
+        srv.shutdown()
+
+        # sent: waiting is not done; done is done
+        held = IC.hold("send_email", {"to": "jo@acme.com", "subject": "Report"})
+        r = CK.run({"type": "sent", "tool": "send_email", "contains": "jo@acme.com"})
+        check("checks.sent_while_waiting_is_not_done", not r["ok"] and r.get("waiting"), r)
+
+        # the task flow
+        out = T("create_task_plan", {"title": "Monthly report", "steps": ["Build the CSV", "Email it", "Tidy up"],
+                                     "checks": [{"step": 1, "check": {"type": "file_contains",
+                                                                      "path": str(work / "m.csv"), "text": "TOTAL"}},
+                                                {"step": 2, "check": {"type": "sent", "tool": "send_email",
+                                                                      "contains": "jo@acme.com"}}]})
+        check("checks.plans_show_which_steps_the_app_checks", out.count("[app-checked]") == 2, out)
+        tid = int(out.split("#")[1].split(":")[0])
+        out = T("update_task_step", {"task_id": tid, "step": 1, "status": "done",
+                                     "note": "Built the CSV and verified the totals carefully"})
+        check("checks.done_is_refused_while_the_check_fails",
+              out.startswith("Refused: the app checked") and "does not exist" in out, out)
+        (work / "m.csv").write_text("TOTAL,99\n")
+        out = T("update_task_step", {"task_id": tid, "step": 1, "status": "done", "note": "built"})
+        step1 = mem.get_task(tid)["steps"][0]
+        check("checks.done_is_accepted_when_it_holds",
+              out.startswith("Step") or step1["status"] == "done", out)
+        check("checks.the_note_records_what_the_app_saw", "[checked by the app: ✓" in step1["note"], step1["note"])
+        out = T("update_task_step", {"task_id": tid, "step": 2, "status": "done", "note": "sent the email to Jo"})
+        check("checks.waiting_for_approval_points_to_blocked",
+              "Refused: not done yet" in out and "blocked" in out, out)
+        IC.decide(held["id"], True)
+        items = IC.pending()
+        hit = next(i for i in items if i["id"] == held["id"])
+        hit["state"], hit["ran_at"] = "done", "now"
+        IC._save(items)
+        out = T("update_task_step", {"task_id": tid, "step": 2, "status": "done", "note": "sent"})
+        check("checks.sent_once_it_really_went", mem.get_task(tid)["steps"][1]["status"] == "done", out)
+        out = T("update_task_step", {"task_id": tid, "step": 3, "status": "done", "note": "ok",
+                                     "check": {"type": "file_exists", "path": str(work / "clean.flag")}})
+        check("checks.an_inline_check_is_run_too", out.startswith("Refused: the app checked"), out)
+        out = T("update_task_step", {"task_id": tid, "step": 3, "status": "done", "note": "x"})
+        check("checks.self_reported_done_still_needs_a_real_note", out.startswith("Refused"), out)
+        (work / "clean.flag").write_text("1")
+        T("update_task_step", {"task_id": tid, "step": 3, "status": "done", "note": "ok",
+                               "check": {"type": "file_exists", "path": str(work / "clean.flag")}})
+        check("checks.inline_checks_are_kept_on_the_step",
+              CK.normalise(mem.get_task(tid)["steps"][2]["checks"])[0]["type"] == "file_exists")
+        (work / "m.csv").write_text("oops, overwritten by step 3\n")
+        out = T("complete_task", {"task_id": tid, "summary": "Report built and sent to Jo"})
+        check("checks.completing_rechecks_and_catches_a_regression",
+              out.startswith("Refused: the app re-checked") and "step 1" in out, out)
+        (work / "m.csv").write_text("TOTAL,99\n")
+        out = T("complete_task", {"task_id": tid, "summary": "Report built and sent to Jo"})
+        check("checks.completes_when_everything_still_holds", "marked completed" in out, out)
+        out = T("create_task_plan", {"title": "Other", "steps": ["a", "b"],
+                                     "checks": [{"step": 5, "check": {"type": "file_exists", "path": "x"}}]})
+        check("checks.a_check_on_a_missing_step_is_refused", out.startswith("Error"), out)
+
+        # goals: the checks decide 'achieved', not the wording
+        try:
+            GL.create("x", "y", "z", checks=[{"type": "nope"}])
+            check("checks.goal_with_a_broken_check_is_refused", False)
+        except ValueError:
+            check("checks.goal_with_a_broken_check_is_refused", True)
+        g = GL.create("Ship docs", "Publish the guide", "Guide at docs/guide.md",
+                      checks=[{"type": "file_contains", "path": str(work / "guide.md"), "text": "# Guide"}])
+        check("checks.goal_prompt_names_its_checks", "the app itself checks" in GL.build_prompt(g))
+        out = T("update_goal", {"goal_id": g["id"], "status": "achieved", "note": "done",
+                                "evidence": "I wrote a very thorough guide and checked it twice over"})
+        check("checks.eloquent_evidence_doesnt_beat_a_failed_check",
+              out.startswith("Refused: the app checked") and GL.get(g["id"])["status"] == "active", out)
+        check("checks.the_failed_claim_is_kept_in_the_goals_history",
+              "Claimed achieved" in GL.get(g["id"])["notes"][-1]["text"])
+        (work / "guide.md").write_text("# Guide\nHello")
+        out = T("update_goal", {"goal_id": g["id"], "status": "achieved", "note": "done"})
+        gg = GL.get(g["id"])
+        check("checks.goal_achieved_once_the_checks_pass",
+              gg["status"] == "achieved" and "Checked by the app" in gg["notes"][-1]["text"], out)
+
+        # an older database gains the column in place
+        old = Path(_ct.mkdtemp()) / "old.db"
+        con = _cs.connect(old)
+        con.execute("CREATE TABLE task_steps (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL,"
+                    " seq INTEGER NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+                    " note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)")
+        con.commit(); con.close()
+        m2 = _CMS(db_path=old, check_same_thread=False)
+        cols = [r[1] for r in m2.conn.execute("PRAGMA table_info(task_steps)").fetchall()]
+        check("checks.older_databases_are_upgraded_in_place", "checks" in cols, cols)
+    finally:
+        _cc.AGENT_HOME = saved
 
 # ---------------------------------------------------------------------- #
 # Running it in sections.

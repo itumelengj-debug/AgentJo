@@ -176,6 +176,17 @@ It never types passwords. Use **Settings → Browser → Sign in to a site** to
 open a window on its profile and sign in yourself once; it stays signed in.
 Page text reaches the agent marked as untrusted.
 
+## "Done" means the app checked
+
+A step in a task plan can carry **checks the app runs itself**: a file exists
+or contains something, a command passes, a URL answers, or an approved email
+or form really went out. While a check fails, the step can't be marked done,
+and the refusal says what the app actually saw. Completing a task re-runs
+every check, so a later step that broke an earlier one is caught. A goal with
+checks can't be marked achieved until they pass, however convincing the
+written evidence. Command checks get no extra power: they run only if the
+command would run without asking you.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

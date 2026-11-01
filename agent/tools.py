@@ -7,6 +7,7 @@ is set. The agent acts with YOUR user privileges — keep confirmations on.
 """
 
 import hashlib
+import json
 import os
 import platform
 import shlex
@@ -108,6 +109,17 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Short task title"},
                 "steps": {"type": "array", "items": {"type": "string"},
                           "description": "3-12 concrete steps, in order"},
+                "checks": {
+                    "type": "array",
+                    "description": (
+                        "Optional, and best wherever a result can be checked: facts the "
+                        "APP verifies before a step may be marked done. Each item: "
+                        "{step: n, check: {type: file_exists|file_contains|command|url|sent, ...}}. "
+                        "file_exists {path, min_bytes}; file_contains {path, text|regex}; "
+                        "command {command, expect_exit, expect_output}; url {url, status, "
+                        "contains}; sent {tool, contains} (an approved email/form really went out)."),
+                    "items": {"type": "object"},
+                },
             },
             "required": ["title", "steps"],
         },
@@ -134,6 +146,10 @@ TOOL_DEFINITIONS = [
                            "enum": ["in_progress", "done", "failed", "skipped", "blocked"]},
                 "note": {"type": "string",
                          "description": "for 'done': the verification evidence"},
+                "check": {"type": "object",
+                          "description": ("for 'done': a check the app runs itself (same "
+                                          "shapes as create_task_plan checks); preferred to "
+                                          "a note wherever the result can be checked")},
                 "needs": {"type": "string",
                           "description": "for 'blocked': exactly what you need the "
                           "user to do (commands to run, who to log in as, which file)"},
@@ -232,6 +248,10 @@ TOOL_DEFINITIONS = [
                 "deadline": {"type": "string", "description": "YYYY-MM-DD, optional"},
                 "budget_usd": {"type": "number", "description": "spending ceiling for this goal; 0 = none"},
                 "runs_per_day": {"type": "integer", "description": "default 4"},
+                "checks": {"type": "array", "items": {"type": "object"},
+                           "description": ("optional checks the APP runs before the goal may be "
+                                           "marked achieved (file_exists, file_contains, command, "
+                                           "url, sent — see create_task_plan)")},
             },
             "required": ["title", "objective", "success"],
         },
@@ -253,6 +273,8 @@ TOOL_DEFINITIONS = [
                 "evidence": {"type": "string", "description": "for 'achieved'"},
                 "needs": {"type": "string", "description": "for 'blocked'"},
                 "task_id": {"type": "integer", "description": "link a task plan to this goal"},
+                "checks": {"type": "array", "items": {"type": "object"},
+                           "description": "for 'achieved': extra checks the app runs itself"},
             },
             "required": ["goal_id", "status", "note"],
         },
@@ -1527,7 +1549,25 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                         f"call reset_task_plan(task_id={existing['id']}); otherwise "
                         f"continue it with update_task_step. Only create a new plan "
                         f"if this is genuinely different work.")
+            from . import checks as _checks
+            per_step: dict = {}
+            for item in tool_input.get("checks") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    n = int(item.get("step"))
+                except (TypeError, ValueError):
+                    return "Error: each checks item needs a step number."
+                cs = _checks.normalise(item.get("check"))
+                bad = [_checks.problem(c) for c in cs if _checks.problem(c)]
+                if bad or not cs:
+                    return f"Error: the check for step {n}: {bad[0] if bad else 'missing'}."
+                if not 1 <= n <= min(len(steps), 12):
+                    return f"Error: there's no step {n} to check."
+                per_step.setdefault(n, []).extend(cs)
             task_id = memory.create_task(tool_input["title"], steps[:12], session_id)
+            for n, cs in per_step.items():
+                memory.set_step_checks(task_id, n, json.dumps(cs[:_checks.MAX_CHECKS]))
             task = memory.get_task(task_id)
             console.print(f"[dim]plan created: task #{task_id} "
                           f"({len(task['steps'])} steps)[/dim]")
@@ -1548,11 +1588,36 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             status = tool_input["status"]
             note = (tool_input.get("note") or "").strip()
             needs = (tool_input.get("needs") or "").strip()
-            if status == "done" and len(note) < 10:
-                return ("Refused: cannot mark a step done without verification "
-                        "evidence. First CHECK the result (re-read the file, run "
-                        "the code, inspect output), then call again with what you "
-                        "verified in 'note'.")
+            _app_checked = ""
+            if status == "done":
+                from . import checks as _checks
+                _tid, _seq = int(tool_input["task_id"]), int(tool_input["step"])
+                _task0 = memory.get_task(_tid)
+                _step0 = next((s for s in (_task0 or {}).get("steps", []) if s["seq"] == _seq), None)
+                _stored = _checks.normalise((_step0 or {}).get("checks"))
+                _new = _checks.normalise(tool_input.get("check"))
+                _bad = [_checks.problem(c) for c in _new if _checks.problem(c)]
+                if _bad:
+                    return f"Error: that check can't run: {_bad[0]}."
+                _all = (_stored + _new)[:_checks.MAX_CHECKS]
+                if _all:
+                    _res = _checks.run_all(_all, memory=memory, auto_approve=auto_approve)
+                    if not _res["ok"]:
+                        if _res["waiting"]:
+                            return ("Refused: not done yet. " + _res["text"] + ". Mark this "
+                                    "step 'blocked' with needs='approve the waiting item', "
+                                    "and carry on with anything else.")
+                        return ("Refused: the app checked and it isn't done: " + _res["text"]
+                                + ". Fix the work (not the wording), then mark it done again.")
+                    if _new and _step0 is not None:
+                        memory.set_step_checks(_tid, _seq, json.dumps(_all))
+                    _app_checked = "[checked by the app: " + _res["text"] + "]"
+                    note = (note + " " + _app_checked).strip()
+                elif len(note) < 10:
+                    return ("Refused: cannot mark a step done without verification "
+                            "evidence. Best: pass a 'check' the app can run itself "
+                            "(file_exists, file_contains, command, url, sent). Otherwise "
+                            "CHECK the result yourself and say what you observed in 'note'.")
             if status in ("failed", "skipped") and not note:
                 return f"Refused: '{status}' requires a brief reason in 'note'."
             if status == "blocked" and not needs:
@@ -1608,6 +1673,19 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     return (f"Refused: steps {bl} are blocked waiting on the user. "
                             f"Don't mark the task complete — report what's needed "
                             f"so they can unblock it, and leave the task active.")
+                # what was true when each step was marked done must still be
+                # true now: a later step can break an earlier one
+                from . import checks as _checks
+                _regressed = []
+                for s in task["steps"]:
+                    cs = _checks.normalise(s.get("checks"))
+                    if s["status"] == "done" and cs:
+                        r = _checks.run_all(cs, memory=memory, auto_approve=auto_approve)
+                        if not r["ok"]:
+                            _regressed.append(f"step {s['seq']}: {r['text']}")
+                if _regressed:
+                    return ("Refused: the app re-checked, and done work no longer holds — "
+                            + " | ".join(_regressed) + ". Fix it, then complete the task.")
             if len(tool_input.get("summary", "").strip()) < 10:
                 return "Refused: provide a real summary of outcomes."
             summary = tool_input["summary"].strip()
@@ -1641,13 +1719,15 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     str(tool_input.get("note", "")),
                     evidence=str(tool_input.get("evidence", "") or ""),
                     needs=str(tool_input.get("needs", "") or ""),
-                    task_id=tool_input.get("task_id"))
+                    task_id=tool_input.get("task_id"), checks=tool_input.get("checks"),
+                    memory=memory, auto_approve=auto_approve)
             try:
                 g = _goals.create(
                     tool_input.get("title", ""), tool_input.get("objective", ""),
                     tool_input.get("success", ""), deadline=tool_input.get("deadline", "") or "",
                     budget_usd=float(tool_input.get("budget_usd") or 0),
-                    runs_per_day=int(tool_input.get("runs_per_day") or 4))
+                    runs_per_day=int(tool_input.get("runs_per_day") or 4),
+                    checks=tool_input.get("checks"))
             except ValueError as exc:
                 return f"Refused: {exc}."
             _goals.ensure_schedule(memory)
