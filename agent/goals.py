@@ -340,7 +340,9 @@ def build_prompt(g: dict, memory=None) -> str:
         "   - 'achieved' ONLY with evidence checked against each 'done when' criterion;",
         "   - 'blocked' with 'needs' if it can't continue without the user;",
         "   - 'abandoned' if the goal is impossible as stated, saying why.",
-        "3. Anything that leaves this machine (email, posts, forms) will wait for the user's "
+        "3. Independent pieces of work can go to the crew at the same time: crew_parallel "
+        f"with goal_id={g['id']} adds their reports to this goal's history.",
+        "4. Anything that leaves this machine (email, posts, forms) will wait for the user's "
         "approval — queue it and carry on with what doesn't depend on it.",
         f"You have up to {GOAL_MAX_ROUNDS} tool calls and {GOAL_TIME_LIMIT // 60} minutes this run.",
     ]

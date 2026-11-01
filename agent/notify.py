@@ -314,9 +314,32 @@ HELP = ("/status — what's waiting and what's scheduled\n"
         "/resume — turn back on what /pause turned off")
 
 
+# What a Telegram tap or command does. The phone companion registers these
+# when it loads (agent/phone.py), rather than this module importing it: phone
+# reaches the tools, and the tools reach this module, so an import here would
+# close a cycle.
+_ACTIONS: dict = {}
+
+
+def use_actions(*, decide, pause, resume, state) -> None:
+    _ACTIONS.update(decide=decide, pause=pause, resume=resume, state=state)
+
+
+def _act(name: str):
+    if name not in _ACTIONS:
+        try:
+            from importlib import import_module
+            import_module(__package__ + ".phone")      # registers itself
+        except Exception:
+            pass
+    fn = _ACTIONS.get(name)
+    if fn is None:
+        raise RuntimeError("the phone companion isn't loaded")
+    return fn
+
+
 def _status_text() -> str:
-    from . import phone
-    st = phone.state()
+    st = _act("state")()
     lines = [f"{len(st['held'])} waiting for your OK, "
              f"{st['running']} scheduled task(s) on" + (" (paused)" if st["paused"] else "")]
     for h in st["held"][:5]:
@@ -340,14 +363,13 @@ def handle_update(upd: dict, s: dict | None = None) -> dict:
     if not allowed or (chat != allowed and sender != allowed):
         _audit("refused", f"telegram message from unknown chat {chat or sender}")
         return {"did": "ignored", "why": "not your chat"}
-    from . import phone
     if cq:
         data = str(cq.get("data") or "")
         reply = "?"
         did = "unknown button"
         if data.startswith("ij:") and data.count(":") == 2:
             _, yn, iid = data.split(":")
-            r = phone.decide(iid, yn == "y")
+            r = _act("decide")(iid, yn == "y")
             did = ("approved " if yn == "y" else "refused ") + iid
             reply = r.get("then") if r.get("ok") else ("Couldn't: " + r.get("error", ""))
         _tg_call(t["token"], "answerCallbackQuery",
@@ -360,10 +382,10 @@ def handle_update(upd: dict, s: dict | None = None) -> dict:
         return {"did": did, "reply": reply}
     text = (msg.get("text") or "").strip().split("@")[0].lower()
     if text in ("/pause",):
-        r = phone.pause()
+        r = _act("pause")()
         out = f"Paused {r.get('paused', 0)} scheduled task(s)." if r.get("ok") else r.get("error", "")
     elif text in ("/resume",):
-        r = phone.resume()
+        r = _act("resume")()
         out = f"Resumed {r.get('resumed', 0)} scheduled task(s)." if r.get("ok") else r.get("error", "")
     elif text in ("/status",):
         out = _status_text()

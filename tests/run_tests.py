@@ -9375,6 +9375,9 @@ def main() -> None:
     # --- vault: credentials the agent can use but never sees --------------- #
     _vault_checks()
 
+    # --- crew in parallel: several specialists at once --------------------- #
+    _parallel_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -11478,6 +11481,89 @@ def _vault_checks() -> None:
     finally:
         srv.shutdown(); srv.server_close()
         _vc.AGENT_HOME = saved
+
+# ---------------------------------------------------------------------- #
+# Crew in parallel: several specialists at once under one goal.
+#   python tests/run_tests.py -k parallel
+# ---------------------------------------------------------------------- #
+def _parallel_checks() -> None:
+    import tempfile as _pt
+    import time as _ptime
+    from agent import config as _pc, crew as CR, goals as GL, tools as TL
+    from agent.memory import MemoryStore as _PMS
+
+    class _Con:
+        def print(self, *a, **k): pass
+    saved = (_pc.AGENT_HOME, CR.run)
+    _pc.AGENT_HOME = Path(_pt.mkdtemp(prefix="parallel-"))
+    mem = _PMS(db_path=_pc.AGENT_HOME / "agent.db", check_same_thread=False)
+    calls = []
+
+    def fake_run(name, task, brain, memory, console, session_id="", model=None, execute=None, tool_defs=None):
+        calls.append({"member": name, "session": session_id})
+        _ptime.sleep(0.6)
+        if "explode" in task:
+            raise RuntimeError("the specialist's engine fell over")
+        return {"ok": True, "member": name, "report": f"{name} finished: {task[:30]}", "seconds": 0.6}
+    CR.run = fake_run
+    try:
+        names = [m["name"] for m in CR.members()]
+        check("parallel.there_is_a_crew_to_use", len(names) >= 3, names)
+        jobs = [{"member": names[0], "task": "research the three main competitors"},
+                {"member": names[1], "task": "draft the proposal outline for Acme"},
+                {"member": names[2], "task": "check last month's invoice totals"}]
+        t0 = _ptime.time()
+        r = CR.run_parallel(jobs, None, mem, _Con())
+        took = _ptime.time() - t0
+        check("parallel.jobs_really_run_at_the_same_time",
+              r["ok"] and len(r["results"]) == 3 and took < 1.5, took)
+        res = r["results"]
+        check("parallel.they_overlap_in_time",
+              max(x["started"] for x in res) < min(x["ended"] for x in res))
+        check("parallel.each_runs_as_an_unattended_crew_session",
+              all(c["session"].startswith("crew-") for c in calls)
+              and len({c["session"] for c in calls}) == 3, calls)
+        check("parallel.results_keep_their_order", [x["member"] for x in res] == names[:3])
+
+        dup = CR.run_parallel([{"member": names[0], "task": "first piece of work"},
+                               {"member": names[0], "task": "second piece of work"}], None, mem, _Con())
+        check("parallel.one_member_cant_take_two_jobs_at_once",
+              not dup["ok"] and "share" in dup["error"], dup)
+        many = CR.run_parallel([{"member": "", "task": f"job number {i} to do"} for i in range(6)],
+                               None, mem, _Con())
+        check("parallel.at_most_five_jobs", not many["ok"] and "at most" in many["error"])
+        check("parallel.unknown_member_is_refused",
+              "no crew member" in CR.run_parallel([{"member": "Ghost", "task": "haunt the place"}],
+                                                  None, mem, _Con())["error"])
+        calls.clear()
+        r = CR.run_parallel([{"member": names[0], "task": "this one will explode now"},
+                             {"member": names[1], "task": "this one is fine though"}], None, mem, _Con())
+        check("parallel.one_failure_doesnt_sink_the_rest",
+              r["ok"] and [x["ok"] for x in r["results"]] == [False, True]
+              and "fell over" in r["results"][0]["report"], r["results"])
+
+        g = GL.create("Win Acme", "Win the Acme contract", "Signed contract")
+        out = TL._execute_tool_impl("crew_parallel", {"jobs": jobs[:2], "goal_id": g["id"]}, mem, _Con(),
+                                    session_id="goal-1-1")
+        notes = [n for n in GL.get(g["id"])["notes"] if n["kind"] == "crew"]
+        check("parallel.reports_land_in_the_goals_history",
+              len(notes) == 2 and names[0] in notes[0]["text"] and "finished" in notes[0]["text"], notes)
+        check("parallel.the_tool_reports_each_specialist",
+              out.startswith("2 specialist(s) ran in parallel") and out.count("## ") == 2
+              and f"goal #{g['id']}" in out, out)
+        check("parallel.goal_runs_are_told_about_it", "crew_parallel" in GL.build_prompt(GL.get(g["id"])))
+        check("parallel.crew_members_cant_start_crews",
+              "crew_parallel" not in [t["name"] for t in TL.subagent_tools()])
+        # the new modules (service, notify, goals, triggers, browser, checks,
+        # sandbox, vault) reach each other through callbacks and small shared
+        # modules, not by importing in circles: the only cycle left is the
+        # one that was there before them
+        from agent import codemap as _pcm
+        _cyc = [sorted(c) for c in _pcm.cycles(_pcm.scan(str(Path(__file__).resolve().parents[1])))]
+        check("structure.no_new_import_cycles",
+              _cyc in ([], [["agent.health", "agent.selfimprove", "agent.tools"]]), _cyc)
+    finally:
+        _pc.AGENT_HOME, CR.run = saved
 
 # ---------------------------------------------------------------------- #
 # Running it in sections.

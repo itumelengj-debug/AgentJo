@@ -122,7 +122,7 @@ def _file(c: dict) -> dict:
 
 
 def _command(c: dict, memory=None, auto_approve: bool = False, session_id: str = "") -> dict:
-    from .tools import is_read_only_command
+    from .cmdsafe import is_read_only_command
     cmd = str(c["command"])
     allowed = auto_approve or is_read_only_command(cmd)
     if not allowed and memory is not None:

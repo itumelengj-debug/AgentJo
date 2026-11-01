@@ -378,6 +378,82 @@ def run(name: str, task: str, brain, memory, console, session_id: str = "",
             "seconds": entry["seconds"], "workspace": str(ws)}
 
 
+MAX_PARALLEL_JOBS = 5
+PARALLEL_WORKERS = 3
+
+
+def run_parallel(jobs: list, brain, memory, console, session_id: str = "",
+                 on_report=None, execute=None, tool_defs=None,
+                 workers: int = PARALLEL_WORKERS) -> dict:
+    """Several specialists at once, each on its own piece of the work.
+
+    Dispatch and chains run one member at a time; a goal with independent
+    parts (research the market while drafting the proposal while checking
+    the numbers) waited for each in turn. Here each job runs in its own
+    thread, as its own member, in its own workspace and session, and one
+    failing doesn't sink the rest. Two jobs for the same member are refused:
+    they'd share a workspace and overwrite each other.
+
+    on_report(result) is called for each finished job (the caller uses it to
+    add reports to a goal's history). A callback rather than an import:
+    crew importing goals would close an import cycle back through tools."""
+    from concurrent.futures import ThreadPoolExecutor
+    clean = []
+    for j in jobs or []:
+        if not isinstance(j, dict):
+            continue
+        task = str(j.get("task") or "").strip()
+        if len(task) < 8:
+            return {"ok": False, "error": "each job needs a task with enough context"}
+        clean.append({"member": str(j.get("member") or "").strip(), "task": task})
+    if not clean:
+        return {"ok": False, "error": "give at least one job"}
+    if len(clean) > MAX_PARALLEL_JOBS:
+        return {"ok": False, "error": f"at most {MAX_PARALLEL_JOBS} jobs at once"}
+    for j in clean:
+        if not j["member"]:
+            j["member"] = choose(j["task"], brain).get("name", "")
+            j["routed"] = True
+        m = get(j["member"])
+        if m is None:
+            return {"ok": False, "error": f"no crew member named '{j['member']}'"}
+        j["member"] = m["name"]
+    names = [j["member"] for j in clean]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        return {"ok": False, "error": (f"{', '.join(dupes)} would get two jobs at once and share "
+                                       f"a workspace. Merge those jobs into one, or run them in turn.")}
+    stamp = int(time.time())
+
+    def _one(i_job):
+        i, j = i_job
+        t0 = time.time()
+        try:
+            r = run(j["member"], j["task"], brain, memory, console,
+                    session_id=f"crew-{_slug(j['member'])}-{stamp}-{i}",
+                    execute=execute, tool_defs=tool_defs)
+        except Exception as exc:
+            r = {"ok": False, "member": j["member"], "report": f"{type(exc).__name__}: {exc}"}
+        r.setdefault("seconds", round(time.time() - t0, 1))
+        r.setdefault("error", "")
+        return {**r, "task": j["task"], "routed": bool(j.get("routed")),
+                "started": round(t0, 3), "ended": round(time.time(), 3)}
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(clean)))) as pool:
+        results = list(pool.map(_one, enumerate(clean)))
+    if on_report is not None:
+        for r in results:
+            try:
+                on_report(r)
+            except Exception:
+                pass
+    _audit("parallel", f"{len(results)} job(s): " + ", ".join(
+        f"{r['member']} {'ok' if r.get('ok') else 'failed'}" for r in results))
+    return {"ok": any(r.get("ok") for r in results), "results": results,
+            "seconds": round(time.time() - t0, 1)}
+
+
 def set_schedule(name: str, spec: dict | None, memory, scheduler) -> dict:
     """Give a member its own cadence (or clear it). spec:
     {"kind": "daily"|"weekly", "time": "07:30", "dow": 0, "task": "..."}"""

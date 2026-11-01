@@ -224,6 +224,15 @@ in the value at the last moment, only for those sites:
 
 Never paste a secret into the chat.
 
+## The crew, in parallel
+
+When a goal has pieces that don't depend on each other, such as researching
+competitors while drafting the proposal while checking the numbers, the agent
+can hand them to several crew specialists **at the same time**
+(`crew_parallel`: up to 5 jobs, 3 at once). Each runs as its own member, in
+its own workspace, inside the sandbox. One failing doesn't stop the rest, and
+with a goal their reports go into the goal's history for the next run.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in
