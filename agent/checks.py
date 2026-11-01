@@ -121,7 +121,7 @@ def _file(c: dict) -> dict:
     return {"ok": False, "observed": f"“{str(c['text'])[:60]}” not in {p.name} ({len(text):,} characters)"}
 
 
-def _command(c: dict, memory=None, auto_approve: bool = False) -> dict:
+def _command(c: dict, memory=None, auto_approve: bool = False, session_id: str = "") -> dict:
     from .tools import is_read_only_command
     cmd = str(c["command"])
     allowed = auto_approve or is_read_only_command(cmd)
@@ -135,9 +135,18 @@ def _command(c: dict, memory=None, auto_approve: bool = False) -> dict:
                 "observed": ("not run: this command would need the person's permission. "
                              "Run it with run_command and have them choose 'always allow', "
                              "or check another way")}
+    from . import sandbox
+    plan = sandbox.prepare(cmd, session_id)       # the same fence as run_command
+    if "refuse" in plan:
+        return {"ok": False, "not_run": True, "observed": "not run: " + plan["refuse"]}
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                           timeout=int(c.get("timeout") or COMMAND_TIMEOUT))
+        t = int(c.get("timeout") or COMMAND_TIMEOUT)
+        if "argv" in plan:
+            r = subprocess.run(plan["argv"], capture_output=True, text=True, env=plan["env"],
+                               cwd=plan["cwd"], timeout=t)
+        else:
+            r = subprocess.run(plan["shell"], shell=True, capture_output=True, text=True,
+                               env=plan["env"], timeout=t)
     except subprocess.TimeoutExpired:
         return {"ok": False, "observed": "timed out"}
     out = ((r.stdout or "") + (r.stderr or "")).strip()
@@ -191,7 +200,7 @@ def _sent(c: dict) -> dict:
     return {"ok": False, "observed": "nothing matching was sent"}
 
 
-def run(c: dict, *, memory=None, auto_approve: bool = False) -> dict:
+def run(c: dict, *, memory=None, auto_approve: bool = False, session_id: str = "") -> dict:
     why = problem(c)
     if why:
         return {"ok": False, "check": str(c)[:120], "observed": why}
@@ -200,7 +209,7 @@ def run(c: dict, *, memory=None, auto_approve: bool = False) -> dict:
         if t in ("file_exists", "file_contains"):
             r = _file(c)
         elif t == "command":
-            r = _command(c, memory, auto_approve)
+            r = _command(c, memory, auto_approve, session_id)
         elif t == "url":
             r = _url(c)
         else:
@@ -211,8 +220,10 @@ def run(c: dict, *, memory=None, auto_approve: bool = False) -> dict:
     return r
 
 
-def run_all(checks: list[dict], *, memory=None, auto_approve: bool = False) -> dict:
-    results = [run(c, memory=memory, auto_approve=auto_approve) for c in checks]
+def run_all(checks: list[dict], *, memory=None, auto_approve: bool = False,
+            session_id: str = "") -> dict:
+    results = [run(c, memory=memory, auto_approve=auto_approve, session_id=session_id)
+               for c in checks]
     ok = bool(results) and all(r["ok"] for r in results)
     _audit(ok, results)
     return {"ok": ok, "results": results,

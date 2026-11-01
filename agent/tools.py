@@ -1051,6 +1051,13 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
         if name == "run_command":
             command = tool_input["command"]
             purpose = tool_input.get("purpose", "")
+            # unattended runs go through the sandbox (agent/sandbox.py):
+            # refused outright, scrubbed of secrets, or OS-isolated. Decided
+            # before any permission prompt: a refused command isn't asked about.
+            from . import sandbox as _sandbox
+            _plan = _sandbox.prepare(command, session_id)
+            if "refuse" in _plan:
+                return _plan["refuse"]
             auto_reason = None
             if not auto_approve:
                 if is_read_only_command(command):
@@ -1078,10 +1085,15 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             elif auto_reason:
                 console.print(f"[dim]auto-approved ({auto_reason}): "
                               f"{command[:80]}[/dim]")
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
-                timeout=config.COMMAND_TIMEOUT_SECONDS,
-            )
+            if "argv" in _plan:
+                result = subprocess.run(
+                    _plan["argv"], capture_output=True, text=True, env=_plan["env"],
+                    cwd=_plan["cwd"], timeout=config.COMMAND_TIMEOUT_SECONDS)
+            else:
+                result = subprocess.run(
+                    _plan["shell"], shell=True, capture_output=True, text=True,
+                    env=_plan["env"], timeout=config.COMMAND_TIMEOUT_SECONDS,
+                )
             out = result.stdout.strip()
             err = result.stderr.strip()
             parts = [f"exit code: {result.returncode}"]
@@ -1601,7 +1613,7 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     return f"Error: that check can't run: {_bad[0]}."
                 _all = (_stored + _new)[:_checks.MAX_CHECKS]
                 if _all:
-                    _res = _checks.run_all(_all, memory=memory, auto_approve=auto_approve)
+                    _res = _checks.run_all(_all, memory=memory, auto_approve=auto_approve, session_id=session_id)
                     if not _res["ok"]:
                         if _res["waiting"]:
                             return ("Refused: not done yet. " + _res["text"] + ". Mark this "
@@ -1680,7 +1692,7 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                 for s in task["steps"]:
                     cs = _checks.normalise(s.get("checks"))
                     if s["status"] == "done" and cs:
-                        r = _checks.run_all(cs, memory=memory, auto_approve=auto_approve)
+                        r = _checks.run_all(cs, memory=memory, auto_approve=auto_approve, session_id=session_id)
                         if not r["ok"]:
                             _regressed.append(f"step {s['seq']}: {r['text']}")
                 if _regressed:
@@ -1720,7 +1732,7 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     evidence=str(tool_input.get("evidence", "") or ""),
                     needs=str(tool_input.get("needs", "") or ""),
                     task_id=tool_input.get("task_id"), checks=tool_input.get("checks"),
-                    memory=memory, auto_approve=auto_approve)
+                    memory=memory, auto_approve=auto_approve, session_id=session_id)
             try:
                 g = _goals.create(
                     tool_input.get("title", ""), tool_input.get("objective", ""),

@@ -187,6 +187,27 @@ checks can't be marked achieved until they pass, however convincing the
 written evidence. Command checks get no extra power: they run only if the
 command would run without asking you.
 
+## The sandbox: what commands may do when nobody is watching
+
+Settings → **Sandbox**. In unattended runs (schedules, goals, triggers, the
+crew), shell commands are fenced:
+
+- **Guard** (the default) refuses commands that wipe a disk or home folder,
+  shut down, use `sudo`/`runas`, install things that run later (crontab,
+  schtasks, registry run keys), read credential stores (`~/.ssh`, `~/.aws`,
+  the agent's own data, browser profiles), send data out (`curl -d`, `scp`,
+  `nc`…) or force-push. It also strips API keys, tokens and passwords from
+  the command's environment. Pattern matching stops the obvious and the
+  injected; it isn't a wall.
+- **Isolate** also runs each command in an OS sandbox (bubblewrap on Linux,
+  sandbox-exec on macOS). The system is read-only, only the folders you list
+  are writable, credential folders and the agent's data are hidden, and the
+  network can be cut. Windows has no OS sandbox to use, so there it acts as
+  Guard and says so.
+
+Chat runs are unchanged unless you choose "every run". The **Check** box
+tells you whether a command would be allowed, without running it.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

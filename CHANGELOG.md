@@ -5970,3 +5970,37 @@ seen in #174. It's a threaded server now, the browser closes first, and four
 consecutive full runs passed.
 
 1,557 checks (30 new), all passing.
+
+### 176. The sandbox: unattended commands are fenced
+
+Unattended runs could run read-only commands, ones matching a saved rule, or
+anything at all under full access. They ran as you, with every API key in
+their environment.
+
+`agent/sandbox.py` (Settings → Sandbox) applies to unattended sessions:
+schedules, goals, triggers and the crew, recognised by their session names.
+It can also apply to every run if you choose.
+
+- **guard** (default): a command is refused, before any permission prompt
+  and with the reason, if it would wipe a disk or a home folder, shut down,
+  escalate, install persistence, read a credential store (including the
+  agent's own data folder and the browser profile), send data out, or
+  force-push. The environment is scrubbed of anything named like a key,
+  token, secret or password. The rule for shutdown matches only at the
+  start of a command, so `cat notes/shutdown-plan.md` is fine.
+- **isolate**: guard, plus bubblewrap on Linux or sandbox-exec on macOS. The
+  system is read-only, only the listed folders are writable, credential
+  folders and the agent's data are hidden, and the network can be cut. On
+  Windows it falls back to guard and says so.
+- **off**.
+
+Command checks (#175) go through the same fence. The Settings row includes a
+"Check" box that says whether a command would be allowed, without running
+it.
+
+Tested with 25 commands that must be refused and 16 ordinary ones that must
+not be. The isolation was run live with bubblewrap: a goal's command could
+write its workspace but nowhere else, couldn't see the agent's data, and had
+no network.
+
+1,575 checks (18 new), all passing.
