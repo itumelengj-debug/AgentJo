@@ -71,6 +71,8 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command"},
+                "credentials": {"type": "array", "items": {"type": "string"},
+                                "description": "saved credential names to pass as $VAULT_<NAME> (only ones allowed for commands)"},
                 "purpose": {"type": "string", "description": "One line: why you are running it"},
             },
             "required": ["command"],
@@ -206,6 +208,31 @@ TOOL_DEFINITIONS = [
                            "enum": ["active", "completed", "abandoned", "all"]},
             },
         },
+    },
+    {
+        "name": "http_request",
+        "description": (
+            "Call a web API. Put credentials in as {{vault:name}} (see list_credentials); "
+            "you never see the values, and each is only sent to the sites it's allowed "
+            "for. GET/HEAD run at once; POST/PUT/PATCH/DELETE wait for the user's "
+            "approval with the exact request shown."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+                "json": {"description": "a JSON body"},
+                "body": {"type": "string", "description": "a raw body (if not json)"},
+            },
+            "required": ["method", "url"],
+        },
+    },
+    {
+        "name": "list_credentials",
+        "description": ("Names of the saved credentials and where each may be sent. "
+                        "Never ask the user to paste a secret into the chat."),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "browser",
@@ -1085,6 +1112,13 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             elif auto_reason:
                 console.print(f"[dim]auto-approved ({auto_reason}): "
                               f"{command[:80]}[/dim]")
+            if tool_input.get("credentials"):
+                from . import vault as _vault
+                _venv, _verr = _vault.env_for(list(tool_input.get("credentials") or []))
+                if _verr:
+                    return f"Refused: {_verr}. Nothing ran."
+                _plan["env"] = {**(_plan["env"] if _plan["env"] is not None else dict(os.environ)),
+                                **_venv}
             if "argv" in _plan:
                 result = subprocess.run(
                     _plan["argv"], capture_output=True, text=True, env=_plan["env"],
@@ -1713,6 +1747,13 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             console.print(f"[dim]task #{task_id} {status}[/dim]")
             return f"Task #{task_id} marked {status}."
 
+        if name == "list_credentials":
+            from . import vault as _vault
+            return _vault.tool_listing()
+
+        if name == "http_request":
+            return _http_request(tool_input or {}, session_id)
+
         if name in ("browser", "browser_submit"):
             from . import browser as _browser
             # browser_submit is never offered to the model: it only runs here
@@ -1793,6 +1834,11 @@ def run_held(intercept_id: str, memory: MemoryStore, console: Console) -> dict:
         out = _execute_tool_impl(hit["tool"], hit.get("args") or {}, memory, console,
                                  auto_approve=True, session_id="approved:" + intercept_id)
         res = out if isinstance(out, str) else str(out)
+        try:
+            from . import vault as _vault
+            res = _vault.redact(res)
+        except Exception:
+            pass
         bad = res[:14].lower().startswith(("error:", "[tool error", "mcp tool error"))
     except Exception as exc:
         res, bad = f"{type(exc).__name__}: {exc}", True
@@ -1864,7 +1910,57 @@ def execute_tool(name: str, tool_input: dict, memory: MemoryStore,
                          summary=(_res[:120] if _bad else f"{len(_res)} chars"))
         except Exception:
             pass
+    # a saved credential never reaches the model, even if a command printed it
+    try:
+        from . import vault as _vault
+        out = _vault.redact(out)
+    except Exception:
+        pass
     return out
+
+
+def _http_request(inp: dict, session_id: str = "", approved: bool = False) -> str:
+    """A web API call. Reads run; anything that changes something is held
+    by the gate in execute_tool before it gets here (see intercepts)."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+    from . import vault as _vault
+    if not WEB_ENABLED:
+        return "Web access is turned off (AGENT_WEB=off)."
+    method = str(inp.get("method") or "GET").upper()
+    url = str(inp.get("url") or "").strip()
+    if urlparse(url).scheme not in ("http", "https"):
+        return "Error: only http(s) URLs."
+    host = (urlparse(_vault.PLACEHOLDER.sub("x", url)).hostname or "").lower()
+    headers = {str(k): str(v) for k, v in (inp.get("headers") or {}).items()}
+    if inp.get("json") is not None:
+        body = json.dumps(inp["json"])
+        headers.setdefault("Content-Type", "application/json")
+    else:
+        body = inp.get("body")
+    filled, err = _vault.resolve({"url": url, "headers": headers, "body": body}, host, "http_request")
+    if err:
+        return f"Refused: {err}."
+    data = filled["body"].encode("utf-8") if isinstance(filled["body"], str) else None
+    req = urllib.request.Request(filled["url"], data=data, method=method,
+                                 headers={"User-Agent": "AgentJo/1", **filled["headers"]})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            code, rh, raw = r.status, dict(r.headers), r.read(300_000)
+    except urllib.error.HTTPError as exc:
+        code, rh, raw = exc.code, dict(exc.headers or {}), exc.read(50_000)
+    except Exception as exc:
+        return f"Error: couldn't reach {host}: {type(exc).__name__}: {str(exc)[:160]}"
+    text = raw.decode("utf-8", "replace")
+    try:
+        text = json.dumps(json.loads(text), indent=1)
+    except ValueError:
+        pass
+    keep = {k: v for k, v in rh.items() if k.lower() in ("content-type", "location", "link",
+                                                         "x-ratelimit-remaining", "retry-after")}
+    return (f"HTTP {code} {method} {url}\n" + "\n".join(f"{k}: {v}" for k, v in keep.items())
+            + "\n\n" + _truncate(text, 8000))
 
 
 def _fine_tune(inp: dict, brain=None) -> str:

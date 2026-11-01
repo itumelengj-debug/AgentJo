@@ -1078,6 +1078,36 @@ def sandbox_check(body: SandboxTestBody):
     return _sb.check(body.command)
 
 
+class VaultBody(BaseModel):
+    name: str
+    value: str
+    hosts: list[str] = []
+    note: str = ""
+    commands: bool = False
+
+
+@app.get("/api/vault")
+def vault_list():
+    """Names, sites and use counts. Values never leave the vault this way."""
+    from agent import vault as _v
+    return {"credentials": _v.public()}
+
+
+@app.post("/api/vault")
+def vault_put(body: VaultBody):
+    from agent import vault as _v
+    try:
+        return _v.put(body.name, body.value, body.hosts, note=body.note, commands=body.commands)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/vault/{name}")
+def vault_delete(name: str):
+    from agent import vault as _v
+    return {"ok": _v.delete(name)}
+
+
 class ServiceBody(BaseModel):
     install: bool = True
     port: int = 8765

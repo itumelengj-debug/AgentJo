@@ -6004,3 +6004,33 @@ write its workspace but nowhere else, couldn't see the agent's data, and had
 no network.
 
 1,575 checks (18 new), all passing.
+
+### 177. The vault: credentials the agent can use but never sees
+
+To call an API or sign in, the agent needed a secret, and the only way to
+give it one was the chat. That put it in the log, the context, every later
+prompt, and within reach of any page that asked for it back.
+
+`agent/vault.py` (Settings → Credentials) stores secrets encrypted, each with
+the sites it may be sent to. The agent writes `{{vault:name}}`; the app fills
+in the value only where that is allowed:
+
+- **New `http_request` tool.** GET/HEAD run; POST/PUT/PATCH/DELETE are held,
+  and the summary names the credential, never the value. Approval replays
+  the request with the value filled in. `list_credentials` gives names and
+  sites only.
+- **Browser.** A `{{vault:…}}` may be typed into any field, including a
+  password field, but only on an allowed site. The form keeps the
+  placeholder, so a held sign-in shows it; the replay fills the value. A
+  password the model was told directly is still refused.
+- **`run_command`.** `credentials: [...]` adds `$VAULT_<NAME>`, but only for
+  secrets marked "commands may use it".
+- **Redaction.** Every tool result, including approved replays, has each
+  value and its base64 form replaced with `[vault:name]`.
+- **Where it may go.** A host must match one of the secret's sites (or a
+  subdomain of one); anywhere else is refused before anything is sent.
+- **Audit.** Each use is audited: which secret, where, by which tool.
+
+1,595 checks (20 new), all passing. That includes a real sign-in through the
+browser: the held submission showed the placeholder, and the approved
+replay sent the real password.

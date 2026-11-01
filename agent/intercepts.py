@@ -82,6 +82,11 @@ def classify(tool: str, args: dict) -> dict:
     if tool in OWNED_ELSEWHERE:
         return {"hold": False,
                 "why": f"guarded by {OWNED_ELSEWHERE[tool]} already"}
+    if tool == "http_request":
+        m = str((args or {}).get("method") or "GET").upper()
+        if m in ("GET", "HEAD", "OPTIONS"):
+            return {"hold": False, "why": "reads from a web API"}
+        return {"hold": True, "why": f"sends a {m} to a web API"}
     reason = EXTERNAL.get(tool)
     if not reason:
         return {"hold": False, "why": "reads or works locally"}
@@ -105,6 +110,18 @@ def summarise(tool: str, args: dict) -> str:
         return f"{a.get('url', '(no url)')} — {len(a)} field(s)"
     if tool == "delete_file":
         return str(a.get("path", ""))[:200]
+    if tool == "http_request":
+        from urllib.parse import urlparse as _up
+        try:
+            from . import vault as _v
+            uses = _v.names_in(a)
+        except Exception:
+            uses = []
+        body = a.get("json") if a.get("json") is not None else a.get("body") or ""
+        size = len(json.dumps(body) if not isinstance(body, str) else body)
+        u = _up(str(a.get("url", "")))
+        return (f"{str(a.get('method', 'GET')).upper()} {u.hostname or ''}{u.path[:60]} · {size} bytes"
+                + (f" · uses {', '.join('vault:' + n for n in uses)}" if uses else ""))
     if tool == "browser_submit":
         try:
             from . import browser
