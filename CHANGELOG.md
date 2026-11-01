@@ -5813,3 +5813,51 @@ Also, in every theme:
 - **The skin can't break anything.** It's on every page now, so the lattice
   never throws an error into a click, key or observer. A page that can't
   draw it just goes without.
+
+### 172. It keeps working with the window closed, tells you when it needs you, and works toward goals
+
+Agent Jo's unattended work had three gaps: it stopped when you closed the
+window, it waited silently when it needed you, and it only ever ran
+instructions, never toward an outcome.
+
+**Background service.** `python tools/service.py install` (or Settings → Run
+in the background) installs a systemd user unit, a launchd agent or a Task
+Scheduler task. It starts at log-in, restarts if it stops, runs as you and
+needs no administrator. Two copies must never both fire the same schedule, so
+the scheduler now takes a lock in the data folder. One process runs the
+schedules; any other copy serves its UI and leaves them alone. The lock is
+checked every 15 seconds, so if the holder stops, an open window takes over.
+The launcher opens a copy that's already running instead of starting a
+second one.
+
+**Phone notifications.** ntfy (one-way push) and a Telegram bot (two-way). A
+held call arrives in Telegram with Approve / Refuse buttons. `/status`,
+`/pause` and `/resume` work from the chat. Only the chat id you configured is
+obeyed, and the listener runs only in the process that holds the schedule
+lock, so a tap is acted on once. It tells you about held calls, failed
+schedules, tripped breakers, blocked steps and goal outcomes, and each can be
+switched off. Only the one-line summary leaves the machine. Tokens are
+encrypted at rest. Repeats are folded together, and there's an hourly
+ceiling.
+
+**Goals.** Tasks & Scheduler → Goals, or ask in chat ("make it a goal to…").
+A goal has an objective, checkable success criteria, an optional deadline and
+an optional budget of its own. A managed "Pursue goals" schedule works on each
+one up to N times a day. Each run gets 40 tool calls and 20 minutes, not a
+chat turn's 15 and 5, and ends by writing a checkpoint with `update_goal`. The
+next run starts from that checkpoint. A run cut off by a limit writes one
+automatically, so long work is handed on instead of lost. The fence: claiming
+'achieved' needs evidence, 'blocked' needs what you must do, three runs with
+no progress stop the goal as 'stalled', and the deadline and budget are
+checked before every run. Each of these stops tells you.
+
+**Scheduled runs are now costed.** A plain scheduled prompt never recorded
+its token use, so the monthly ceiling couldn't see autonomous spending. It
+does now, under "autonomy". Goal runs are charged under "goals" and to the
+goal's own budget.
+
+**Fixed:** two handlers were registered at `GET /api/phone`, so the phone
+install modal read the companion's status instead of its own steps. The
+install steps now live at `/api/phone/setup`.
+
+1,480 checks (60 new), all passing.

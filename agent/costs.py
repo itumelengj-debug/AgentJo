@@ -33,7 +33,7 @@ _current_feature = contextvars.ContextVar("agentjo_cost_feature",
 
 # features that can be pinned to their own engine
 KNOWN_FEATURES = ["chat", "trends", "crew", "jobs", "pipelines", "watchers",
-                  "selfimprove", "subagents", "autonomy", "summaries"]
+                  "selfimprove", "subagents", "autonomy", "summaries", "goals"]
 
 
 def _path() -> Path:

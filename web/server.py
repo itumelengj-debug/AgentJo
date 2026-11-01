@@ -809,6 +809,81 @@ def notify_find_chat(body: NotifyChatBody):
     return _nt.find_chat(body.token.strip())
 
 
+class GoalBody(BaseModel):
+    title: str
+    objective: str
+    success: str
+    deadline: str = ""
+    budget_usd: float = 0.0
+    runs_per_day: int = 4
+    full_access: bool = False
+    engine: str = "Auto"
+
+
+class GoalStatusBody(BaseModel):
+    status: str
+    why: str = ""
+
+
+@app.get("/api/goals")
+def goals_list():
+    from agent import goals as _goals
+    return {"goals": _goals.list_goals("all")[::-1],
+            "limits": {"rounds": _goals.GOAL_MAX_ROUNDS, "seconds": _goals.GOAL_TIME_LIMIT,
+                       "stall_limit": _goals.STALL_LIMIT}}
+
+
+@app.post("/api/goals")
+def goals_create(body: GoalBody):
+    from agent import goals as _goals
+    try:
+        g = _goals.create(body.title, body.objective, body.success, deadline=body.deadline,
+                          budget_usd=body.budget_usd, runs_per_day=body.runs_per_day,
+                          full_access=body.full_access, engine=body.engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _goals.ensure_schedule(memory)
+    _start_scheduler()
+    return g
+
+
+@app.post("/api/goals/{goal_id}/status")
+def goals_status(goal_id: int, body: GoalStatusBody):
+    """Pause, resume (active), or give up on a goal by hand."""
+    from agent import goals as _goals
+    if body.status not in ("active", "paused", "abandoned"):
+        raise HTTPException(status_code=400, detail="status: active, paused or abandoned")
+    g = _goals.set_status(goal_id, body.status, body.why or f"set to {body.status} by you")
+    if not g:
+        raise HTTPException(status_code=404, detail="no such goal")
+    if body.status == "active":
+        _goals.ensure_schedule(memory)
+        _start_scheduler()
+    return g
+
+
+@app.post("/api/goals/{goal_id}/run")
+def goals_run_now(goal_id: int):
+    """Run one goal now, outside its cadence (in the background)."""
+    from agent import goals as _goals
+    g = _goals.get(goal_id)
+    if not g or g["status"] != "active":
+        raise HTTPException(status_code=400, detail="only an active goal can run")
+    sid = _goals.ensure_schedule(memory)
+    sch = memory.get_schedule(sid) if sid else None
+    if not sch:
+        raise HTTPException(status_code=500, detail="couldn't make the goals schedule")
+    _goals._mutate(goal_id, lambda x: x.update(last_run=0.0))
+    threading.Thread(target=_run_schedule, args=(sch,), daemon=True).start()
+    return {"ok": True, "note": "Running now; the checkpoint shows here when it's done."}
+
+
+@app.delete("/api/goals/{goal_id}")
+def goals_delete(goal_id: int):
+    from agent import goals as _goals
+    return {"ok": _goals.delete(goal_id)}
+
+
 class ServiceBody(BaseModel):
     install: bool = True
     port: int = 8765
@@ -3201,7 +3276,7 @@ def _run_schedule(sch: dict) -> None:
         if not _ballowed:
             status, summary = "skipped", _bwhy
             return
-        if action in ("autopilot", "watch", "autoresume") and _budget_blocks_autonomy():
+        if action in ("autopilot", "watch", "autoresume", "goals") and _budget_blocks_autonomy():
             status, summary = "skipped", (
                 f"budget reached (${config.BUDGET_USD:.2f}) — autonomous action held")
             return
@@ -3371,6 +3446,45 @@ def _run_schedule(sch: dict) -> None:
                                          f"{s['skipped']} unchanged")
             return
 
+        if action == "goals":
+            from agent import goals as _goals
+            brain = get_brain()
+
+            def _goal_runner(goal, prompt):
+                ginfo: dict = {"feature": "goals"}
+                gsess = f"goal-{goal['id']}-{int(time.time())}"
+                try:
+                    memory.log_message(gsess, "user", prompt)
+                except Exception:
+                    pass
+                rep = main.run_turn(
+                    brain, memory, [], prompt,
+                    auto_approve=bool(goal.get("full_access")), session_id=gsess,
+                    force_model=_force_model(goal.get("engine") or sch["engine"]),
+                    turn_info=ginfo, max_rounds=_goals.GOAL_MAX_ROUNDS,
+                    time_limit=_goals.GOAL_TIME_LIMIT)
+                if rep:
+                    try:
+                        memory.log_message(gsess, "assistant", rep)
+                    except Exception:
+                        pass
+                _accumulate_cost(ginfo)
+                return rep, ginfo
+
+            def _goal_cost(ginfo):
+                by = ginfo.get("by_engine") or {}
+                if by:
+                    return sum(_cost_of(lbl or "claude", u or {}) for lbl, u in by.items())
+                return _cost_of(ginfo.get("engine") or "claude", ginfo.get("usage") or {})
+
+            rep = _goals.sweep(_goal_runner, memory, _goal_cost)
+            summary = (f"goals: {rep['ran']} run(s), {rep['progressed']} progressed"
+                       if rep["results"] else "goals: nothing due")
+            bad = [r for r in rep["results"] if r.get("error")]
+            if bad and len(bad) == rep["ran"]:
+                status, summary = "error", f"goals: {bad[0]['error']}"[:300]
+            return
+
         if action == "autoresume":
             ar_cfg = autoresume.load_config()
             brain = get_brain()
@@ -3405,10 +3519,15 @@ def _run_schedule(sch: dict) -> None:
                                f"[scheduled: {sch['name']}] {sch['prompt']}")
         except Exception:
             pass
+        info["feature"] = "autonomy"
         reply = main.run_turn(
             brain, memory, [], sch["prompt"],
             auto_approve=bool(sch["full_access"]), session_id=sess_id,
             force_model=_force_model(sch["engine"]), turn_info=info)
+        try:
+            _accumulate_cost(info)        # the monthly ceiling must see it
+        except Exception:
+            pass
         summary = " ".join((reply or "").split())[:300] or "(no output)"
         if reply:
             try:

@@ -192,6 +192,57 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "create_goal",
+        "description": (
+            "Set a long-running GOAL the user wants worked on unattended over days "
+            "(e.g. 'land 5 interviews by 30 Nov'). Only when the user asks for an "
+            "ongoing outcome, not a one-off request. It is then pursued on a "
+            "schedule, each run resuming from the last checkpoint."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "objective": {"type": "string", "description": "what the user wants, in their words"},
+                "success": {"type": "string", "description": "how to know it is done — checkable criteria"},
+                "deadline": {"type": "string", "description": "YYYY-MM-DD, optional"},
+                "budget_usd": {"type": "number", "description": "spending ceiling for this goal; 0 = none"},
+                "runs_per_day": {"type": "integer", "description": "default 4"},
+            },
+            "required": ["title", "objective", "success"],
+        },
+    },
+    {
+        "name": "update_goal",
+        "description": (
+            "Record progress on a goal you are pursuing. Call it before ending every "
+            "goal run. 'progressing' saves a checkpoint (what was done, what is next) "
+            "that the next run starts from. 'achieved' requires evidence against the "
+            "success criteria. 'blocked' requires exactly what the user must do."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "integer"},
+                "status": {"type": "string",
+                           "enum": ["progressing", "achieved", "blocked", "abandoned"]},
+                "note": {"type": "string", "description": "done so far, and next step"},
+                "evidence": {"type": "string", "description": "for 'achieved'"},
+                "needs": {"type": "string", "description": "for 'blocked'"},
+                "task_id": {"type": "integer", "description": "link a task plan to this goal"},
+            },
+            "required": ["goal_id", "status", "note"],
+        },
+    },
+    {
+        "name": "list_goals",
+        "description": "List goals with status, budget, and the last checkpoint.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"status": {"type": "string",
+                                      "enum": ["active", "achieved", "blocked", "stalled",
+                                               "paused", "all"]}},
+        },
+    },
+    {
         "name": "run_subagent",
         "description": (
             "Delegate a focused, self-contained sub-task to an isolated worker "
@@ -1539,6 +1590,31 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                 pass
             console.print(f"[dim]task #{task_id} {status}[/dim]")
             return f"Task #{task_id} marked {status}."
+
+        if name in ("create_goal", "update_goal", "list_goals"):
+            from . import goals as _goals
+            if name == "list_goals":
+                gs = _goals.list_goals(tool_input.get("status", "all"))
+                return "\n".join(_goals.summary_line(g) for g in gs) or "No goals yet."
+            if name == "update_goal":
+                return _goals.record_update(
+                    int(tool_input["goal_id"]), str(tool_input.get("status", "")),
+                    str(tool_input.get("note", "")),
+                    evidence=str(tool_input.get("evidence", "") or ""),
+                    needs=str(tool_input.get("needs", "") or ""),
+                    task_id=tool_input.get("task_id"))
+            try:
+                g = _goals.create(
+                    tool_input.get("title", ""), tool_input.get("objective", ""),
+                    tool_input.get("success", ""), deadline=tool_input.get("deadline", "") or "",
+                    budget_usd=float(tool_input.get("budget_usd") or 0),
+                    runs_per_day=int(tool_input.get("runs_per_day") or 4))
+            except ValueError as exc:
+                return f"Refused: {exc}."
+            _goals.ensure_schedule(memory)
+            return (f"Goal #{g['id']} set: {g['title']}. It will be worked on up to "
+                    f"{g['runs_per_day']}x a day by the 'Pursue goals' schedule; see the "
+                    f"Goals list in Tasks. Tell the user it's set and how to pause it.")
 
         if name == "list_tasks":
             tasks = memory.list_tasks(tool_input.get("status", "all"), limit=10)

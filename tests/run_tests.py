@@ -9357,6 +9357,9 @@ def main() -> None:
     # --- notifications: ntfy push, Telegram approve / refuse --------------- #
     _notify_checks()
 
+    # --- goals: outcomes over days, checkpoints, budgets, stalls ----------- #
+    _goals_checks()
+
     print(f"\n{len(PASS)} checks passed OK")
 
 
@@ -10659,6 +10662,115 @@ def _notify_checks() -> None:
         _nc.AGENT_HOME, NT.POSTER, NT.SYNC, _m, TL._execute_tool_impl = saved
         PH._CTX["memory"] = _m
         NT._RECENT.clear(); NT._SENT.clear()
+
+# ---------------------------------------------------------------------- #
+# Goals: outcomes over days, with checkpoints, budgets and a stall fence.
+#   python tests/run_tests.py -k goals
+# ---------------------------------------------------------------------- #
+def _goals_checks() -> None:
+    import tempfile as _gt
+    import time as _gtime
+    from agent import config as _gc, goals as GL, notify as NT, tools as TL
+
+    told = []
+    saved = (_gc.AGENT_HOME, NT.goal_event)
+    _gc.AGENT_HOME = Path(_gt.mkdtemp(prefix="goals-"))
+    NT.goal_event = lambda g, what, detail="": told.append(what) or {"ok": True}
+    try:
+        try:
+            GL.create("x", "y", "")
+            check("goals.need_success_criteria", False)
+        except ValueError:
+            check("goals.need_success_criteria", True)
+        g = GL.create("Five interviews", "Get five first-round interviews",
+                      "Five interview invitations in the inbox", budget_usd=1.0, runs_per_day=4)
+        check("goals.created_active", g["status"] == "active" and g["id"] == 1)
+        p = GL.build_prompt(g)
+        check("goals.first_run_is_told_to_plan", "create_task_plan" in p and "update_goal" in p)
+
+        # a run that checkpoints is progress, and the checkpoint feeds the next prompt
+        def good_runner(goal, prompt):
+            TL._execute_tool_impl("update_goal", {"goal_id": goal["id"], "status": "progressing",
+                                                  "note": "Applied to 3 roles; next: follow up"},
+                                  None, None)
+            return "ok", {"usage": {"in": 1000, "out": 100}, "stop_reason": ""}
+        now = _gtime.time()
+        r = GL.sweep(good_runner, cost_fn=lambda i: 0.25, now=now)
+        g = GL.get(1)
+        check("goals.a_checkpoint_counts_as_progress",
+              r["ran"] == 1 and r["progressed"] == 1 and g["stalls"] == 0, r)
+        check("goals.spend_is_charged_to_the_goal", abs(g["spent_usd"] - 0.25) < 1e-9)
+        check("goals.next_run_resumes_from_the_checkpoint",
+              "Applied to 3 roles; next: follow up" in GL.build_prompt(g))
+        check("goals.not_due_again_straight_away", not GL.is_due(g, now + 60))
+        check("goals.due_after_its_gap", GL.is_due(g, now + 6 * 3600 + 1))
+
+        # a run cut off by the limit is handed on, not lost
+        def cut_runner(goal, prompt):
+            return "was halfway through the spreadsheet", {"stop_reason": "round_limit"}
+        GL.run_one(GL.get(1), cut_runner, cost_fn=lambda i: 0.0, now=now + 7 * 3600)
+        g = GL.get(1)
+        check("goals.a_cut_off_run_leaves_an_automatic_checkpoint",
+              "halfway through the spreadsheet" in g["notes"][-1]["text"]
+              and g["notes"][-1]["kind"] == "checkpoint")
+        check("goals.but_it_still_counts_as_a_stall", g["stalls"] == 1)
+
+        # three runs with no progress stop it, and tell you
+        def idle_runner(goal, prompt):
+            return "", {}
+        for k in range(2):
+            GL.run_one(GL.get(1), idle_runner, now=now + (8 + k) * 3600)
+        g = GL.get(1)
+        check("goals.three_stalls_stop_it", g["status"] == "stalled" and "stalled" in told, (g["status"], told))
+        GL.set_status(1, "active")
+        check("goals.resuming_clears_the_stall_count", GL.get(1)["stalls"] == 0)
+
+        # budget
+        GL.run_one(GL.get(1), good_runner, cost_fn=lambda i: 0.80, now=now + 12 * 3600)
+        check("goals.out_of_budget_stops_it", GL.get(1)["status"] == "budget" and "out of budget" in told)
+        GL.set_status(1, "active")
+        r = GL.run_one(GL.get(1), good_runner, now=now + 13 * 3600)
+        check("goals.a_spent_budget_is_checked_before_running", r["ran"] is False and r["status"] == "budget")
+
+        # deadline: an expired goal stops even when it isn't due
+        g2 = GL.create("Ship it", "Release v2", "Tag pushed", deadline="2020-01-01")
+        GL.sweep(good_runner, now=now)
+        check("goals.past_its_deadline_it_stops", GL.get(g2["id"])["status"] == "expired")
+
+        # the update_goal tool's own fences
+        g3 = GL.create("Docs", "Write the guide", "Guide merged")
+        out = TL._execute_tool_impl("update_goal", {"goal_id": g3["id"], "status": "achieved",
+                                                    "note": "done"}, None, None)
+        check("goals.achieved_needs_evidence", out.startswith("Refused") and GL.get(g3["id"])["status"] == "active", out)
+        out = TL._execute_tool_impl("update_goal", {"goal_id": g3["id"], "status": "blocked",
+                                                    "note": "stuck"}, None, None)
+        check("goals.blocked_needs_what_you_must_do", out.startswith("Refused"), out)
+        out = TL._execute_tool_impl("update_goal", {"goal_id": g3["id"], "status": "blocked",
+                                                    "note": "stuck", "needs": "log in to GitHub"}, None, None)
+        check("goals.blocked_tells_you", GL.get(g3["id"])["status"] == "blocked" and "blocked" in told)
+        g4 = GL.create("Tidy", "Clean the drive", "Under 50% used")
+        out = TL._execute_tool_impl("update_goal", {"goal_id": g4["id"], "status": "achieved",
+                                                    "note": "done", "evidence": "df shows 41% used on C:, checked just now"},
+                                    None, None)
+        check("goals.achieved_with_evidence", GL.get(g4["id"])["status"] == "achieved" and "achieved" in told, out)
+        out = TL._execute_tool_impl("update_goal", {"goal_id": g4["id"], "status": "progressing",
+                                                    "note": "more"}, None, None)
+        check("goals.a_finished_goal_takes_no_more_updates", out.startswith("Refused"), out)
+        lst = TL._execute_tool_impl("list_goals", {}, None, None)
+        check("goals.list_goals_tool", "#1 Five interviews" in lst and "Tidy" in lst, lst)
+        names = [t["name"] for t in TL.TOOL_DEFINITIONS]
+        check("goals.tools_are_offered", {"create_goal", "update_goal", "list_goals"} <= set(names))
+
+        # the run gets a goal-sized budget, not a chat turn's
+        import inspect as _gi
+        from agent import main as _gm
+        sig = _gi.signature(_gm.run_turn).parameters
+        check("goals.run_turn_takes_a_bigger_budget", "max_rounds" in sig and "time_limit" in sig)
+        src = (Path(__file__).resolve().parents[1] / "web" / "server.py").read_text("utf-8")
+        check("goals.the_schedule_passes_it",
+              "max_rounds=_goals.GOAL_MAX_ROUNDS" in src and "time_limit=_goals.GOAL_TIME_LIMIT" in src)
+    finally:
+        _gc.AGENT_HOME, NT.goal_event = saved
 
 # ---------------------------------------------------------------------- #
 # Running it in sections.

@@ -5545,7 +5545,7 @@ async function loadModelPickers() {
   // notifications: ntfy push and a Telegram bot with Approve / Refuse buttons
   const ntRow = el("div", "set-row");
   const ntInfo = el("div", "set-info");
-  const ntNm = el("div", "set-name"); ntNm.textContent = "Notifications";
+  const ntNm = el("div", "set-name"); ntNm.textContent = "Phone notifications";
   const ntDs = el("div", "set-desc");
   ntDs.textContent = "Hear about it when something needs you: a held email, a failed schedule, a blocked task. ntfy pushes to the free ntfy app. A Telegram bot also lets you approve or refuse from the message, from anywhere. Only a one-line summary leaves the machine.";
   ntInfo.append(ntNm, ntDs);
@@ -6309,8 +6309,10 @@ function closeSched() { const m = $("#schedModal"); m.hidden = true; m.style.dis
 function switchSchedTab(tab) {
   $("#schedTabSchedules").classList.toggle("active", tab === "schedules");
   $("#schedTabTasks").classList.toggle("active", tab === "tasks");
+  $("#schedTabGoals").classList.toggle("active", tab === "goals");
   $("#schedPaneSchedules").hidden = tab !== "schedules";
   $("#schedPaneTasks").hidden = tab !== "tasks";
+  $("#schedPaneGoals").hidden = tab !== "goals";
 }
 function populateSchedEngines() {
   const sel = $("#schEngine"); sel.innerHTML = "";
@@ -6431,6 +6433,66 @@ async function runSchedule(id, name) {
 async function deleteSchedule(id) {
   try { renderSchedules((await fetch(`/api/schedules/${id}`, { method: "DELETE" }).then(r => r.json())).schedules || []); }
   catch (e) { setSchedStatus("Could not delete.", "err"); }
+}
+async function loadGoals() {
+  let d = {};
+  try { d = await fetch("/api/goals").then(r => r.json()); } catch (e) { return; }
+  const list = $("#goalList"); list.innerHTML = "";
+  const goals = d.goals || [];
+  if (!goals.length) {
+    const e = el("div", "out-empty"); e.textContent = "No goals yet. Set one above, or ask in chat: \u201cmake it a goal to\u2026\u201d.";
+    list.appendChild(e); return;
+  }
+  goals.forEach((g) => {
+    const row = el("div", "mem-item");
+    const head = el("div", "mem-text");
+    const t = el("strong"); t.textContent = `#${g.id} ${g.title}`;
+    const meta = el("div", "log-meta");
+    const bits = [g.status, `${(g.runs || []).length} run(s)`];
+    if (g.deadline) bits.push("due " + g.deadline);
+    if (g.budget_usd) bits.push(`$${(g.spent_usd || 0).toFixed(2)} of $${g.budget_usd.toFixed(2)}`);
+    meta.textContent = bits.join(" \u00b7 ");
+    head.append(t, meta);
+    const last = [...(g.notes || [])].reverse().find((n) => n.kind !== "active");
+    if (last) { const n = el("div", "log-meta"); n.textContent = `${last.at} [${last.kind}] ${last.text}`.slice(0, 400); head.appendChild(n); }
+    const acts = el("div"); acts.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px";
+    const btn = (label, fn) => { const b = el("button"); b.className = "btn btn-mini"; b.textContent = label; b.addEventListener("click", () => fn()); acts.appendChild(b); };
+    const setSt = (st) => async () => {
+      await fetch(`/api/goals/${g.id}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: st }) });
+      loadGoals();
+    };
+    if (g.status === "active") {
+      btn("Run now", async () => {
+        const r = await fetch(`/api/goals/${g.id}/run`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+        $("#glStatus").textContent = r.note || errText(r, "");
+      });
+      btn("Pause", setSt("paused"));
+    } else if (!["achieved", "abandoned"].includes(g.status)) {
+      btn("Resume", setSt("active"));
+    }
+    if (g.status !== "abandoned" && g.status !== "achieved") btn("Give up", setSt("abandoned"));
+    btn("Delete", async () => {
+      if (!confirm(`Delete goal #${g.id} and its history?`)) return;
+      await fetch(`/api/goals/${g.id}`, { method: "DELETE" }); loadGoals();
+    });
+    head.appendChild(acts);
+    row.appendChild(head);
+    list.appendChild(row);
+  });
+}
+async function createGoal() {
+  const body = {
+    title: $("#glTitle").value.trim(), objective: $("#glObjective").value.trim(),
+    success: $("#glSuccess").value.trim(), deadline: $("#glDeadline").value || "",
+    budget_usd: parseFloat($("#glBudget").value) || 0, runs_per_day: parseInt($("#glRuns").value, 10) || 4,
+    full_access: $("#glFull").checked,
+  };
+  const r = await fetch("/api/goals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#glStatus").textContent = errText(d, "Couldn't set it."); return; }
+  $("#glStatus").textContent = `Goal #${d.id} set. The first run starts within the hour.`;
+  ["#glTitle", "#glObjective", "#glSuccess", "#glDeadline", "#glBudget", "#glRuns"].forEach((s) => { $(s).value = ""; });
+  loadGoals();
 }
 async function loadTasks() {
   try { renderTasks((await fetch("/api/tasks").then(r => r.json())).tasks || []); }
@@ -7384,6 +7446,8 @@ $("#projectFilter").addEventListener("change", async (e) => {
   $("#schedModal").addEventListener("click", (e) => { if (e.target === $("#schedModal")) closeSched(); });
   $("#schedTabSchedules").addEventListener("click", () => switchSchedTab("schedules"));
   $("#schedTabTasks").addEventListener("click", () => { switchSchedTab("tasks"); loadTasks(); });
+  $("#schedTabGoals").addEventListener("click", () => { switchSchedTab("goals"); loadGoals(); });
+  $("#glCreateBtn").addEventListener("click", createGoal);
   $("#arSaveBtn").addEventListener("click", saveAutoResume);
   $("#arPreviewBtn").addEventListener("click", previewAutoResume);
   $("#arRunBtn").addEventListener("click", runAutoResume);
