@@ -6034,3 +6034,39 @@ in the value only where that is allowed:
 1,595 checks (20 new), all passing. That includes a real sign-in through the
 browser: the held submission showed the placeholder, and the approved
 replay sent the real password.
+
+### 178. The crew in parallel, checks on the Goals form, and no new import cycles
+
+**`crew_parallel`.** Dispatch and chains ran one specialist at a time. A
+goal with independent parts waited for each in turn. `crew.run_parallel`
+works as follows:
+
+- It runs up to 5 jobs, 3 at once.
+- Each job runs as its own member, in its own workspace, under its own
+  `crew-…` session. That makes it unattended, so the sandbox applies.
+- Two jobs for the same member are refused, because they'd share a
+  workspace. A member left blank is routed as before.
+- A job that throws doesn't sink the others.
+- With `goal_id`, every report is added to the goal's history, and the goal
+  prompt mentions the tool.
+- Crew members can't start crews of their own; they get the sub-agent tool
+  set.
+
+**Goals form.** It takes checks in plain lines: `file <path> [contains
+<text>]`, `url <url> [contains <text>]`, `command <cmd>`. A line it can't
+read is refused with the reason.
+
+**Import cycles.** The modules added since #172 had widened the codebase's
+one known import cycle (health/selfimprove/tools) to ten modules, through
+function-level imports. They're untangled again:
+
+- The read-only command classifier moved to `agent/cmdsafe.py` (re-exported
+  from `tools`).
+- Telegram's buttons reach the phone companion through actions it registers
+  with `notify`, instead of `notify` importing `phone`.
+- The held-form summary lives in `intercepts`.
+- The crew reports to goals through a callback.
+
+A new check fails if any cycle beyond the old one appears.
+
+1,609 checks (14 new), all passing.

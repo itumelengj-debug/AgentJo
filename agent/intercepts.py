@@ -123,11 +123,7 @@ def summarise(tool: str, args: dict) -> str:
         return (f"{str(a.get('method', 'GET')).upper()} {u.hostname or ''}{u.path[:60]} · {size} bytes"
                 + (f" · uses {', '.join('vault:' + n for n in uses)}" if uses else ""))
     if tool == "browser_submit":
-        try:
-            from . import browser
-            return browser.submission_summary(a)
-        except Exception:
-            return f"{a.get('url', '')} · press {a.get('button_label', '')}"
+        return browser_submit_summary(a)
     if tool == "http_post":
         return f"{a.get('url', '')} · {len(json.dumps(a.get('json', {})))} bytes"
     return json.dumps(a, default=str)[:280]
@@ -214,3 +210,18 @@ def _audit(name: str, summary_text: str) -> None:
         audit.record("intercept", name=name, summary=summary_text[:200])
     except Exception:
         pass
+
+
+def browser_submit_summary(args: dict) -> str:
+    """on site/path · press “Button” · n field(s): Label = “value”, …"""
+    from urllib.parse import urlparse
+    fields = args.get("fields") or []
+    shown = []
+    for f in fields[:6]:
+        v = str(f.get("value", ""))
+        shown.append(f"{f.get('label') or 'field'} = " + (f"“{v[:40]}”" if len(v) <= 60 else f"({len(v):,} chars)"))
+    more = f", +{len(fields) - 6} more" if len(fields) > 6 else ""
+    host = (urlparse(args.get("url", "")).hostname or "").lower()
+    path = urlparse(args.get("url", "")).path[:40]
+    return (f"on {host}{path} · press “{str(args.get('button_label') or 'button')[:50]}” · "
+            f"{len(fields)} field(s)" + (": " + ", ".join(shown) + more if shown else ""))

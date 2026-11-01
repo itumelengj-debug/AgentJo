@@ -364,6 +364,23 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "crew_parallel",
+        "description": (
+            "Run several crew specialists AT THE SAME TIME, each on an independent piece "
+            "of the work (up to 5 jobs, 3 at once). Each job: {member, task}; leave member "
+            "blank to route it. Use when parts don't depend on each other — research, "
+            "drafting, checking numbers. Pass goal_id to add every report to that goal's "
+            "history. One member per job (two jobs for one member would share a workspace)."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "jobs": {"type": "array", "items": {"type": "object"}},
+                "goal_id": {"type": "integer"},
+            },
+            "required": ["jobs"],
+        },
+    },
+    {
         "name": "crew_dispatch",
         "description": (
             "Hand a task to the right specialist agent on the Symbolic "
@@ -890,38 +907,9 @@ TOOL_DEFINITIONS = [
 # The classifier is deliberately conservative: any shell metacharacter
 # (pipes, redirects, substitution, chaining) falls back to asking.
 
-_SAFE_BINS = {
-    "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "whoami",
-    "date", "stat", "file", "du", "df", "uname", "ps", "tree", "sort", "uniq",
-    "diff", "realpath", "basename", "dirname", "md5sum", "sha256sum",
-    "hostname", "id", "uptime", "nproc", "free",
-}
-_SAFE_GIT = {"status", "log", "diff", "show", "rev-parse", "ls-files",
-             "blame", "shortlog", "describe"}
-_FIND_UNSAFE = {"-exec", "-execdir", "-ok", "-okdir", "-delete",
-                "-fprint", "-fprintf", "-fls"}
-_SUBCOMMAND_BINS = {"git", "npm", "pip", "pip3", "cargo", "docker", "kubectl",
-                    "poetry", "uv", "apt", "brew", "conda", "yarn", "pnpm", "gh"}
-
-
-def is_read_only_command(command: str) -> bool:
-    """Best-effort: True only when the command is provably read-only."""
-    if not command or len(command) > 500:
-        return False
-    if any(ch in command for ch in ";&|><`$(){}\n"):
-        return False
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
-    if not tokens or "=" in tokens[0]:
-        return False
-    head = Path(tokens[0]).name.lower()
-    if head == "git":
-        return len(tokens) > 1 and tokens[1] in _SAFE_GIT
-    if head == "find":
-        return not any(t in _FIND_UNSAFE for t in tokens)
-    return head in _SAFE_BINS
+# the read-only classifier lives in agent/cmdsafe.py (re-exported here)
+from .cmdsafe import (_FIND_UNSAFE, _SAFE_BINS, _SAFE_GIT, _SUBCOMMAND_BINS,  # noqa: E402,F401
+                      is_read_only_command)
 
 
 def command_rule_hint(command: str) -> str:
@@ -1170,6 +1158,32 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                        if tool_input.get("input") else
                        "If the skill needs specific input, ask for that one "
                        "thing."))
+
+        if name == "crew_parallel":
+            from . import crew as _crewp
+            _jobs = tool_input.get("jobs") or []
+            console.print(f"[dim]  \u2ae1 crew in parallel \u2014 {len(_jobs)} job(s)\u2026[/dim]")
+            _gid = tool_input.get("goal_id")
+            _on_report = None
+            if _gid:
+                from . import goals as _goalsp
+
+                def _on_report(r, _g=int(_gid)):
+                    _goalsp.note(_g, "crew",
+                                 f"{r['member']} ({'ok' if r.get('ok') else 'failed'}): "
+                                 f"{r['task'][:120]} → {str(r.get('report') or r.get('error'))[:700]}")
+            _pr = _crewp.run_parallel(_jobs, brain, memory, console, session_id=session_id,
+                                      on_report=_on_report)
+            if "results" not in _pr:
+                return "Refused: " + _pr.get("error", "couldn't start the crew.")
+            _lines = [f"{len(_pr['results'])} specialist(s) ran in parallel in {_pr['seconds']}s:"]
+            for _r in _pr["results"]:
+                _lines.append(f"\n## {_r['member']} — {'ok' if _r.get('ok') else 'FAILED'}"
+                              f" ({_r.get('seconds', '?')}s){' (routed)' if _r.get('routed') else ''}\n"
+                              f"Task: {_r['task'][:200]}\n{str(_r.get('report') or _r.get('error'))[:3000]}")
+            if tool_input.get("goal_id"):
+                _lines.append(f"\n(Reports added to goal #{tool_input['goal_id']}'s history.)")
+            return "\n".join(_lines)
 
         if name == "crew_chain":
             from . import crew as _crewc

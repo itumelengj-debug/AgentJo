@@ -6707,8 +6707,26 @@ async function createTrigger() {
     : "";
   loadTriggers(note);
 }
+function parseGoalChecks(text) {
+  // one per line: file <path> [contains <text>] | url <url> [contains <text>] | command <cmd>
+  const out = [];
+  for (const raw of (text || "").split("\n")) {
+    const line = raw.trim(); if (!line) continue;
+    const m = line.match(/^(file|url|command)\s+(.+)$/i);
+    if (!m) throw new Error(`Can't read the check \u201c${line}\u201d. Start it with file, url or command.`);
+    const kind = m[1].toLowerCase(); let rest = m[2].trim();
+    if (kind === "command") { out.push({ type: "command", command: rest }); continue; }
+    const c = rest.match(/^(.+?)\s+contains\s+(.+)$/i);
+    if (kind === "file") out.push(c ? { type: "file_contains", path: c[1].trim(), text: c[2].trim() } : { type: "file_exists", path: rest });
+    else out.push(c ? { type: "url", url: c[1].trim(), contains: c[2].trim() } : { type: "url", url: rest });
+  }
+  return out;
+}
 async function createGoal() {
+  let checks = [];
+  try { checks = parseGoalChecks($("#glChecks").value); } catch (e) { $("#glStatus").textContent = e.message; return; }
   const body = {
+    checks,
     title: $("#glTitle").value.trim(), objective: $("#glObjective").value.trim(),
     success: $("#glSuccess").value.trim(), deadline: $("#glDeadline").value || "",
     budget_usd: parseFloat($("#glBudget").value) || 0, runs_per_day: parseInt($("#glRuns").value, 10) || 4,
@@ -6718,7 +6736,7 @@ async function createGoal() {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { $("#glStatus").textContent = errText(d, "Couldn't set it."); return; }
   $("#glStatus").textContent = `Goal #${d.id} set. The first run starts within the hour.`;
-  ["#glTitle", "#glObjective", "#glSuccess", "#glDeadline", "#glBudget", "#glRuns"].forEach((s) => { $(s).value = ""; });
+  ["#glTitle", "#glObjective", "#glSuccess", "#glChecks", "#glDeadline", "#glBudget", "#glRuns"].forEach((s) => { $(s).value = ""; });
   loadGoals();
 }
 async function loadTasks() {

@@ -313,16 +313,10 @@ def render(snap: dict, note: str = "") -> str:
 # The held submission
 # --------------------------------------------------------------------------- #
 def submission_summary(args: dict) -> str:
-    fields = args.get("fields") or []
-    shown = []
-    for f in fields[:6]:
-        v = str(f.get("value", ""))
-        shown.append(f"{f.get('label') or 'field'} = " + (f"“{v[:40]}”" if len(v) <= 60 else f"({len(v):,} chars)"))
-    more = f", +{len(fields) - 6} more" if len(fields) > 6 else ""
-    host = host_of(args.get("url", ""))
-    path = urlparse(args.get("url", "")).path[:40]
-    return (f"on {host}{path} · press “{str(args.get('button_label') or 'button')[:50]}” · "
-            f"{len(fields)} field(s)" + (": " + ", ".join(shown) + more if shown else ""))
+    """The approval queue's line for a held submission (lives in intercepts,
+    which owns every held item's summary)."""
+    from .intercepts import browser_submit_summary
+    return browser_submit_summary(args)
 
 
 def _replay(w: _Worker, sid: str, args: dict) -> str:
