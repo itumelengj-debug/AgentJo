@@ -154,6 +154,28 @@ reaches the agent as untrusted data. Triggers run in safe mode unless you
 allow more, each has an hourly ceiling, and anything leaving the machine
 still waits for your OK.
 
+## Its own browser
+
+For pages behind a login, built by scripts, or that are forms, Agent Jo
+drives a real Chromium with a profile of its own:
+
+```
+pip install -r requirements-browser.txt
+python -m playwright install chromium
+```
+
+It reads a page as text plus a numbered list of what can be clicked or filled.
+Following links and filling fields run straight away. **Pressing a button that
+sends a form is held for your OK**, showing the site, the button and every
+field it filled. Approving replays exactly that: it reopens the page, refills
+those fields and presses that button. If the button has changed, nothing is
+pressed. Sites listed under **Settings → Browser → act freely on** skip the
+hold.
+
+It never types passwords. Use **Settings → Browser → Sign in to a site** to
+open a window on its profile and sign in yourself once; it stays signed in.
+Page text reaches the agent marked as untrusted.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

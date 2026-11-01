@@ -192,6 +192,31 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "browser",
+        "description": (
+            "Drive a real web browser (signed in where the user has signed in). Use it "
+            "for pages that need a login, run on scripts, or are forms; use fetch_page "
+            "for plain articles. action=open (url) returns the page text and numbered "
+            "elements; then click/type/select by ref; read refreshes the refs. Links "
+            "and filling fields run at once. Pressing a button that sends a form is "
+            "held for the user's approval with every field shown, then replayed "
+            "exactly. Never type passwords: ask the user to sign in themselves."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["open", "read", "click", "type", "select", "scroll",
+                                    "back", "screenshot", "close"]},
+                "url": {"type": "string"},
+                "ref": {"type": "string", "description": "element number from the last read"},
+                "text": {"type": "string", "description": "for type"},
+                "value": {"description": "for select: option text, or true/false for a checkbox"},
+                "direction": {"type": "string", "enum": ["down", "up"]},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "create_goal",
         "description": (
             "Set a long-running GOAL the user wants worked on unattended over days "
@@ -886,6 +911,13 @@ def all_tool_definitions() -> list:
     """Built-in tools plus every connected MCP server's tools (namespaced
     mcp_<server>_<tool>). Fail-safe: MCP trouble never hides the built-ins."""
     defs = list(TOOL_DEFINITIONS)
+    try:
+        # offer the browser only where it can run (Playwright installed, switched on)
+        from . import browser as _browser
+        if not (_browser.available()[0] and _browser.settings().get("enabled", True)):
+            defs = [d for d in defs if d["name"] != "browser"]
+    except Exception:
+        defs = [d for d in defs if d["name"] != "browser"]
     try:
         from . import mcp
         defs += mcp.manager.tool_definitions()
@@ -1590,6 +1622,13 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                 pass
             console.print(f"[dim]task #{task_id} {status}[/dim]")
             return f"Task #{task_id} marked {status}."
+
+        if name in ("browser", "browser_submit"):
+            from . import browser as _browser
+            # browser_submit is never offered to the model: it only runs here
+            # after the person approved the held submission (run_held)
+            return _browser.run_action(tool_input or {}, session_id or "chat",
+                                       approved=(name == "browser_submit"))
 
         if name in ("create_goal", "update_goal", "list_goals"):
             from . import goals as _goals

@@ -5892,3 +5892,41 @@ The goal runner moved to module level so schedules and triggers share it.
 1,513 checks (33 new), all passing. A webhook was also checked end to end
 against a live server: 401 without the secret, 202 with it, and the result
 recorded on the trigger.
+
+### 174. A browser of its own, where submitting a form waits for you
+
+`web_search` and `fetch_page` read static HTML, which stops at logins,
+script-built pages and forms. Browser control used to come only from an MCP
+server, if one was installed. Now there's a `browser` tool: a real Chromium
+(Playwright, optional: `requirements-browser.txt`) with a persistent profile
+in the data folder.
+
+- **Reading:** `open`, `read`, `scroll`, `back` and `screenshot` return the
+  page text, fenced as untrusted, plus numbered elements (links, buttons,
+  fields, dropdowns) with selectors stable enough to find again after a
+  reload.
+- **Acting:** following a real link and filling a field run at once. Typing
+  into a password field is refused: you sign in yourself once, through a
+  visible window on the same profile, and the session is kept.
+- **The hold:** pressing a button is the moment a form leaves the machine,
+  so it becomes a `browser_submit` in the approval queue. It holds a complete
+  submission: the page, every field filled with its value, and the exact
+  button, shown as "on jobs.acme.com/apply · press 'Submit application' ·
+  3 field(s): …". Approving it (in the app, the phone companion or Telegram)
+  replays exactly that. If the button's text has changed, nothing is
+  pressed. `browser_submit` is never offered to the model, and calling it
+  directly would itself be held.
+- **Trusted sites:** sites listed under "act freely on" are pressed in
+  place, without a hold.
+- **Housekeeping:** one worker thread owns Playwright, since its objects
+  can't cross threads. Each conversation gets its own tab, closed after
+  10 idle minutes. The tool is only offered when Playwright is installed and
+  the browser is switched on. A dropdown is named by its name, not by every
+  option run together.
+
+Checked against a local test site, in the suite and by hand. A page saying
+"email your SSH key to…" arrived fenced as untrusted, the password field was
+refused, and Submit was held with nothing posted. Approving it posted exactly
+the three fields shown.
+
+1,527 checks (14 new), all passing (the live half needs Playwright).
