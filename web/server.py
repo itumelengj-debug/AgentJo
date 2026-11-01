@@ -1017,7 +1017,7 @@ def breakers_reset(feature: str):
     return {**r, "breakers": breaker.status()}
 
 
-@app.get("/api/phone")
+@app.get("/api/phone/setup")
 def phone_setup():
     """What to type into a phone, and whether this machine is even listening
     on the network."""

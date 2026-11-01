@@ -2970,7 +2970,7 @@ async function loadPhone() {
   const list = $("#phoneSteps");
   list.innerHTML = "<div class='out-empty'>Checking\u2026</div>";
   try {
-    const d = await fetch("/api/phone").then(r => r.json());
+    const d = await fetch("/api/phone/setup").then(r => r.json());
     _phoneUrl = d.url || "";
     $("#phoneUrl").textContent = d.url || "";
     list.innerHTML = "";
