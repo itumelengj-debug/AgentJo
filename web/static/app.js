@@ -5607,6 +5607,57 @@ async function loadModelPickers() {
   };
   drawNotify();
 
+  // the agent's own browser: signed-in sessions, and where it may act freely
+  const brRow = el("div", "set-row");
+  const brInfo = el("div", "set-info");
+  const brNm = el("div", "set-name"); brNm.textContent = "Browser";
+  const brDs = el("div", "set-desc");
+  brDs.textContent = "Agent Jo can drive a real browser for pages behind a login, built by scripts, or with forms. Reading and following links run freely. Pressing a button that sends a form waits for your OK, with every field shown, unless you list the site below. It never types passwords: sign in yourself once and it stays signed in.";
+  brInfo.append(brNm, brDs);
+  const brCtrl = el("div", "set-control");
+  brCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  brRow.append(brInfo, brCtrl);
+  box.appendChild(brRow);
+  const drawBrowser = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/browser").then((r) => r.json()); } catch (e) { return; }
+    brCtrl.innerHTML = "";
+    const say = (t) => { const d = el("div", "set-desc"); d.textContent = t; brCtrl.appendChild(d); };
+    if (!st.installed) { say(st.why || "Not installed."); if (msg) say(msg); return; }
+    const free = el("input"); free.className = "model-select";
+    free.placeholder = "act freely on, e.g. github.com, mysite.co.za";
+    free.value = (st.act_freely_on || []).join(", ");
+    const save = el("button"); save.className = "btn btn-mini"; save.textContent = "Save sites";
+    save.addEventListener("click", async () => {
+      await fetch("/api/browser", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ act_freely_on: free.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      drawBrowser("Saved.");
+    });
+    const sRow = el("div"); sRow.style.cssText = "display:flex;gap:6px"; free.style.flex = "1"; sRow.append(free, save);
+    const url = el("input"); url.className = "model-select"; url.placeholder = "site to sign in to, e.g. linkedin.com";
+    url.style.flex = "1";
+    const go = el("button"); go.className = "btn btn-mini primary"; go.textContent = st.window_open ? "Done signing in" : "Sign in to a site";
+    go.addEventListener("click", async () => {
+      if (st.window_open) {
+        await fetch("/api/browser/login/done", { method: "POST" }); drawBrowser("Signed in. The agent uses this from now on."); return;
+      }
+      if (!url.value.trim()) { drawBrowser("Type the site first."); return; }
+      const r = await fetch("/api/browser/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.value.trim() }) });
+      const d = await r.json().catch(() => ({}));
+      drawBrowser(r.ok ? d.note : errText(d, "Couldn't open a window."));
+    });
+    const lRow = el("div"); lRow.style.cssText = "display:flex;gap:6px"; lRow.append(url, go);
+    const forget = el("button"); forget.className = "btn btn-mini"; forget.textContent = "Forget all sign-ins";
+    forget.addEventListener("click", async () => {
+      if (!confirm("Sign the agent's browser out of every site?")) return;
+      await fetch("/api/browser/forget", { method: "POST" }); drawBrowser("Forgotten.");
+    });
+    brCtrl.append(sRow, lRow, forget);
+    if (msg) say(msg);
+  };
+  drawBrowser();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");

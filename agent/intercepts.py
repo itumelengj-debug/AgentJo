@@ -42,6 +42,7 @@ EXTERNAL = {
     "mcp_call": "acts through an external tool server",
     "delete_file": "deletes something",
     "job_apply": "sends a job application",
+    "browser_submit": "presses a button that sends a form on a website",
 }
 
 # `run_command` is NOT here. It already has a permission system of its own
@@ -104,6 +105,12 @@ def summarise(tool: str, args: dict) -> str:
         return f"{a.get('url', '(no url)')} — {len(a)} field(s)"
     if tool == "delete_file":
         return str(a.get("path", ""))[:200]
+    if tool == "browser_submit":
+        try:
+            from . import browser
+            return browser.submission_summary(a)
+        except Exception:
+            return f"{a.get('url', '')} · press {a.get('button_label', '')}"
     if tool == "http_post":
         return f"{a.get('url', '')} · {len(json.dumps(a.get('json', {})))} bytes"
     return json.dumps(a, default=str)[:280]

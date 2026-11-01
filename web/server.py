@@ -996,6 +996,53 @@ def triggers_delete(trigger_id: str):
     return {"ok": _tr.delete(trigger_id)}
 
 
+class BrowserBody(BaseModel):
+    enabled: bool | None = None
+    act_freely_on: list[str] | None = None
+
+
+class BrowserLoginBody(BaseModel):
+    url: str
+
+
+@app.get("/api/browser")
+def browser_status():
+    from agent import browser as _br
+    return _br.status()
+
+
+@app.post("/api/browser")
+def browser_set(body: BrowserBody):
+    from agent import browser as _br
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "act_freely_on" in upd:
+        upd["act_freely_on"] = [d.strip().lower() for d in upd["act_freely_on"] if d.strip()][:50]
+    return _br.save_settings(upd)
+
+
+@app.post("/api/browser/login")
+def browser_login(body: BrowserLoginBody):
+    """A visible window on the agent's browser profile, for the person to
+    sign in themselves. Needs a desktop session (not a headless server)."""
+    from agent import browser as _br
+    r = _br.open_for_login(body.url.strip())
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Couldn't open a window."))
+    return r
+
+
+@app.post("/api/browser/login/done")
+def browser_login_done():
+    from agent import browser as _br
+    return _br.done_login()
+
+
+@app.post("/api/browser/forget")
+def browser_forget():
+    from agent import browser as _br
+    return _br.forget_logins()
+
+
 class ServiceBody(BaseModel):
     install: bool = True
     port: int = 8765
