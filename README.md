@@ -135,6 +135,25 @@ it's blocked on you, when it's out of budget or past its deadline, or when
 three runs in a row make no progress. Anything leaving the machine still
 waits for your OK.
 
+## Triggers: work that starts when something happens
+
+Tasks & Scheduler → **Triggers**. Each event runs your instruction, or wakes
+a goal so it works on the event straight away:
+
+- **A webhook is called**: `POST /hooks/<id>` from GitHub, Stripe, a form or
+  your own script. The secret goes in `Authorization: Bearer …`. For GitHub,
+  use it as the webhook secret, and each delivery's signature is checked. To
+  reach the webhook from outside this machine, use a tunnel or Tailscale and
+  add that name to `AGENT_ALLOWED_HOSTS`.
+- **New email arrives**: an IMAP folder, filtered by sender and/or subject.
+  Read-only: nothing is marked read, moved or deleted. Use an app password.
+- **A file lands in a folder**, optionally matching a pattern like `*.pdf`.
+
+Mail or files already there when you add a trigger never fire. Event content
+reaches the agent as untrusted data. Triggers run in safe mode unless you
+allow more, each has an hourly ceiling, and anything leaving the machine
+still waits for your OK.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in
