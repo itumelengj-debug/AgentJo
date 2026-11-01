@@ -820,6 +820,7 @@ class GoalBody(BaseModel):
     runs_per_day: int = 4
     full_access: bool = False
     engine: str = "Auto"
+    checks: list[dict] | None = None
 
 
 class GoalStatusBody(BaseModel):
@@ -841,7 +842,8 @@ def goals_create(body: GoalBody):
     try:
         g = _goals.create(body.title, body.objective, body.success, deadline=body.deadline,
                           budget_usd=body.budget_usd, runs_per_day=body.runs_per_day,
-                          full_access=body.full_access, engine=body.engine)
+                          full_access=body.full_access, engine=body.engine,
+                          checks=body.checks)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _goals.ensure_schedule(memory)

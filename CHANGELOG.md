@@ -5930,3 +5930,43 @@ refused, and Submit was held with nothing posted. Approving it posted exactly
 the three fields shown.
 
 1,527 checks (14 new), all passing (the live half needs Playwright).
+
+### 175. "Done" means the app checked, not that the model said so
+
+Marking a step done needed evidence, but the evidence was a sentence the
+model wrote. Nothing compared it with the world. In an unattended run,
+nobody else would either.
+
+`agent/checks.py` adds checks the app runs itself:
+
+- `file_exists` (with `min_bytes`)
+- `file_contains` (text or regex)
+- `command` (exit code and output)
+- `url` (status and text)
+- `sent`: an approved email or form whose summary matches has actually run.
+
+**Tasks:** `create_task_plan` takes checks per step, and `update_task_step`
+takes one inline. A step with checks can't be marked done unless they pass
+at that moment, and the refusal quotes what was observed ("m.csv does not
+exist", "exit 2: 3 failed"). A `sent` check that's still waiting for
+approval points the step to 'blocked', not 'done'. `complete_task` re-runs
+the checks on every done step, so a later step that broke an earlier one
+stops the task completing. Plans mark the steps the app checks. Steps
+without checks behave as before.
+
+**Goals:** a goal can carry checks. 'achieved' is then decided by them, not
+by the wording of the evidence, and a failed claim is kept in the goal's
+history. The goal's run prompt lists what the app will check.
+
+Command checks get no extra power. One runs only if the same command would
+run without asking (read-only, a saved rule, or full access); otherwise it
+reports that it couldn't run, and why. Every check run is audited. Task
+steps gained a `checks` column, added in place to existing databases.
+
+**Fixed, in the tests:** the browser test's local web server handled one
+connection at a time. Chromium sometimes keeps an idle connection open, so
+`shutdown()` waited forever, which explains the intermittent full-suite hang
+seen in #174. It's a threaded server now, the browser closes first, and four
+consecutive full runs passed.
+
+1,557 checks (30 new), all passing.

@@ -118,8 +118,13 @@ def _deadline_ts(deadline: str) -> float | None:
 # --------------------------------------------------------------------------- #
 def create(title: str, objective: str, success: str, *, deadline: str = "",
            budget_usd: float = 0.0, runs_per_day: int = 4,
-           full_access: bool = False, engine: str = "Auto") -> dict:
+           full_access: bool = False, engine: str = "Auto", checks=None) -> dict:
+    from . import checks as _checks
     title = (title or "").strip()[:120]
+    cs = _checks.normalise(checks)
+    bad = [_checks.problem(c) for c in cs if _checks.problem(c)]
+    if bad:
+        raise ValueError(f"a check can't run: {bad[0]}")
     objective = (objective or "").strip()[:2000]
     success = (success or "").strip()[:1000]
     if not title or not objective:
@@ -136,7 +141,8 @@ def create(title: str, objective: str, success: str, *, deadline: str = "",
              "runs_per_day": max(1, min(48, int(runs_per_day or 4))),
              "full_access": bool(full_access), "engine": engine or "Auto",
              "status": "active", "stalls": 0, "task_ids": [],
-             "notes": [], "runs": [], "created_at": _iso(), "last_run": 0.0}
+             "notes": [], "runs": [], "created_at": _iso(), "last_run": 0.0,
+             "checks": cs}
         d["next_id"] += 1
         d["goals"].append(g)
         _save(d)
@@ -203,7 +209,8 @@ def delete(goal_id: int) -> bool:
 # What the agent calls (the update_goal tool)
 # --------------------------------------------------------------------------- #
 def record_update(goal_id: int, status: str, note_text: str, *,
-                  evidence: str = "", needs: str = "", task_id: int | None = None) -> str:
+                  evidence: str = "", needs: str = "", task_id: int | None = None,
+                  checks=None, memory=None, auto_approve: bool = False) -> str:
     g = get(goal_id)
     if g is None:
         return "Error: no such goal. Use list_goals to check ids."
@@ -220,9 +227,25 @@ def record_update(goal_id: int, status: str, note_text: str, *,
         _mutate(goal_id, lambda x: x.update(stalls=0))
         return (f"Checkpoint saved for goal #{goal_id}. The next run starts from it.")
     if status == "achieved":
-        if len((evidence or "").strip()) < 20:
+        from . import checks as _checks
+        new = _checks.normalise(checks)
+        bad = [_checks.problem(c) for c in new if _checks.problem(c)]
+        if bad:
+            return f"Error: a check can't run: {bad[0]}."
+        all_checks = (_checks.normalise(g.get("checks")) + new)[:_checks.MAX_CHECKS]
+        if all_checks:
+            # the goal's own checks decide, not the wording of the evidence
+            res = _checks.run_all(all_checks, memory=memory, auto_approve=auto_approve)
+            if not res["ok"]:
+                note(goal_id, "checkpoint", f"Claimed achieved, but the app's checks failed: {res['text']}")
+                return ("Refused: the app checked and the goal isn't met: " + res["text"]
+                        + ". Keep working (record a 'progressing' checkpoint), or 'blocked' if "
+                        "it's waiting on the user.")
+            evidence = (evidence + "\n" if evidence else "") + "Checked by the app: " + res["text"]
+        elif len((evidence or "").strip()) < 20:
             return ("Refused: 'achieved' needs 'evidence' — what you checked, "
-                    "criterion by criterion, against: " + g["success"])
+                    "criterion by criterion, against: " + g["success"]
+                    + ". Better: pass 'checks' the app can run itself.")
         g = set_status(goal_id, "achieved", f"{note_text}\nEvidence: {evidence}")
         _notify(g, "achieved", evidence[:500])
         return f"Goal #{goal_id} marked achieved."
@@ -278,6 +301,10 @@ def build_prompt(g: dict, memory=None) -> str:
         f"Objective: {g['objective']}",
         f"Done when: {g['success']}",
     ]
+    if g.get("checks"):
+        from . import checks as _checks
+        lines.append("Before 'achieved' is accepted, the app itself checks: "
+                     + "; ".join(_checks.describe(c) for c in g["checks"]))
     if g.get("deadline"):
         lines.append(f"Deadline: {g['deadline']}")
     if g.get("budget_usd"):
