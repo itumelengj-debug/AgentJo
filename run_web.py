@@ -72,16 +72,57 @@ def _free_port(preferred: int) -> int:
                 return s2.getsockname()[1]
 
 
+def _running_agent_jo(port: int) -> bool:
+    """Is Agent Jo already answering on this port (the background service, or
+    a window left open)? A second copy would serve a UI but must not run the
+    schedules twice, so opening the one that's there is the better answer."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health",
+                                    timeout=1.5) as r:
+            body = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        return body.get("status") == "ok" and "app" in body
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Run the Agent Jo web app.")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("AGENT_WEB_PORT") or 8000))
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--reload", action="store_true", help="dev auto-reload")
+    ap.add_argument("--strict-port", action="store_true",
+                    help="fail if the port is busy instead of moving to a "
+                         "free one (the background service uses this)")
+    ap.add_argument("--new", action="store_true",
+                    help="start a fresh copy even if Agent Jo is already "
+                         "running in the background")
     args = ap.parse_args()
 
     local = args.host in ("127.0.0.1", "localhost")
-    port = _free_port(args.port) if local else args.port
+
+    # the background service (tools/service.py) already serves the app:
+    # open that rather than starting a second copy beside it
+    if local and not args.strict_port and not args.new:
+        for p in dict.fromkeys((args.port, 8765)):
+            if _running_agent_jo(p):
+                url = f"http://localhost:{p}"
+                print(f"\n  Agent Jo is already running  ->  {url}\n"
+                      f"  (opening it; use --new to start another copy)\n")
+                if not args.no_browser:
+                    webbrowser.open(url)
+                return
+
+    if args.strict_port:
+        port = args.port
+    else:
+        port = _free_port(args.port) if local else args.port
+    # tell the app which port it's on (the phone set-up page reads it)
+    os.environ["AGENT_WEB_PORT"] = str(port)
+    os.environ.setdefault("AGENT_WEB_HOST", args.host)
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
     url = f"http://{shown_host}:{port}"
 

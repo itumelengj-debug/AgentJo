@@ -81,6 +81,28 @@ file changed after signing, a checksum mismatch, an older build, a release
 carrying a different key, and any file outside the app folder or in its
 Python environment. Your data is never touched.
 
+## Keep it running in the background
+
+Schedules, watchers, folder sweeps and auto-resume used to stop the moment
+you closed the window. Install Agent Jo as a background service and they
+keep going: it starts when you log in and is restarted if it stops.
+
+```
+python tools/service.py install      start now, and at every log-in
+python tools/service.py status
+python tools/service.py uninstall
+```
+
+Or **Settings → Run in the background → Install**. Linux uses a systemd user
+unit, macOS a launchd agent, Windows a Task Scheduler task. All of them run
+as you, so none needs an administrator. It serves on
+`http://localhost:8765`. The usual Start Agent Jo shortcut opens that copy
+instead of starting a second one.
+
+However many copies are open, **only one runs the schedules**, so a
+scheduled email never goes out twice. If that copy stops, another open one
+takes the schedules over within 15 seconds.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

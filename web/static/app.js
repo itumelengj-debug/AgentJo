@@ -5506,6 +5506,42 @@ async function loadModelPickers() {
   thRow.append(thInfo, thCtrl);
   box.appendChild(thRow);
 
+  // the background service: schedules keep running with the window closed
+  const svRow = el("div", "set-row");
+  const svInfo = el("div", "set-info");
+  const svNm = el("div", "set-name"); svNm.textContent = "Run in the background";
+  const svDs = el("div", "set-desc");
+  svDs.textContent = "Start Agent Jo when you log in and restart it if it stops, so schedules, watchers and auto-resume keep going with this window closed. It runs as you, with no administrator prompt.";
+  svInfo.append(svNm, svDs);
+  const svCtrl = el("div", "set-control");
+  svCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:280px";
+  svRow.append(svInfo, svCtrl);
+  box.appendChild(svRow);
+  const drawService = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/service").then((r) => r.json()); } catch (e) { return; }
+    svCtrl.innerHTML = "";
+    const b = el("button"); b.className = "btn btn-mini" + (st.installed ? "" : " primary");
+    b.textContent = st.installed ? "Remove" : "Install";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      let r = {};
+      try {
+        r = await fetch("/api/service", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ install: !st.installed }) }).then((x) => x.json());
+      } catch (e) { r = { error: String(e) }; }
+      drawService(r.ok ? (r.note || "Done.") : ("Couldn't: " + (r.error || "unknown error")));
+    });
+    svCtrl.appendChild(b);
+    const s = el("div", "set-desc");
+    s.textContent = st.installed
+      ? (st.running ? "Installed and running." : "Installed, not running right now (" + (st.detail || "stopped") + ").")
+      : "Not installed: schedules run only while a window is open.";
+    svCtrl.appendChild(s);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; svCtrl.appendChild(m); }
+  };
+  drawService();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");

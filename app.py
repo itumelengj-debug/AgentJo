@@ -1470,6 +1470,15 @@ def _scheduler_loop() -> None:
     """Background ticker: every 15s, start any due schedules."""
     while True:
         time.sleep(15)
+        # only one process runs the schedules: the background service if it
+        # is up, otherwise the first window. Checked every tick, so a window
+        # takes over by itself if the service stops (agent/service.py)
+        try:
+            from agent import service as _svc
+            if not _svc.acquire_scheduler_lock():
+                continue
+        except Exception:
+            pass
         try:
             for sch in memory.due_schedules(time.time()):
                 threading.Thread(target=_run_schedule, args=(sch,),
