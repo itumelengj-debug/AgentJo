@@ -81,6 +81,158 @@ file changed after signing, a checksum mismatch, an older build, a release
 carrying a different key, and any file outside the app folder or in its
 Python environment. Your data is never touched.
 
+## Keep it running in the background
+
+Schedules, watchers, folder sweeps and auto-resume used to stop the moment
+you closed the window. Install Agent Jo as a background service and they
+keep going: it starts when you log in and is restarted if it stops.
+
+```
+python tools/service.py install      start now, and at every log-in
+python tools/service.py status
+python tools/service.py uninstall
+```
+
+Or **Settings → Run in the background → Install**. Linux uses a systemd user
+unit, macOS a launchd agent, Windows a Task Scheduler task. All of them run
+as you, so none needs an administrator. It serves on
+`http://localhost:8765`. The usual Start Agent Jo shortcut opens that copy
+instead of starting a second one.
+
+However many copies are open, **only one runs the schedules**, so a
+scheduled email never goes out twice. If that copy stops, another open one
+takes the schedules over within 15 seconds.
+
+## It tells you when it needs you
+
+**Settings → Phone notifications.** When something is held for your OK, a
+scheduled task fails, a feature is switched off after repeated failures, or a
+task is blocked on you, Agent Jo tells you on your phone:
+
+- **ntfy**: free push notifications with no account. Pick a hard-to-guess
+  topic, then subscribe to it in the ntfy app.
+- **Telegram**: make a bot with @BotFather, paste its token, send it "hi",
+  then click **Find my chat**. A held call arrives with **Approve / Refuse**
+  buttons that work from anywhere, with no port opened to the internet.
+  `/status`, `/pause` and `/resume` work from the chat. Only your own chat is
+  listened to.
+
+Only the same one-line summary the approval queue shows leaves the machine,
+never an email's body. Repeats are folded together, and there's an hourly
+ceiling.
+
+## Goals: outcomes, not just instructions
+
+Tasks & Scheduler → **Goals**, or just ask: *"make it a goal to land five
+interviews by 30 November, budget $5"*. A goal has an objective, checkable
+"done when" criteria, an optional deadline and an optional budget of its own.
+It's worked on a few times a day. Each run picks up from the last checkpoint
+and gets a bigger budget than a chat turn (40 tool calls and 20 minutes, set
+with `AGENT_GOAL_MAX_ROUNDS` and `AGENT_GOAL_TIME_LIMIT`).
+
+It stops on its own, and tells you, when the goal is met (with evidence), when
+it's blocked on you, when it's out of budget or past its deadline, or when
+three runs in a row make no progress. Anything leaving the machine still
+waits for your OK.
+
+## Triggers: work that starts when something happens
+
+Tasks & Scheduler → **Triggers**. Each event runs your instruction, or wakes
+a goal so it works on the event straight away:
+
+- **A webhook is called**: `POST /hooks/<id>` from GitHub, Stripe, a form or
+  your own script. The secret goes in `Authorization: Bearer …`. For GitHub,
+  use it as the webhook secret, and each delivery's signature is checked. To
+  reach the webhook from outside this machine, use a tunnel or Tailscale and
+  add that name to `AGENT_ALLOWED_HOSTS`.
+- **New email arrives**: an IMAP folder, filtered by sender and/or subject.
+  Read-only: nothing is marked read, moved or deleted. Use an app password.
+- **A file lands in a folder**, optionally matching a pattern like `*.pdf`.
+
+Mail or files already there when you add a trigger never fire. Event content
+reaches the agent as untrusted data. Triggers run in safe mode unless you
+allow more, each has an hourly ceiling, and anything leaving the machine
+still waits for your OK.
+
+## Its own browser
+
+For pages behind a login, built by scripts, or that are forms, Agent Jo
+drives a real Chromium with a profile of its own:
+
+```
+pip install -r requirements-browser.txt
+python -m playwright install chromium
+```
+
+It reads a page as text plus a numbered list of what can be clicked or filled.
+Following links and filling fields run straight away. **Pressing a button that
+sends a form is held for your OK**, showing the site, the button and every
+field it filled. Approving replays exactly that: it reopens the page, refills
+those fields and presses that button. If the button has changed, nothing is
+pressed. Sites listed under **Settings → Browser → act freely on** skip the
+hold.
+
+It never types passwords. Use **Settings → Browser → Sign in to a site** to
+open a window on its profile and sign in yourself once; it stays signed in.
+Page text reaches the agent marked as untrusted.
+
+## "Done" means the app checked
+
+A step in a task plan can carry **checks the app runs itself**: a file exists
+or contains something, a command passes, a URL answers, or an approved email
+or form really went out. While a check fails, the step can't be marked done,
+and the refusal says what the app actually saw. Completing a task re-runs
+every check, so a later step that broke an earlier one is caught. A goal with
+checks can't be marked achieved until they pass, however convincing the
+written evidence. Command checks get no extra power: they run only if the
+command would run without asking you.
+
+## The sandbox: what commands may do when nobody is watching
+
+Settings → **Sandbox**. In unattended runs (schedules, goals, triggers, the
+crew), shell commands are fenced:
+
+- **Guard** (the default) refuses commands that wipe a disk or home folder,
+  shut down, use `sudo`/`runas`, install things that run later (crontab,
+  schtasks, registry run keys), read credential stores (`~/.ssh`, `~/.aws`,
+  the agent's own data, browser profiles), send data out (`curl -d`, `scp`,
+  `nc`…) or force-push. It also strips API keys, tokens and passwords from
+  the command's environment. Pattern matching stops the obvious and the
+  injected; it isn't a wall.
+- **Isolate** also runs each command in an OS sandbox (bubblewrap on Linux,
+  sandbox-exec on macOS). The system is read-only, only the folders you list
+  are writable, credential folders and the agent's data are hidden, and the
+  network can be cut. Windows has no OS sandbox to use, so there it acts as
+  Guard and says so.
+
+Chat runs are unchanged unless you choose "every run". The **Check** box
+tells you whether a command would be allowed, without running it.
+
+## Credentials it can use but never sees
+
+Settings → **Credentials**. Save an API token or password with the sites it
+may be sent to. The agent refers to it as `{{vault:name}}`, and the app fills
+in the value at the last moment, only for those sites:
+
+- `http_request` calls web APIs with it. GETs run at once; POST, PUT and
+  DELETE wait for your OK, showing which credential, never its value.
+- The browser can type it into a password field, on an allowed site only,
+  so it can sign in without the model knowing the password.
+- Commands can get it as `$VAULT_NAME`, if you tick "commands may use it".
+- Anything a tool prints back has the value (and its base64 form) replaced
+  with `[vault:name]` before the model sees it. Every use is audited.
+
+Never paste a secret into the chat.
+
+## The crew, in parallel
+
+When a goal has pieces that don't depend on each other, such as researching
+competitors while drafting the proposal while checking the numbers, the agent
+can hand them to several crew specialists **at the same time**
+(`crew_parallel`: up to 5 jobs, 3 at once). Each runs as its own member, in
+its own workspace, inside the sandbox. One failing doesn't stop the rest, and
+with a goal their reports go into the goal's history for the next run.
+
 ## Windows installer (.exe)
 
 **Build it** (on a Windows PC): double-click **Build Windows Installer.bat** in

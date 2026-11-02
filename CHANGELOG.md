@@ -5813,3 +5813,260 @@ Also, in every theme:
 - **The skin can't break anything.** It's on every page now, so the lattice
   never throws an error into a click, key or observer. A page that can't
   draw it just goes without.
+
+### 172. It keeps working with the window closed, tells you when it needs you, and works toward goals
+
+Agent Jo's unattended work had three gaps: it stopped when you closed the
+window, it waited silently when it needed you, and it only ever ran
+instructions, never toward an outcome.
+
+**Background service.** `python tools/service.py install` (or Settings → Run
+in the background) installs a systemd user unit, a launchd agent or a Task
+Scheduler task. It starts at log-in, restarts if it stops, runs as you and
+needs no administrator. Two copies must never both fire the same schedule, so
+the scheduler now takes a lock in the data folder. One process runs the
+schedules; any other copy serves its UI and leaves them alone. The lock is
+checked every 15 seconds, so if the holder stops, an open window takes over.
+The launcher opens a copy that's already running instead of starting a
+second one.
+
+**Phone notifications.** ntfy (one-way push) and a Telegram bot (two-way). A
+held call arrives in Telegram with Approve / Refuse buttons. `/status`,
+`/pause` and `/resume` work from the chat. Only the chat id you configured is
+obeyed, and the listener runs only in the process that holds the schedule
+lock, so a tap is acted on once. It tells you about held calls, failed
+schedules, tripped breakers, blocked steps and goal outcomes, and each can be
+switched off. Only the one-line summary leaves the machine. Tokens are
+encrypted at rest. Repeats are folded together, and there's an hourly
+ceiling.
+
+**Goals.** Tasks & Scheduler → Goals, or ask in chat ("make it a goal to…").
+A goal has an objective, checkable success criteria, an optional deadline and
+an optional budget of its own. A managed "Pursue goals" schedule works on each
+one up to N times a day. Each run gets 40 tool calls and 20 minutes, not a
+chat turn's 15 and 5, and ends by writing a checkpoint with `update_goal`. The
+next run starts from that checkpoint. A run cut off by a limit writes one
+automatically, so long work is handed on instead of lost. The fence: claiming
+'achieved' needs evidence, 'blocked' needs what you must do, three runs with
+no progress stop the goal as 'stalled', and the deadline and budget are
+checked before every run. Each of these stops tells you.
+
+**Scheduled runs are now costed.** A plain scheduled prompt never recorded
+its token use, so the monthly ceiling couldn't see autonomous spending. It
+does now, under "autonomy". Goal runs are charged under "goals" and to the
+goal's own budget.
+
+**Fixed:** two handlers were registered at `GET /api/phone`, so the phone
+install modal read the companion's status instead of its own steps. The
+install steps now live at `/api/phone/setup`.
+
+1,480 checks (60 new), all passing.
+
+### 173. Triggers: webhooks, new email and dropped files start work
+
+Schedules answered "when"; nothing answered "when this happens". Now
+Tasks & Scheduler → Triggers does:
+
+- **Webhook**: `POST /hooks/<id>`. Each trigger has its own secret,
+  encrypted at rest and shown once. The secret goes in a bearer header, an
+  `X-Agent-Jo-Token` header or `?token=`, or GitHub's `X-Hub-Signature-256`
+  HMAC is checked. An unknown id and a wrong secret get the same answer. The
+  webhook answers 202 at once and runs in the background, and GitHub's ping
+  is answered without firing.
+- **Inbox**: IMAP, read-only (`readonly` select and `BODY.PEEK`), filtered by
+  sender and/or subject.
+- **Folder**: new or changed files matching a pattern.
+
+Each event either runs the trigger's instruction or wakes a goal. A woken
+goal gets the event in its history and runs now, out of turn. The fence:
+event content is quoted as untrusted data that can't close its own quote
+block. Triggers run in safe mode by default. Each has an hourly ceiling, its
+own circuit breaker, and is subject to the monthly ceiling. The first look at
+an inbox or folder only sets a baseline, so old mail and files never fire.
+Every fire is recorded on the trigger and in the audit trail, and failures
+are sent to your phone. Inbox and folder polling runs only in the process
+that holds the schedule lock.
+
+The goal runner moved to module level so schedules and triggers share it.
+
+1,513 checks (33 new), all passing. A webhook was also checked end to end
+against a live server: 401 without the secret, 202 with it, and the result
+recorded on the trigger.
+
+### 174. A browser of its own, where submitting a form waits for you
+
+`web_search` and `fetch_page` read static HTML, which stops at logins,
+script-built pages and forms. Browser control used to come only from an MCP
+server, if one was installed. Now there's a `browser` tool: a real Chromium
+(Playwright, optional: `requirements-browser.txt`) with a persistent profile
+in the data folder.
+
+- **Reading:** `open`, `read`, `scroll`, `back` and `screenshot` return the
+  page text, fenced as untrusted, plus numbered elements (links, buttons,
+  fields, dropdowns) with selectors stable enough to find again after a
+  reload.
+- **Acting:** following a real link and filling a field run at once. Typing
+  into a password field is refused: you sign in yourself once, through a
+  visible window on the same profile, and the session is kept.
+- **The hold:** pressing a button is the moment a form leaves the machine,
+  so it becomes a `browser_submit` in the approval queue. It holds a complete
+  submission: the page, every field filled with its value, and the exact
+  button, shown as "on jobs.acme.com/apply · press 'Submit application' ·
+  3 field(s): …". Approving it (in the app, the phone companion or Telegram)
+  replays exactly that. If the button's text has changed, nothing is
+  pressed. `browser_submit` is never offered to the model, and calling it
+  directly would itself be held.
+- **Trusted sites:** sites listed under "act freely on" are pressed in
+  place, without a hold.
+- **Housekeeping:** one worker thread owns Playwright, since its objects
+  can't cross threads. Each conversation gets its own tab, closed after
+  10 idle minutes. The tool is only offered when Playwright is installed and
+  the browser is switched on. A dropdown is named by its name, not by every
+  option run together.
+
+Checked against a local test site, in the suite and by hand. A page saying
+"email your SSH key to…" arrived fenced as untrusted, the password field was
+refused, and Submit was held with nothing posted. Approving it posted exactly
+the three fields shown.
+
+1,527 checks (14 new), all passing (the live half needs Playwright).
+
+### 175. "Done" means the app checked, not that the model said so
+
+Marking a step done needed evidence, but the evidence was a sentence the
+model wrote. Nothing compared it with the world. In an unattended run,
+nobody else would either.
+
+`agent/checks.py` adds checks the app runs itself:
+
+- `file_exists` (with `min_bytes`)
+- `file_contains` (text or regex)
+- `command` (exit code and output)
+- `url` (status and text)
+- `sent`: an approved email or form whose summary matches has actually run.
+
+**Tasks:** `create_task_plan` takes checks per step, and `update_task_step`
+takes one inline. A step with checks can't be marked done unless they pass
+at that moment, and the refusal quotes what was observed ("m.csv does not
+exist", "exit 2: 3 failed"). A `sent` check that's still waiting for
+approval points the step to 'blocked', not 'done'. `complete_task` re-runs
+the checks on every done step, so a later step that broke an earlier one
+stops the task completing. Plans mark the steps the app checks. Steps
+without checks behave as before.
+
+**Goals:** a goal can carry checks. 'achieved' is then decided by them, not
+by the wording of the evidence, and a failed claim is kept in the goal's
+history. The goal's run prompt lists what the app will check.
+
+Command checks get no extra power. One runs only if the same command would
+run without asking (read-only, a saved rule, or full access); otherwise it
+reports that it couldn't run, and why. Every check run is audited. Task
+steps gained a `checks` column, added in place to existing databases.
+
+**Fixed, in the tests:** the browser test's local web server handled one
+connection at a time. Chromium sometimes keeps an idle connection open, so
+`shutdown()` waited forever, which explains the intermittent full-suite hang
+seen in #174. It's a threaded server now, the browser closes first, and four
+consecutive full runs passed.
+
+1,557 checks (30 new), all passing.
+
+### 176. The sandbox: unattended commands are fenced
+
+Unattended runs could run read-only commands, ones matching a saved rule, or
+anything at all under full access. They ran as you, with every API key in
+their environment.
+
+`agent/sandbox.py` (Settings → Sandbox) applies to unattended sessions:
+schedules, goals, triggers and the crew, recognised by their session names.
+It can also apply to every run if you choose.
+
+- **guard** (default): a command is refused, before any permission prompt
+  and with the reason, if it would wipe a disk or a home folder, shut down,
+  escalate, install persistence, read a credential store (including the
+  agent's own data folder and the browser profile), send data out, or
+  force-push. The environment is scrubbed of anything named like a key,
+  token, secret or password. The rule for shutdown matches only at the
+  start of a command, so `cat notes/shutdown-plan.md` is fine.
+- **isolate**: guard, plus bubblewrap on Linux or sandbox-exec on macOS. The
+  system is read-only, only the listed folders are writable, credential
+  folders and the agent's data are hidden, and the network can be cut. On
+  Windows it falls back to guard and says so.
+- **off**.
+
+Command checks (#175) go through the same fence. The Settings row includes a
+"Check" box that says whether a command would be allowed, without running
+it.
+
+Tested with 25 commands that must be refused and 16 ordinary ones that must
+not be. The isolation was run live with bubblewrap: a goal's command could
+write its workspace but nowhere else, couldn't see the agent's data, and had
+no network.
+
+1,575 checks (18 new), all passing.
+
+### 177. The vault: credentials the agent can use but never sees
+
+To call an API or sign in, the agent needed a secret, and the only way to
+give it one was the chat. That put it in the log, the context, every later
+prompt, and within reach of any page that asked for it back.
+
+`agent/vault.py` (Settings → Credentials) stores secrets encrypted, each with
+the sites it may be sent to. The agent writes `{{vault:name}}`; the app fills
+in the value only where that is allowed:
+
+- **New `http_request` tool.** GET/HEAD run; POST/PUT/PATCH/DELETE are held,
+  and the summary names the credential, never the value. Approval replays
+  the request with the value filled in. `list_credentials` gives names and
+  sites only.
+- **Browser.** A `{{vault:…}}` may be typed into any field, including a
+  password field, but only on an allowed site. The form keeps the
+  placeholder, so a held sign-in shows it; the replay fills the value. A
+  password the model was told directly is still refused.
+- **`run_command`.** `credentials: [...]` adds `$VAULT_<NAME>`, but only for
+  secrets marked "commands may use it".
+- **Redaction.** Every tool result, including approved replays, has each
+  value and its base64 form replaced with `[vault:name]`.
+- **Where it may go.** A host must match one of the secret's sites (or a
+  subdomain of one); anywhere else is refused before anything is sent.
+- **Audit.** Each use is audited: which secret, where, by which tool.
+
+1,595 checks (20 new), all passing. That includes a real sign-in through the
+browser: the held submission showed the placeholder, and the approved
+replay sent the real password.
+
+### 178. The crew in parallel, checks on the Goals form, and no new import cycles
+
+**`crew_parallel`.** Dispatch and chains ran one specialist at a time. A
+goal with independent parts waited for each in turn. `crew.run_parallel`
+works as follows:
+
+- It runs up to 5 jobs, 3 at once.
+- Each job runs as its own member, in its own workspace, under its own
+  `crew-…` session. That makes it unattended, so the sandbox applies.
+- Two jobs for the same member are refused, because they'd share a
+  workspace. A member left blank is routed as before.
+- A job that throws doesn't sink the others.
+- With `goal_id`, every report is added to the goal's history, and the goal
+  prompt mentions the tool.
+- Crew members can't start crews of their own; they get the sub-agent tool
+  set.
+
+**Goals form.** It takes checks in plain lines: `file <path> [contains
+<text>]`, `url <url> [contains <text>]`, `command <cmd>`. A line it can't
+read is refused with the reason.
+
+**Import cycles.** The modules added since #172 had widened the codebase's
+one known import cycle (health/selfimprove/tools) to ten modules, through
+function-level imports. They're untangled again:
+
+- The read-only command classifier moved to `agent/cmdsafe.py` (re-exported
+  from `tools`).
+- Telegram's buttons reach the phone companion through actions it registers
+  with `notify`, instead of `notify` importing `phone`.
+- The held-form summary lives in `intercepts`.
+- The crew reports to goals through a callback.
+
+A new check fails if any cycle beyond the old one appears.
+
+1,609 checks (14 new), all passing.

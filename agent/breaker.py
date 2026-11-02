@@ -134,6 +134,13 @@ def record_failure(feature: str, error: str = "") -> dict:
         _audit(feature, "opened",
                f"{failures} consecutive failure(s); retry in "
                f"{cooldown // 60}min. Last error: {(error or '')[:120]}")
+        try:
+            from . import notify
+            notify.breaker_opened(feature, f"{failures} failures in a row; it tries "
+                                  f"again in {cooldown // 60} min. Last error: "
+                                  f"{(error or '')[:200]}")
+        except Exception:
+            pass
     return {"state": "open" if opened else "closed", "failures": failures,
             "opened": opened, "cooldown": cooldown}
 

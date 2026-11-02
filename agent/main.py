@@ -746,7 +746,8 @@ def run_turn(brain, memory: MemoryStore, messages: list,
              on_text=None, should_cancel=None, force_model=_AUTO,
              turn_info: dict | None = None, images: list | None = None,
              attachments: str = "", on_status=None,
-             second_opinion: bool = False) -> str:
+             second_opinion: bool = False, max_rounds: int | None = None,
+             time_limit: int | None = None) -> str:
     def _status(label: str) -> None:
         if on_status:
             try:
@@ -758,7 +759,9 @@ def run_turn(brain, memory: MemoryStore, messages: list,
     # this between rounds (and the web layer also heartbeats), so a wedged
     # multi-round agent unwinds with a clear message instead of hanging.
     _t_start = time.time()
-    _timeout = max(0, int(getattr(config, "TURN_TIMEOUT", 0) or 0))
+    # a goal run (agent/goals.py) passes a longer budget than a chat turn gets
+    _timeout = max(0, int(time_limit if time_limit is not None
+                          else (getattr(config, "TURN_TIMEOUT", 0) or 0)))
     _deadline = (_t_start + _timeout) if _timeout else None
     _stop_reason = {"why": None}
 
@@ -964,7 +967,7 @@ def run_turn(brain, memory: MemoryStore, messages: list,
         except Exception:
             return name + ":" + str(inp)
 
-    for _round in range(config.MAX_TOOL_ROUNDS):
+    for _round in range(int(max_rounds or config.MAX_TOOL_ROUNDS)):
         if _stopped():
             break
         before = emitted["n"]
@@ -1160,6 +1163,7 @@ def run_turn(brain, memory: MemoryStore, messages: list,
             _stop_reason["why"] = "loop"
             break
     else:
+        _stop_reason["limit"] = True
         # Out of tool rounds. Rather than dead-ending on a preamble, make one
         # final pass with NO tools and an explicit nudge, so the model delivers
         # its answer using what it already gathered instead of stalling.
@@ -1201,6 +1205,8 @@ def run_turn(brain, memory: MemoryStore, messages: list,
             final_text = (final_text + f"\n\n_(stopped at the tool-call limit; "
                           f"final pass failed: {type(exc).__name__})_").strip()
 
+    if turn_info is not None and (_stop_reason["why"] or _stop_reason.get("limit")):
+        turn_info["stop_reason"] = _stop_reason["why"] or "round_limit"
     if _stop_reason["why"] == "timeout":
         _status("stopped — time limit reached")
         _elapsed = int(time.time() - _t_start)

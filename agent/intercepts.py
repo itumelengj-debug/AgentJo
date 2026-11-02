@@ -42,6 +42,7 @@ EXTERNAL = {
     "mcp_call": "acts through an external tool server",
     "delete_file": "deletes something",
     "job_apply": "sends a job application",
+    "browser_submit": "presses a button that sends a form on a website",
 }
 
 # `run_command` is NOT here. It already has a permission system of its own
@@ -81,6 +82,11 @@ def classify(tool: str, args: dict) -> dict:
     if tool in OWNED_ELSEWHERE:
         return {"hold": False,
                 "why": f"guarded by {OWNED_ELSEWHERE[tool]} already"}
+    if tool == "http_request":
+        m = str((args or {}).get("method") or "GET").upper()
+        if m in ("GET", "HEAD", "OPTIONS"):
+            return {"hold": False, "why": "reads from a web API"}
+        return {"hold": True, "why": f"sends a {m} to a web API"}
     reason = EXTERNAL.get(tool)
     if not reason:
         return {"hold": False, "why": "reads or works locally"}
@@ -104,6 +110,20 @@ def summarise(tool: str, args: dict) -> str:
         return f"{a.get('url', '(no url)')} — {len(a)} field(s)"
     if tool == "delete_file":
         return str(a.get("path", ""))[:200]
+    if tool == "http_request":
+        from urllib.parse import urlparse as _up
+        try:
+            from . import vault as _v
+            uses = _v.names_in(a)
+        except Exception:
+            uses = []
+        body = a.get("json") if a.get("json") is not None else a.get("body") or ""
+        size = len(json.dumps(body) if not isinstance(body, str) else body)
+        u = _up(str(a.get("url", "")))
+        return (f"{str(a.get('method', 'GET')).upper()} {u.hostname or ''}{u.path[:60]} · {size} bytes"
+                + (f" · uses {', '.join('vault:' + n for n in uses)}" if uses else ""))
+    if tool == "browser_submit":
+        return browser_submit_summary(a)
     if tool == "http_post":
         return f"{a.get('url', '')} · {len(json.dumps(a.get('json', {})))} bytes"
     return json.dumps(a, default=str)[:280]
@@ -135,6 +155,11 @@ def hold(tool: str, args: dict, context: str = "",
     }
     _save(pending() + [item])
     _audit("held", f"{tool}: {item['summary'][:120]}")
+    try:                       # tell the person, wherever they are
+        from . import notify
+        notify.held(item)
+    except Exception:
+        pass
     return item
 
 
@@ -185,3 +210,18 @@ def _audit(name: str, summary_text: str) -> None:
         audit.record("intercept", name=name, summary=summary_text[:200])
     except Exception:
         pass
+
+
+def browser_submit_summary(args: dict) -> str:
+    """on site/path · press “Button” · n field(s): Label = “value”, …"""
+    from urllib.parse import urlparse
+    fields = args.get("fields") or []
+    shown = []
+    for f in fields[:6]:
+        v = str(f.get("value", ""))
+        shown.append(f"{f.get('label') or 'field'} = " + (f"“{v[:40]}”" if len(v) <= 60 else f"({len(v):,} chars)"))
+    more = f", +{len(fields) - 6} more" if len(fields) > 6 else ""
+    host = (urlparse(args.get("url", "")).hostname or "").lower()
+    path = urlparse(args.get("url", "")).path[:40]
+    return (f"on {host}{path} · press “{str(args.get('button_label') or 'button')[:50]}” · "
+            f"{len(fields)} field(s)" + (": " + ", ".join(shown) + more if shown else ""))

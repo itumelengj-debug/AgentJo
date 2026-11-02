@@ -7,6 +7,7 @@ is set. The agent acts with YOUR user privileges — keep confirmations on.
 """
 
 import hashlib
+import json
 import os
 import platform
 import shlex
@@ -70,6 +71,8 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command"},
+                "credentials": {"type": "array", "items": {"type": "string"},
+                                "description": "saved credential names to pass as $VAULT_<NAME> (only ones allowed for commands)"},
                 "purpose": {"type": "string", "description": "One line: why you are running it"},
             },
             "required": ["command"],
@@ -108,6 +111,17 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Short task title"},
                 "steps": {"type": "array", "items": {"type": "string"},
                           "description": "3-12 concrete steps, in order"},
+                "checks": {
+                    "type": "array",
+                    "description": (
+                        "Optional, and best wherever a result can be checked: facts the "
+                        "APP verifies before a step may be marked done. Each item: "
+                        "{step: n, check: {type: file_exists|file_contains|command|url|sent, ...}}. "
+                        "file_exists {path, min_bytes}; file_contains {path, text|regex}; "
+                        "command {command, expect_exit, expect_output}; url {url, status, "
+                        "contains}; sent {tool, contains} (an approved email/form really went out)."),
+                    "items": {"type": "object"},
+                },
             },
             "required": ["title", "steps"],
         },
@@ -134,6 +148,10 @@ TOOL_DEFINITIONS = [
                            "enum": ["in_progress", "done", "failed", "skipped", "blocked"]},
                 "note": {"type": "string",
                          "description": "for 'done': the verification evidence"},
+                "check": {"type": "object",
+                          "description": ("for 'done': a check the app runs itself (same "
+                                          "shapes as create_task_plan checks); preferred to "
+                                          "a note wherever the result can be checked")},
                 "needs": {"type": "string",
                           "description": "for 'blocked': exactly what you need the "
                           "user to do (commands to run, who to log in as, which file)"},
@@ -192,6 +210,113 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "http_request",
+        "description": (
+            "Call a web API. Put credentials in as {{vault:name}} (see list_credentials); "
+            "you never see the values, and each is only sent to the sites it's allowed "
+            "for. GET/HEAD run at once; POST/PUT/PATCH/DELETE wait for the user's "
+            "approval with the exact request shown."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+                "json": {"description": "a JSON body"},
+                "body": {"type": "string", "description": "a raw body (if not json)"},
+            },
+            "required": ["method", "url"],
+        },
+    },
+    {
+        "name": "list_credentials",
+        "description": ("Names of the saved credentials and where each may be sent. "
+                        "Never ask the user to paste a secret into the chat."),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browser",
+        "description": (
+            "Drive a real web browser (signed in where the user has signed in). Use it "
+            "for pages that need a login, run on scripts, or are forms; use fetch_page "
+            "for plain articles. action=open (url) returns the page text and numbered "
+            "elements; then click/type/select by ref; read refreshes the refs. Links "
+            "and filling fields run at once. Pressing a button that sends a form is "
+            "held for the user's approval with every field shown, then replayed "
+            "exactly. Never type passwords: ask the user to sign in themselves."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["open", "read", "click", "type", "select", "scroll",
+                                    "back", "screenshot", "close"]},
+                "url": {"type": "string"},
+                "ref": {"type": "string", "description": "element number from the last read"},
+                "text": {"type": "string", "description": "for type"},
+                "value": {"description": "for select: option text, or true/false for a checkbox"},
+                "direction": {"type": "string", "enum": ["down", "up"]},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "create_goal",
+        "description": (
+            "Set a long-running GOAL the user wants worked on unattended over days "
+            "(e.g. 'land 5 interviews by 30 Nov'). Only when the user asks for an "
+            "ongoing outcome, not a one-off request. It is then pursued on a "
+            "schedule, each run resuming from the last checkpoint."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "objective": {"type": "string", "description": "what the user wants, in their words"},
+                "success": {"type": "string", "description": "how to know it is done — checkable criteria"},
+                "deadline": {"type": "string", "description": "YYYY-MM-DD, optional"},
+                "budget_usd": {"type": "number", "description": "spending ceiling for this goal; 0 = none"},
+                "runs_per_day": {"type": "integer", "description": "default 4"},
+                "checks": {"type": "array", "items": {"type": "object"},
+                           "description": ("optional checks the APP runs before the goal may be "
+                                           "marked achieved (file_exists, file_contains, command, "
+                                           "url, sent — see create_task_plan)")},
+            },
+            "required": ["title", "objective", "success"],
+        },
+    },
+    {
+        "name": "update_goal",
+        "description": (
+            "Record progress on a goal you are pursuing. Call it before ending every "
+            "goal run. 'progressing' saves a checkpoint (what was done, what is next) "
+            "that the next run starts from. 'achieved' requires evidence against the "
+            "success criteria. 'blocked' requires exactly what the user must do."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "integer"},
+                "status": {"type": "string",
+                           "enum": ["progressing", "achieved", "blocked", "abandoned"]},
+                "note": {"type": "string", "description": "done so far, and next step"},
+                "evidence": {"type": "string", "description": "for 'achieved'"},
+                "needs": {"type": "string", "description": "for 'blocked'"},
+                "task_id": {"type": "integer", "description": "link a task plan to this goal"},
+                "checks": {"type": "array", "items": {"type": "object"},
+                           "description": "for 'achieved': extra checks the app runs itself"},
+            },
+            "required": ["goal_id", "status", "note"],
+        },
+    },
+    {
+        "name": "list_goals",
+        "description": "List goals with status, budget, and the last checkpoint.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"status": {"type": "string",
+                                      "enum": ["active", "achieved", "blocked", "stalled",
+                                               "paused", "all"]}},
+        },
+    },
+    {
         "name": "run_subagent",
         "description": (
             "Delegate a focused, self-contained sub-task to an isolated worker "
@@ -236,6 +361,23 @@ TOOL_DEFINITIONS = [
                          "description": "The skill's name. Omit to list."},
                 "input": {"type": "string",
                           "description": "What to apply the skill to"}},
+        },
+    },
+    {
+        "name": "crew_parallel",
+        "description": (
+            "Run several crew specialists AT THE SAME TIME, each on an independent piece "
+            "of the work (up to 5 jobs, 3 at once). Each job: {member, task}; leave member "
+            "blank to route it. Use when parts don't depend on each other — research, "
+            "drafting, checking numbers. Pass goal_id to add every report to that goal's "
+            "history. One member per job (two jobs for one member would share a workspace)."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "jobs": {"type": "array", "items": {"type": "object"}},
+                "goal_id": {"type": "integer"},
+            },
+            "required": ["jobs"],
         },
     },
     {
@@ -765,38 +907,9 @@ TOOL_DEFINITIONS = [
 # The classifier is deliberately conservative: any shell metacharacter
 # (pipes, redirects, substitution, chaining) falls back to asking.
 
-_SAFE_BINS = {
-    "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "which", "whoami",
-    "date", "stat", "file", "du", "df", "uname", "ps", "tree", "sort", "uniq",
-    "diff", "realpath", "basename", "dirname", "md5sum", "sha256sum",
-    "hostname", "id", "uptime", "nproc", "free",
-}
-_SAFE_GIT = {"status", "log", "diff", "show", "rev-parse", "ls-files",
-             "blame", "shortlog", "describe"}
-_FIND_UNSAFE = {"-exec", "-execdir", "-ok", "-okdir", "-delete",
-                "-fprint", "-fprintf", "-fls"}
-_SUBCOMMAND_BINS = {"git", "npm", "pip", "pip3", "cargo", "docker", "kubectl",
-                    "poetry", "uv", "apt", "brew", "conda", "yarn", "pnpm", "gh"}
-
-
-def is_read_only_command(command: str) -> bool:
-    """Best-effort: True only when the command is provably read-only."""
-    if not command or len(command) > 500:
-        return False
-    if any(ch in command for ch in ";&|><`$(){}\n"):
-        return False
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
-    if not tokens or "=" in tokens[0]:
-        return False
-    head = Path(tokens[0]).name.lower()
-    if head == "git":
-        return len(tokens) > 1 and tokens[1] in _SAFE_GIT
-    if head == "find":
-        return not any(t in _FIND_UNSAFE for t in tokens)
-    return head in _SAFE_BINS
+# the read-only classifier lives in agent/cmdsafe.py (re-exported here)
+from .cmdsafe import (_FIND_UNSAFE, _SAFE_BINS, _SAFE_GIT, _SUBCOMMAND_BINS,  # noqa: E402,F401
+                      is_read_only_command)
 
 
 def command_rule_hint(command: str) -> str:
@@ -835,6 +948,13 @@ def all_tool_definitions() -> list:
     """Built-in tools plus every connected MCP server's tools (namespaced
     mcp_<server>_<tool>). Fail-safe: MCP trouble never hides the built-ins."""
     defs = list(TOOL_DEFINITIONS)
+    try:
+        # offer the browser only where it can run (Playwright installed, switched on)
+        from . import browser as _browser
+        if not (_browser.available()[0] and _browser.settings().get("enabled", True)):
+            defs = [d for d in defs if d["name"] != "browser"]
+    except Exception:
+        defs = [d for d in defs if d["name"] != "browser"]
     try:
         from . import mcp
         defs += mcp.manager.tool_definitions()
@@ -946,6 +1066,13 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
         if name == "run_command":
             command = tool_input["command"]
             purpose = tool_input.get("purpose", "")
+            # unattended runs go through the sandbox (agent/sandbox.py):
+            # refused outright, scrubbed of secrets, or OS-isolated. Decided
+            # before any permission prompt: a refused command isn't asked about.
+            from . import sandbox as _sandbox
+            _plan = _sandbox.prepare(command, session_id)
+            if "refuse" in _plan:
+                return _plan["refuse"]
             auto_reason = None
             if not auto_approve:
                 if is_read_only_command(command):
@@ -973,10 +1100,22 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             elif auto_reason:
                 console.print(f"[dim]auto-approved ({auto_reason}): "
                               f"{command[:80]}[/dim]")
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
-                timeout=config.COMMAND_TIMEOUT_SECONDS,
-            )
+            if tool_input.get("credentials"):
+                from . import vault as _vault
+                _venv, _verr = _vault.env_for(list(tool_input.get("credentials") or []))
+                if _verr:
+                    return f"Refused: {_verr}. Nothing ran."
+                _plan["env"] = {**(_plan["env"] if _plan["env"] is not None else dict(os.environ)),
+                                **_venv}
+            if "argv" in _plan:
+                result = subprocess.run(
+                    _plan["argv"], capture_output=True, text=True, env=_plan["env"],
+                    cwd=_plan["cwd"], timeout=config.COMMAND_TIMEOUT_SECONDS)
+            else:
+                result = subprocess.run(
+                    _plan["shell"], shell=True, capture_output=True, text=True,
+                    env=_plan["env"], timeout=config.COMMAND_TIMEOUT_SECONDS,
+                )
             out = result.stdout.strip()
             err = result.stderr.strip()
             parts = [f"exit code: {result.returncode}"]
@@ -1019,6 +1158,32 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                        if tool_input.get("input") else
                        "If the skill needs specific input, ask for that one "
                        "thing."))
+
+        if name == "crew_parallel":
+            from . import crew as _crewp
+            _jobs = tool_input.get("jobs") or []
+            console.print(f"[dim]  \u2ae1 crew in parallel \u2014 {len(_jobs)} job(s)\u2026[/dim]")
+            _gid = tool_input.get("goal_id")
+            _on_report = None
+            if _gid:
+                from . import goals as _goalsp
+
+                def _on_report(r, _g=int(_gid)):
+                    _goalsp.note(_g, "crew",
+                                 f"{r['member']} ({'ok' if r.get('ok') else 'failed'}): "
+                                 f"{r['task'][:120]} → {str(r.get('report') or r.get('error'))[:700]}")
+            _pr = _crewp.run_parallel(_jobs, brain, memory, console, session_id=session_id,
+                                      on_report=_on_report)
+            if "results" not in _pr:
+                return "Refused: " + _pr.get("error", "couldn't start the crew.")
+            _lines = [f"{len(_pr['results'])} specialist(s) ran in parallel in {_pr['seconds']}s:"]
+            for _r in _pr["results"]:
+                _lines.append(f"\n## {_r['member']} — {'ok' if _r.get('ok') else 'FAILED'}"
+                              f" ({_r.get('seconds', '?')}s){' (routed)' if _r.get('routed') else ''}\n"
+                              f"Task: {_r['task'][:200]}\n{str(_r.get('report') or _r.get('error'))[:3000]}")
+            if tool_input.get("goal_id"):
+                _lines.append(f"\n(Reports added to goal #{tool_input['goal_id']}'s history.)")
+            return "\n".join(_lines)
 
         if name == "crew_chain":
             from . import crew as _crewc
@@ -1444,7 +1609,25 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                         f"call reset_task_plan(task_id={existing['id']}); otherwise "
                         f"continue it with update_task_step. Only create a new plan "
                         f"if this is genuinely different work.")
+            from . import checks as _checks
+            per_step: dict = {}
+            for item in tool_input.get("checks") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    n = int(item.get("step"))
+                except (TypeError, ValueError):
+                    return "Error: each checks item needs a step number."
+                cs = _checks.normalise(item.get("check"))
+                bad = [_checks.problem(c) for c in cs if _checks.problem(c)]
+                if bad or not cs:
+                    return f"Error: the check for step {n}: {bad[0] if bad else 'missing'}."
+                if not 1 <= n <= min(len(steps), 12):
+                    return f"Error: there's no step {n} to check."
+                per_step.setdefault(n, []).extend(cs)
             task_id = memory.create_task(tool_input["title"], steps[:12], session_id)
+            for n, cs in per_step.items():
+                memory.set_step_checks(task_id, n, json.dumps(cs[:_checks.MAX_CHECKS]))
             task = memory.get_task(task_id)
             console.print(f"[dim]plan created: task #{task_id} "
                           f"({len(task['steps'])} steps)[/dim]")
@@ -1465,11 +1648,36 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
             status = tool_input["status"]
             note = (tool_input.get("note") or "").strip()
             needs = (tool_input.get("needs") or "").strip()
-            if status == "done" and len(note) < 10:
-                return ("Refused: cannot mark a step done without verification "
-                        "evidence. First CHECK the result (re-read the file, run "
-                        "the code, inspect output), then call again with what you "
-                        "verified in 'note'.")
+            _app_checked = ""
+            if status == "done":
+                from . import checks as _checks
+                _tid, _seq = int(tool_input["task_id"]), int(tool_input["step"])
+                _task0 = memory.get_task(_tid)
+                _step0 = next((s for s in (_task0 or {}).get("steps", []) if s["seq"] == _seq), None)
+                _stored = _checks.normalise((_step0 or {}).get("checks"))
+                _new = _checks.normalise(tool_input.get("check"))
+                _bad = [_checks.problem(c) for c in _new if _checks.problem(c)]
+                if _bad:
+                    return f"Error: that check can't run: {_bad[0]}."
+                _all = (_stored + _new)[:_checks.MAX_CHECKS]
+                if _all:
+                    _res = _checks.run_all(_all, memory=memory, auto_approve=auto_approve, session_id=session_id)
+                    if not _res["ok"]:
+                        if _res["waiting"]:
+                            return ("Refused: not done yet. " + _res["text"] + ". Mark this "
+                                    "step 'blocked' with needs='approve the waiting item', "
+                                    "and carry on with anything else.")
+                        return ("Refused: the app checked and it isn't done: " + _res["text"]
+                                + ". Fix the work (not the wording), then mark it done again.")
+                    if _new and _step0 is not None:
+                        memory.set_step_checks(_tid, _seq, json.dumps(_all))
+                    _app_checked = "[checked by the app: " + _res["text"] + "]"
+                    note = (note + " " + _app_checked).strip()
+                elif len(note) < 10:
+                    return ("Refused: cannot mark a step done without verification "
+                            "evidence. Best: pass a 'check' the app can run itself "
+                            "(file_exists, file_contains, command, url, sent). Otherwise "
+                            "CHECK the result yourself and say what you observed in 'note'.")
             if status in ("failed", "skipped") and not note:
                 return f"Refused: '{status}' requires a brief reason in 'note'."
             if status == "blocked" and not needs:
@@ -1489,6 +1697,11 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     _sdesc = next((s["description"] for s in task["steps"]
                                    if s["seq"] == int(tool_input["step"])), "")
                     experience.on_step_blocked(memory, task, _sdesc, needs)
+                except Exception:
+                    pass
+                try:
+                    from . import notify
+                    notify.step_blocked(task, _sdesc, needs)
                 except Exception:
                     pass
                 nxt = [s for s in task["steps"]
@@ -1520,6 +1733,19 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                     return (f"Refused: steps {bl} are blocked waiting on the user. "
                             f"Don't mark the task complete — report what's needed "
                             f"so they can unblock it, and leave the task active.")
+                # what was true when each step was marked done must still be
+                # true now: a later step can break an earlier one
+                from . import checks as _checks
+                _regressed = []
+                for s in task["steps"]:
+                    cs = _checks.normalise(s.get("checks"))
+                    if s["status"] == "done" and cs:
+                        r = _checks.run_all(cs, memory=memory, auto_approve=auto_approve, session_id=session_id)
+                        if not r["ok"]:
+                            _regressed.append(f"step {s['seq']}: {r['text']}")
+                if _regressed:
+                    return ("Refused: the app re-checked, and done work no longer holds — "
+                            + " | ".join(_regressed) + ". Fix it, then complete the task.")
             if len(tool_input.get("summary", "").strip()) < 10:
                 return "Refused: provide a real summary of outcomes."
             summary = tool_input["summary"].strip()
@@ -1534,6 +1760,47 @@ def _execute_tool_impl(name: str, tool_input: dict, memory: MemoryStore,
                 pass
             console.print(f"[dim]task #{task_id} {status}[/dim]")
             return f"Task #{task_id} marked {status}."
+
+        if name == "list_credentials":
+            from . import vault as _vault
+            return _vault.tool_listing()
+
+        if name == "http_request":
+            return _http_request(tool_input or {}, session_id)
+
+        if name in ("browser", "browser_submit"):
+            from . import browser as _browser
+            # browser_submit is never offered to the model: it only runs here
+            # after the person approved the held submission (run_held)
+            return _browser.run_action(tool_input or {}, session_id or "chat",
+                                       approved=(name == "browser_submit"))
+
+        if name in ("create_goal", "update_goal", "list_goals"):
+            from . import goals as _goals
+            if name == "list_goals":
+                gs = _goals.list_goals(tool_input.get("status", "all"))
+                return "\n".join(_goals.summary_line(g) for g in gs) or "No goals yet."
+            if name == "update_goal":
+                return _goals.record_update(
+                    int(tool_input["goal_id"]), str(tool_input.get("status", "")),
+                    str(tool_input.get("note", "")),
+                    evidence=str(tool_input.get("evidence", "") or ""),
+                    needs=str(tool_input.get("needs", "") or ""),
+                    task_id=tool_input.get("task_id"), checks=tool_input.get("checks"),
+                    memory=memory, auto_approve=auto_approve, session_id=session_id)
+            try:
+                g = _goals.create(
+                    tool_input.get("title", ""), tool_input.get("objective", ""),
+                    tool_input.get("success", ""), deadline=tool_input.get("deadline", "") or "",
+                    budget_usd=float(tool_input.get("budget_usd") or 0),
+                    runs_per_day=int(tool_input.get("runs_per_day") or 4),
+                    checks=tool_input.get("checks"))
+            except ValueError as exc:
+                return f"Refused: {exc}."
+            _goals.ensure_schedule(memory)
+            return (f"Goal #{g['id']} set: {g['title']}. It will be worked on up to "
+                    f"{g['runs_per_day']}x a day by the 'Pursue goals' schedule; see the "
+                    f"Goals list in Tasks. Tell the user it's set and how to pause it.")
 
         if name == "list_tasks":
             tasks = memory.list_tasks(tool_input.get("status", "all"), limit=10)
@@ -1581,6 +1848,11 @@ def run_held(intercept_id: str, memory: MemoryStore, console: Console) -> dict:
         out = _execute_tool_impl(hit["tool"], hit.get("args") or {}, memory, console,
                                  auto_approve=True, session_id="approved:" + intercept_id)
         res = out if isinstance(out, str) else str(out)
+        try:
+            from . import vault as _vault
+            res = _vault.redact(res)
+        except Exception:
+            pass
         bad = res[:14].lower().startswith(("error:", "[tool error", "mcp tool error"))
     except Exception as exc:
         res, bad = f"{type(exc).__name__}: {exc}", True
@@ -1652,7 +1924,57 @@ def execute_tool(name: str, tool_input: dict, memory: MemoryStore,
                          summary=(_res[:120] if _bad else f"{len(_res)} chars"))
         except Exception:
             pass
+    # a saved credential never reaches the model, even if a command printed it
+    try:
+        from . import vault as _vault
+        out = _vault.redact(out)
+    except Exception:
+        pass
     return out
+
+
+def _http_request(inp: dict, session_id: str = "", approved: bool = False) -> str:
+    """A web API call. Reads run; anything that changes something is held
+    by the gate in execute_tool before it gets here (see intercepts)."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+    from . import vault as _vault
+    if not WEB_ENABLED:
+        return "Web access is turned off (AGENT_WEB=off)."
+    method = str(inp.get("method") or "GET").upper()
+    url = str(inp.get("url") or "").strip()
+    if urlparse(url).scheme not in ("http", "https"):
+        return "Error: only http(s) URLs."
+    host = (urlparse(_vault.PLACEHOLDER.sub("x", url)).hostname or "").lower()
+    headers = {str(k): str(v) for k, v in (inp.get("headers") or {}).items()}
+    if inp.get("json") is not None:
+        body = json.dumps(inp["json"])
+        headers.setdefault("Content-Type", "application/json")
+    else:
+        body = inp.get("body")
+    filled, err = _vault.resolve({"url": url, "headers": headers, "body": body}, host, "http_request")
+    if err:
+        return f"Refused: {err}."
+    data = filled["body"].encode("utf-8") if isinstance(filled["body"], str) else None
+    req = urllib.request.Request(filled["url"], data=data, method=method,
+                                 headers={"User-Agent": "AgentJo/1", **filled["headers"]})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            code, rh, raw = r.status, dict(r.headers), r.read(300_000)
+    except urllib.error.HTTPError as exc:
+        code, rh, raw = exc.code, dict(exc.headers or {}), exc.read(50_000)
+    except Exception as exc:
+        return f"Error: couldn't reach {host}: {type(exc).__name__}: {str(exc)[:160]}"
+    text = raw.decode("utf-8", "replace")
+    try:
+        text = json.dumps(json.loads(text), indent=1)
+    except ValueError:
+        pass
+    keep = {k: v for k, v in rh.items() if k.lower() in ("content-type", "location", "link",
+                                                         "x-ratelimit-remaining", "retry-after")}
+    return (f"HTTP {code} {method} {url}\n" + "\n".join(f"{k}: {v}" for k, v in keep.items())
+            + "\n\n" + _truncate(text, 8000))
 
 
 def _fine_tune(inp: dict, brain=None) -> str:

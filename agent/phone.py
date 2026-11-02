@@ -360,3 +360,11 @@ def stop() -> None:
         h.shutdown()
         h.server_close()
     _SERVER.update(httpd=None, thread=None, port=None)
+
+
+# Telegram buttons and commands (agent/notify.py) act through these.
+try:
+    from . import notify as _notify
+    _notify.use_actions(decide=decide, pause=pause, resume=resume, state=state)
+except Exception:
+    pass

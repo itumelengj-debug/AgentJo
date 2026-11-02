@@ -127,7 +127,9 @@ async def _auth_guard(request: Request, call_next):
     if request.method == "OPTIONS" or not auth.is_enabled():
         return await call_next(request)
     path = request.url.path
-    if path in _AUTH_PUBLIC or path.startswith("/static"):
+    # /hooks/ authenticates each delivery with the trigger's own secret
+    # (agent/triggers.py); a browser session would mean nothing to GitHub
+    if path in _AUTH_PUBLIC or path.startswith("/static") or path.startswith("/hooks/"):
         return await call_next(request)
     if auth.verify_token(request.cookies.get(auth.COOKIE, "")):
         return await call_next(request)
@@ -767,6 +769,369 @@ def phone_set(body: PhoneBody):
     return _phone.set_enabled(body.enabled)
 
 
+class NotifyBody(BaseModel):
+    ntfy: dict | None = None
+    telegram: dict | None = None
+    events: dict | None = None
+    open_url: str | None = None
+
+
+@app.get("/api/notify")
+def notify_get():
+    from agent import notify as _nt
+    return _nt.public_settings()
+
+
+@app.post("/api/notify")
+def notify_set(body: NotifyBody):
+    from agent import notify as _nt
+    r = _nt.save({k: v for k, v in body.model_dump().items() if v is not None})
+    if "telegram" in _nt.enabled_channels():
+        _start_scheduler()          # its loop starts the Telegram listener
+    return r
+
+
+@app.post("/api/notify/test")
+def notify_test():
+    from agent import notify as _nt
+    if not _nt.enabled_channels():
+        return {"ok": False, "error": "Turn on ntfy or Telegram first, and save."}
+    return _nt.send("test", "Agent Jo can reach you",
+                    "This is a test. When something needs you, it arrives like this.",
+                    wait=True)
+
+
+class NotifyChatBody(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/notify/telegram/chat")
+def notify_find_chat(body: NotifyChatBody):
+    from agent import notify as _nt
+    return _nt.find_chat(body.token.strip())
+
+
+class GoalBody(BaseModel):
+    title: str
+    objective: str
+    success: str
+    deadline: str = ""
+    budget_usd: float = 0.0
+    runs_per_day: int = 4
+    full_access: bool = False
+    engine: str = "Auto"
+    checks: list[dict] | None = None
+
+
+class GoalStatusBody(BaseModel):
+    status: str
+    why: str = ""
+
+
+@app.get("/api/goals")
+def goals_list():
+    from agent import goals as _goals
+    return {"goals": _goals.list_goals("all")[::-1],
+            "limits": {"rounds": _goals.GOAL_MAX_ROUNDS, "seconds": _goals.GOAL_TIME_LIMIT,
+                       "stall_limit": _goals.STALL_LIMIT}}
+
+
+@app.post("/api/goals")
+def goals_create(body: GoalBody):
+    from agent import goals as _goals
+    try:
+        g = _goals.create(body.title, body.objective, body.success, deadline=body.deadline,
+                          budget_usd=body.budget_usd, runs_per_day=body.runs_per_day,
+                          full_access=body.full_access, engine=body.engine,
+                          checks=body.checks)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _goals.ensure_schedule(memory)
+    _start_scheduler()
+    return g
+
+
+@app.post("/api/goals/{goal_id}/status")
+def goals_status(goal_id: int, body: GoalStatusBody):
+    """Pause, resume (active), or give up on a goal by hand."""
+    from agent import goals as _goals
+    if body.status not in ("active", "paused", "abandoned"):
+        raise HTTPException(status_code=400, detail="status: active, paused or abandoned")
+    g = _goals.set_status(goal_id, body.status, body.why or f"set to {body.status} by you")
+    if not g:
+        raise HTTPException(status_code=404, detail="no such goal")
+    if body.status == "active":
+        _goals.ensure_schedule(memory)
+        _start_scheduler()
+    return g
+
+
+@app.post("/api/goals/{goal_id}/run")
+def goals_run_now(goal_id: int):
+    """Run one goal now, outside its cadence (in the background)."""
+    from agent import goals as _goals
+    g = _goals.get(goal_id)
+    if not g or g["status"] != "active":
+        raise HTTPException(status_code=400, detail="only an active goal can run")
+    sid = _goals.ensure_schedule(memory)
+    sch = memory.get_schedule(sid) if sid else None
+    if not sch:
+        raise HTTPException(status_code=500, detail="couldn't make the goals schedule")
+    _goals._mutate(goal_id, lambda x: x.update(last_run=0.0))
+    threading.Thread(target=_run_schedule, args=(sch,), daemon=True).start()
+    return {"ok": True, "note": "Running now; the checkpoint shows here when it's done."}
+
+
+@app.delete("/api/goals/{goal_id}")
+def goals_delete(goal_id: int):
+    from agent import goals as _goals
+    return {"ok": _goals.delete(goal_id)}
+
+
+class TriggerBody(BaseModel):
+    name: str
+    kind: str
+    instruction: str = ""
+    goal_id: int | None = None
+    engine: str = "Auto"
+    full_access: bool = False
+    max_per_hour: int = 12
+    imap: dict | None = None
+    folder: str = ""
+    pattern: str = "*"
+    from_contains: str = ""
+    subject_contains: str = ""
+
+
+class TriggerPatch(BaseModel):
+    enabled: bool | None = None
+    instruction: str | None = None
+    full_access: bool | None = None
+    max_per_hour: int | None = None
+
+
+_hook_rl = RateLimiter(int(os.environ.get("AGENT_HOOK_RATE", "60")), 60)
+
+
+@app.post("/hooks/{trigger_id}")
+async def webhook_in(trigger_id: str, request: Request):
+    """A delivery from outside. Answers fast (202) and runs in the background,
+    so a slow turn never makes GitHub retry the delivery."""
+    from agent import triggers as _tr
+    if _RATE_ON:
+        ok_rl, retry = _hook_rl.hit(_client_key(request))
+        if not ok_rl:
+            return JSONResponse({"detail": "Too many requests."}, status_code=429,
+                                headers={"Retry-After": str(int(retry) + 1)})
+    body = await request.body()
+    if len(body) > _tr.MAX_BODY:
+        return JSONResponse({"detail": "Too large."}, status_code=413)
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    ok, why = _tr.verify_webhook(trigger_id, body, headers,
+                                 request.query_params.get("token", ""))
+    if not ok:
+        _audit_safe("trigger", name="refused", trigger=trigger_id[:20], why=why)
+        # one answer for 'no such hook' and 'wrong secret': don't confirm ids
+        return JSONResponse({"detail": "Not accepted."}, status_code=401)
+    if headers.get("x-github-event") == "ping":
+        return {"ok": True, "note": "pong — the webhook is connected."}
+    t = _tr.get(trigger_id, with_secrets=True)
+    _fire_trigger_async(t, _tr.webhook_event(body, headers), "webhook")
+    return JSONResponse({"ok": True, "accepted": True}, status_code=202)
+
+
+@app.get("/api/triggers")
+def triggers_list():
+    from agent import triggers as _tr
+    return {"triggers": _tr.list_triggers(), "kinds": list(_tr.KINDS)}
+
+
+@app.post("/api/triggers")
+def triggers_create(body: TriggerBody):
+    from agent import triggers as _tr
+    try:
+        t = _tr.create(body.name, body.kind, instruction=body.instruction,
+                       goal_id=body.goal_id, engine=body.engine,
+                       full_access=body.full_access, max_per_hour=body.max_per_hour,
+                       imap=body.imap, folder=body.folder, pattern=body.pattern,
+                       from_contains=body.from_contains,
+                       subject_contains=body.subject_contains)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _start_scheduler()
+    return t
+
+
+@app.post("/api/triggers/{trigger_id}")
+def triggers_patch(trigger_id: str, body: TriggerPatch):
+    from agent import triggers as _tr
+    t = _tr.update(trigger_id, **body.model_dump())
+    if not t:
+        raise HTTPException(status_code=404, detail="no such trigger")
+    return t
+
+
+@app.post("/api/triggers/{trigger_id}/rotate")
+def triggers_rotate(trigger_id: str):
+    from agent import triggers as _tr
+    r = _tr.rotate_secret(trigger_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r["error"])
+    return r
+
+
+@app.post("/api/triggers/{trigger_id}/test")
+def triggers_test(trigger_id: str):
+    """Fire it once with a sample event, so you can see what it does."""
+    from agent import triggers as _tr
+    t = _tr.get(trigger_id, with_secrets=True)
+    if not t:
+        raise HTTPException(status_code=404, detail="no such trigger")
+    _fire_trigger_async(t, "(a test event sent from the Triggers panel; nothing really happened)",
+                        "test")
+    return {"ok": True, "note": "Fired. The result shows on the trigger and in History."}
+
+
+@app.delete("/api/triggers/{trigger_id}")
+def triggers_delete(trigger_id: str):
+    from agent import triggers as _tr
+    return {"ok": _tr.delete(trigger_id)}
+
+
+class BrowserBody(BaseModel):
+    enabled: bool | None = None
+    act_freely_on: list[str] | None = None
+
+
+class BrowserLoginBody(BaseModel):
+    url: str
+
+
+@app.get("/api/browser")
+def browser_status():
+    from agent import browser as _br
+    return _br.status()
+
+
+@app.post("/api/browser")
+def browser_set(body: BrowserBody):
+    from agent import browser as _br
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "act_freely_on" in upd:
+        upd["act_freely_on"] = [d.strip().lower() for d in upd["act_freely_on"] if d.strip()][:50]
+    return _br.save_settings(upd)
+
+
+@app.post("/api/browser/login")
+def browser_login(body: BrowserLoginBody):
+    """A visible window on the agent's browser profile, for the person to
+    sign in themselves. Needs a desktop session (not a headless server)."""
+    from agent import browser as _br
+    r = _br.open_for_login(body.url.strip())
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "Couldn't open a window."))
+    return r
+
+
+@app.post("/api/browser/login/done")
+def browser_login_done():
+    from agent import browser as _br
+    return _br.done_login()
+
+
+@app.post("/api/browser/forget")
+def browser_forget():
+    from agent import browser as _br
+    return _br.forget_logins()
+
+
+class SandboxBody(BaseModel):
+    mode: str | None = None
+    applies_to: str | None = None
+    network: bool | None = None
+    writable: list[str] | None = None
+
+
+@app.get("/api/sandbox")
+def sandbox_status():
+    from agent import sandbox as _sb
+    return _sb.status()
+
+
+@app.post("/api/sandbox")
+def sandbox_set(body: SandboxBody):
+    from agent import sandbox as _sb
+    try:
+        return _sb.save({k: v for k, v in body.model_dump().items() if v is not None})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class SandboxTestBody(BaseModel):
+    command: str
+
+
+@app.post("/api/sandbox/check")
+def sandbox_check(body: SandboxTestBody):
+    """Would an unattended run be allowed to run this? Nothing is run."""
+    from agent import sandbox as _sb
+    return _sb.check(body.command)
+
+
+class VaultBody(BaseModel):
+    name: str
+    value: str
+    hosts: list[str] = []
+    note: str = ""
+    commands: bool = False
+
+
+@app.get("/api/vault")
+def vault_list():
+    """Names, sites and use counts. Values never leave the vault this way."""
+    from agent import vault as _v
+    return {"credentials": _v.public()}
+
+
+@app.post("/api/vault")
+def vault_put(body: VaultBody):
+    from agent import vault as _v
+    try:
+        return _v.put(body.name, body.value, body.hosts, note=body.note, commands=body.commands)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/vault/{name}")
+def vault_delete(name: str):
+    from agent import vault as _v
+    return {"ok": _v.delete(name)}
+
+
+class ServiceBody(BaseModel):
+    install: bool = True
+    port: int = 8765
+
+
+@app.get("/api/service")
+def service_status():
+    """Is Agent Jo installed to run in the background, and which process is
+    running the schedules right now."""
+    from agent import service as _svc
+    return {**_svc.status(), "port": _svc.DEFAULT_PORT,
+            "this_port": int(os.environ.get("AGENT_WEB_PORT") or 0)}
+
+
+@app.post("/api/service")
+def service_set(body: ServiceBody):
+    from agent import service as _svc
+    r = _svc.install(port=body.port) if body.install else _svc.uninstall()
+    if body.install and r.get("ok") and int(os.environ.get("AGENT_WEB_PORT") or 0) == body.port:
+        r["note"] = (r.get("note", "") + " This window is on the same port, so the "
+                     "service takes over when you close it.")
+    return r
+
+
 @app.post("/api/phone/rotate")
 def phone_rotate():
     from agent import phone as _phone
@@ -1017,7 +1382,7 @@ def breakers_reset(feature: str):
     return {**r, "breakers": breaker.status()}
 
 
-@app.get("/api/phone")
+@app.get("/api/phone/setup")
 def phone_setup():
     """What to type into a phone, and whether this machine is even listening
     on the network."""
@@ -3113,6 +3478,118 @@ _sched_guard = threading.Lock()
 _scheduler_started = False
 
 
+def _goal_runner(goal: dict, prompt: str):
+    """One unattended run on a goal, with a goal-sized budget (agent/goals.py)."""
+    from agent import goals as _goals
+    ginfo: dict = {"feature": "goals"}
+    gsess = f"goal-{goal['id']}-{int(time.time())}"
+    try:
+        memory.log_message(gsess, "user", prompt)
+    except Exception:
+        pass
+    rep = main.run_turn(
+        get_brain(), memory, [], prompt,
+        auto_approve=bool(goal.get("full_access")), session_id=gsess,
+        force_model=_force_model(goal.get("engine") or "Auto"),
+        turn_info=ginfo, max_rounds=_goals.GOAL_MAX_ROUNDS,
+        time_limit=_goals.GOAL_TIME_LIMIT)
+    if rep:
+        try:
+            memory.log_message(gsess, "assistant", rep)
+        except Exception:
+            pass
+    _accumulate_cost(ginfo)
+    return rep, ginfo
+
+
+def _goal_cost(ginfo: dict) -> float:
+    by = ginfo.get("by_engine") or {}
+    if by:
+        return sum(_cost_of(lbl or "claude", u or {}) for lbl, u in by.items())
+    return _cost_of(ginfo.get("engine") or "claude", ginfo.get("usage") or {})
+
+
+def _fire_trigger(t: dict, event: str, source: str) -> dict:
+    """An event happened: run the trigger's instruction, or wake its goal.
+    Fenced like a schedule — breaker, monthly ceiling, hourly cap — and
+    every outcome is recorded on the trigger and in the audit trail."""
+    from agent import triggers as _tr
+    tid = t["id"]
+    bkey = f"trigger:{tid}"
+    ok, why = breaker.allow(bkey)
+    if not ok:
+        _tr.record_fire(tid, "skipped", why)
+        return {"ok": False, "skipped": why}
+    if _budget_blocks_autonomy():
+        msg = f"budget reached (${config.BUDGET_USD:.2f}) — trigger held"
+        _tr.record_fire(tid, "skipped", msg)
+        return {"ok": False, "skipped": msg}
+    if not _tr.allow_fire(t):
+        _audit_safe("trigger", name="dropped", trigger=tid)
+        return {"ok": False, "skipped": "hourly ceiling for this trigger"}
+    status, summary = "ok", ""
+    try:
+        if t.get("goal_id"):
+            from agent import goals as _goals
+            g = _goals.get(int(t["goal_id"]))
+            if not g or g["status"] != "active":
+                status, summary = "skipped", f"goal #{t['goal_id']} isn't active"
+            else:
+                _goals.note(g["id"], "event", f"[{t['name']}] " + event[:1400])
+                r = _goals.run_one(_goals.get(g["id"]), _goal_runner, memory, _goal_cost)
+                status = "error" if r.get("error") else "ok"
+                summary = (r.get("error") or
+                           f"woke goal #{g['id']}" + (" — progressed" if r.get("progressed") else ""))
+        else:
+            info: dict = {"feature": "autonomy"}
+            sess = f"trigger-{tid}-{int(time.time())}"
+            prompt = _tr.build_prompt(t, event, source)
+            try:
+                memory.log_message(sess, "user", prompt)
+            except Exception:
+                pass
+            reply = main.run_turn(
+                get_brain(), memory, [], prompt,
+                auto_approve=bool(t.get("full_access")), session_id=sess,
+                force_model=_force_model(t.get("engine") or "Auto"), turn_info=info)
+            if reply:
+                try:
+                    memory.log_message(sess, "assistant", reply)
+                except Exception:
+                    pass
+            _accumulate_cost(info)
+            summary = " ".join((reply or "").split())[:300] or "(no output)"
+    except Exception as exc:
+        status, summary = "error", f"{type(exc).__name__}: {exc}"[:300]
+        issues.note_error(f"trigger:{t.get('name', '')[:20]}", summary)
+    try:
+        if status == "error":
+            breaker.record_failure(bkey, summary)
+        elif status == "ok":
+            breaker.record_success(bkey)
+    except Exception:
+        pass
+    _tr.record_fire(tid, status, summary)
+    if status == "error":
+        try:
+            from agent import notify as _nt
+            _nt.schedule_failed(f"trigger {t.get('name', '')}", summary)
+        except Exception:
+            pass
+    return {"ok": status == "ok", "status": status, "summary": summary}
+
+
+def _audit_safe(kind: str, **fields) -> None:
+    try:
+        audit.record(kind, **fields)
+    except Exception:
+        pass
+
+
+def _fire_trigger_async(t: dict, event: str, source: str) -> None:
+    threading.Thread(target=_fire_trigger, args=(t, event, source), daemon=True).start()
+
+
 def _run_schedule(sch: dict) -> None:
     """Run one scheduled instruction as a tracked job in its own session, then
     record the outcome and compute the next fire time. Mirrors the desktop."""
@@ -3135,7 +3612,7 @@ def _run_schedule(sch: dict) -> None:
         if not _ballowed:
             status, summary = "skipped", _bwhy
             return
-        if action in ("autopilot", "watch", "autoresume") and _budget_blocks_autonomy():
+        if action in ("autopilot", "watch", "autoresume", "goals") and _budget_blocks_autonomy():
             status, summary = "skipped", (
                 f"budget reached (${config.BUDGET_USD:.2f}) — autonomous action held")
             return
@@ -3305,6 +3782,16 @@ def _run_schedule(sch: dict) -> None:
                                          f"{s['skipped']} unchanged")
             return
 
+        if action == "goals":
+            from agent import goals as _goals
+            rep = _goals.sweep(_goal_runner, memory, _goal_cost)
+            summary = (f"goals: {rep['ran']} run(s), {rep['progressed']} progressed"
+                       if rep["results"] else "goals: nothing due")
+            bad = [r for r in rep["results"] if r.get("error")]
+            if bad and len(bad) == rep["ran"]:
+                status, summary = "error", f"goals: {bad[0]['error']}"[:300]
+            return
+
         if action == "autoresume":
             ar_cfg = autoresume.load_config()
             brain = get_brain()
@@ -3339,10 +3826,15 @@ def _run_schedule(sch: dict) -> None:
                                f"[scheduled: {sch['name']}] {sch['prompt']}")
         except Exception:
             pass
+        info["feature"] = "autonomy"
         reply = main.run_turn(
             brain, memory, [], sch["prompt"],
             auto_approve=bool(sch["full_access"]), session_id=sess_id,
             force_model=_force_model(sch["engine"]), turn_info=info)
+        try:
+            _accumulate_cost(info)        # the monthly ceiling must see it
+        except Exception:
+            pass
         summary = " ".join((reply or "").split())[:300] or "(no output)"
         if reply:
             try:
@@ -3353,6 +3845,12 @@ def _run_schedule(sch: dict) -> None:
         status, summary = "error", f"{type(exc).__name__}: {exc}"[:300]
         issues.note_error(f"schedule:{sch.get('name', '')[:20]}", summary)
     finally:
+        if status == "error":
+            try:
+                from agent import notify as _nt
+                _nt.schedule_failed(sch.get("name", ""), summary)
+            except Exception:
+                pass
         # feed the outcome back to the breaker for this action type. "skipped"
         # is neither success nor failure — it never ran.
         try:
@@ -3383,6 +3881,29 @@ def _run_schedule(sch: dict) -> None:
 def _scheduler_loop() -> None:
     while True:
         time.sleep(15)
+        # only one process runs the schedules: the background service if it
+        # is up, otherwise the first window. Checked every tick, so a window
+        # takes over by itself if the service stops (agent/service.py)
+        try:
+            from agent import service as _svc
+            if not _svc.acquire_scheduler_lock():
+                continue
+        except Exception:
+            pass
+        # the schedule-runner also listens for Telegram taps, so a tap is
+        # acted on once however many copies are open (agent/notify.py)
+        try:
+            from agent import notify as _nt
+            if "telegram" in _nt.enabled_channels():
+                _nt.start_poller()
+        except Exception:
+            pass
+        # inbox and folder triggers are looked at by the same one process
+        try:
+            from agent import triggers as _tr
+            _tr.poll_due(_fire_trigger_async)
+        except Exception:
+            pass
         try:
             for sch in memory.due_schedules(time.time()):
                 threading.Thread(target=_run_schedule, args=(sch,),

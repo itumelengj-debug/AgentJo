@@ -207,6 +207,8 @@ class MemoryStore:
         for _alter in (
             "ALTER TABLE schedules ADD COLUMN action TEXT NOT NULL DEFAULT 'prompt'",
             "ALTER TABLE schedules ADD COLUMN payload TEXT",
+            # checks the app runs itself before a step may be done (agent/checks.py)
+            "ALTER TABLE task_steps ADD COLUMN checks TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 self.conn.execute(_alter)
@@ -266,6 +268,8 @@ class MemoryStore:
         for _alter in (
             "ALTER TABLE schedules ADD COLUMN action TEXT NOT NULL DEFAULT 'prompt'",
             "ALTER TABLE schedules ADD COLUMN payload TEXT",
+            # checks the app runs itself before a step may be done (agent/checks.py)
+            "ALTER TABLE task_steps ADD COLUMN checks TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 self.conn.execute(_alter)
@@ -774,6 +778,13 @@ class MemoryStore:
                 (status, limit))
         return [self.get_task(r["id"]) for r in rows.fetchall()]
 
+    def set_step_checks(self, task_id: int, seq: int, checks_json: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE task_steps SET checks = ? WHERE task_id = ? AND seq = ?",
+            (checks_json or "", task_id, seq))
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def update_step(self, task_id: int, seq: int, status: str,
                     note: str = "") -> bool:
         now = _now()
@@ -1046,6 +1057,8 @@ def format_task(task: dict) -> str:
     for s in task["steps"]:
         mark = _STEP_MARK.get(s["status"], "[?]")
         line = f"  {s['seq']}. {mark} {s['description']}"
+        if s.get("checks"):
+            line += "  [app-checked]"
         if s["note"]:
             line += f"  — {s['note']}"
         lines.append(line)

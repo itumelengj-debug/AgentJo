@@ -585,6 +585,8 @@
       <div class="mem-tabs">
         <button class="mem-tab active" id="schedTabSchedules">Schedules</button>
         <button class="mem-tab" id="schedTabTasks">Tasks</button>
+        <button class="mem-tab" id="schedTabGoals">Goals</button>
+        <button class="mem-tab" id="schedTabTriggers">Triggers</button>
       </div>
 
       <!-- Schedules pane -->
@@ -674,6 +676,86 @@
         </div>
         <div class="sched-preview" id="arPreview" hidden></div>
         <div class="mem-list" id="taskList"></div>
+      </div>
+
+      <!-- Goals pane -->
+      <div class="mem-pane" id="schedPaneGoals" hidden>
+        <p class="modal-intro">
+          Outcomes Agent Jo works toward over days, a few runs a day. Each run picks up
+          from the last checkpoint. It stops by itself, and tells you, when a goal is met,
+          blocked on you, out of budget, past its deadline, or three runs make no progress.
+        </p>
+        <div class="sched-form">
+          <div class="engine-grid">
+            <label class="field"><span>Goal</span><input id="glTitle" placeholder="e.g. Five interviews this month" /></label>
+            <label class="field"><span>Deadline</span><input id="glDeadline" type="date" /></label>
+            <label class="field"><span>Budget (USD, 0 = none)</span><input id="glBudget" placeholder="5" /></label>
+            <label class="field"><span>Runs per day</span><input id="glRuns" placeholder="4" /></label>
+          </div>
+          <label class="field"><span>Objective</span><textarea id="glObjective" rows="2" placeholder="What you want, in your words"></textarea></label>
+          <label class="field"><span>Done when</span><textarea id="glSuccess" rows="2" placeholder="How you'd know it's done: checkable"></textarea></label>
+          <label class="field"><span>Checks the app runs before it's "achieved" (optional, one per line)</span><textarea id="glChecks" rows="2" placeholder="file C:\Reports\nov.xlsx&#10;file out.csv contains TOTAL&#10;url https://mysite.co.za/health contains ok&#10;command pytest -q"></textarea></label>
+          <label class="sched-full">
+            <input type="checkbox" id="glFull" />
+            <span>Full access during its runs (commands &amp; file writes; anything leaving the machine still waits for you)</span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn primary" id="glCreateBtn">Set goal</button>
+            <span class="engine-status" id="glStatus"></span>
+          </div>
+        </div>
+        <div class="mem-list" id="goalList"></div>
+      </div>
+
+      <!-- Triggers pane -->
+      <div class="mem-pane" id="schedPaneTriggers" hidden>
+        <p class="modal-intro">
+          Work that starts because something happened: a webhook call, new email, a file in a
+          folder. Each event runs your instruction or wakes a goal. What arrives is treated as
+          untrusted, it runs in safe mode unless you allow more, and anything leaving the machine
+          still waits for your OK.
+        </p>
+        <div class="sched-form">
+          <div class="engine-grid">
+            <label class="field"><span>Name</span><input id="trName" placeholder="e.g. CI failures" /></label>
+            <label class="field"><span>When</span>
+              <select id="trKind" class="perm-kind-select sched-sel">
+                <option value="webhook">A webhook is called</option>
+                <option value="inbox">New email arrives</option>
+                <option value="folder">A file lands in a folder</option>
+              </select>
+            </label>
+          </div>
+          <div class="engine-grid" id="trInboxFields" hidden>
+            <label class="field"><span>IMAP server</span><input id="trHost" placeholder="imap.gmail.com" /></label>
+            <label class="field"><span>Port</span><input id="trPort" placeholder="993" /></label>
+            <label class="field"><span>User</span><input id="trUser" placeholder="you@example.com" /></label>
+            <label class="field"><span>App password</span><input id="trPass" type="password" /></label>
+            <label class="field"><span>Folder</span><input id="trMailbox" placeholder="INBOX" /></label>
+            <label class="field"><span>From contains</span><input id="trFrom" placeholder="optional" /></label>
+            <label class="field"><span>Subject contains</span><input id="trSubject" placeholder="optional" /></label>
+          </div>
+          <div class="engine-grid" id="trFolderFields" hidden>
+            <label class="field"><span>Folder</span><input id="trFolder" placeholder="C:\Users\you\Drop" /></label>
+            <label class="field"><span>Files matching</span><input id="trPattern" placeholder="*.pdf" /></label>
+          </div>
+          <label class="field"><span>Then</span><textarea id="trInstruction" rows="2" placeholder="e.g. Summarise the failure and draft a fix plan"></textarea></label>
+          <div class="engine-grid">
+            <label class="field"><span>Or wake a goal</span>
+              <select id="trGoal" class="perm-kind-select sched-sel"><option value="">(no goal: run the instruction)</option></select>
+            </label>
+            <label class="field"><span>Max fires per hour</span><input id="trMax" placeholder="12" /></label>
+          </div>
+          <label class="sched-full">
+            <input type="checkbox" id="trFull" />
+            <span>Full access when it fires (commands &amp; file writes; anything leaving the machine still waits for you)</span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn primary" id="trCreateBtn">Add trigger</button>
+            <span class="engine-status" id="trStatus"></span>
+          </div>
+        </div>
+        <div class="mem-list" id="triggerList"></div>
       </div>
     </div>
   </div>

